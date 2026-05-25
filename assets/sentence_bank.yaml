@@ -1,0 +1,223 @@
+# Katalaveno Sentence Bank
+# ========================
+# Format guide:
+#
+#  language: <source language of the sentences below>
+#
+#  subjects:
+#    SubjectName:
+#      sentences:
+#        - First sentence in the source language.
+#        - Second sentence.
+#
+#    MetaSubjectName:          # a subject that groups other subjects
+#      includes:
+#        - SubjectName
+#        - AnotherSubject
+#
+# Notes:
+#  - All subjects (including meta) appear in the subject picker.
+#  - Meta subjects stream sentences from all included leaf subjects.
+#  - Translations are fetched via AI once and cached locally.
+
+language: English
+
+# Auto-mode timing
+auto_show_delay: 3       # seconds to display the source sentence before revealing the translation
+auto_post_tts_delay: 2   # seconds to wait after TTS finishes before advancing to the next sentence
+auto_source_pause: 2     # (only when "speak source" is on) seconds to pause after speaking the source sentence before revealing the translation
+tts_pitch_low: 0.85      # pitch for "lower voice" (used when no gendered voice is found by the engine)
+tts_pitch_high: 1.1      # pitch for "higher voice"
+tts_repeat_delay: 3      # seconds between TTS repetitions of the translation (when repeat count > 1)
+tts_repeat_count: 3      # how many times to play the translation TTS (1 = once)
+
+subjects:
+
+  Greetings:
+    sentences:
+      - Hello, how are you?
+      - Good morning, I hope you have a great day.
+      - Nice to meet you.
+      - Good evening, how was your day?
+      - Goodbye, see you tomorrow.
+      - How is everything going?
+      - Thank you very much.
+      - You are welcome.
+
+  Introductions:
+    sentences:
+      - My name is Alex.
+      - I am from Canada.
+      - I am learning this language.
+      - I speak a little.
+      - Could you please speak more slowly?
+      - I do not understand, can you repeat that?
+      - What is your name?
+      - Where are you from?
+
+  Numbers and Time:
+    sentences:
+      - What time is it?
+      - It is three o'clock in the afternoon.
+      - Today is Monday.
+      - The meeting is at nine in the morning.
+      - It takes about twenty minutes to walk there.
+      - The store opens at eight and closes at ten.
+      - My birthday is in July.
+      - How many do you want?
+
+  Food and Drink:
+    sentences:
+      - I would like a coffee, please.
+      - Do you have a table for two?
+      - The menu, please.
+      - What do you recommend?
+      - I am vegetarian.
+      - The bill, please.
+      - This is delicious.
+      - I am hungry, let us eat something.
+      - Can I have a glass of water?
+      - We would like to order now.
+
+  Shopping:
+    sentences:
+      - How much does this cost?
+      - Do you have this in a different size?
+      - I am just looking, thank you.
+      - Can I pay by card?
+      - Do you have a bag for this?
+      - I would like to return this item.
+      - Where is the nearest supermarket?
+      - It is too expensive for me.
+
+  Directions:
+    sentences:
+      - Excuse me, where is the bus station?
+      - Turn left at the traffic lights.
+      - Go straight ahead for two blocks.
+      - Is it far from here?
+      - Can you show me on the map?
+      - Take the second street on the right.
+      - The pharmacy is next to the bank.
+      - How do I get to the city center?
+
+  Health:
+    sentences:
+      - I do not feel well.
+      - I need to see a doctor.
+      - I have a headache.
+      - Is there a pharmacy nearby?
+      - I am allergic to penicillin.
+      - Call an ambulance, please.
+      - Where is the nearest hospital?
+      - I need my prescription filled.
+
+  Travel:
+    sentences:
+      - I would like a ticket to the airport, please.
+      - At what time does the next train leave?
+      - Is this seat taken?
+      - My luggage is lost.
+      - I need to check in for my flight.
+      - Where can I find a taxi?
+      - How long is the journey?
+      - I have a reservation under the name Smith.
+
+  Work and Daily Life:
+    sentences:
+      - I work in an office downtown.
+      - I start work at nine every morning.
+      - I finish work at six in the evening.
+      - I take the subway to work.
+      - I have a meeting this afternoon.
+      - I work from home on Fridays.
+      - My colleague is very helpful.
+      - I am on a deadline today.
+
+  Weather:
+    sentences:
+      - What is the weather like today?
+      - It is very hot and humid.
+      - It looks like it will rain later.
+      - I should bring an umbrella.
+      - The forecast says it will be sunny.
+      - It is cold outside, dress warmly.
+      - There is a storm coming tonight.
+      - What a beautiful day it is!
+
+  # ── Meta subjects ──────────────────────────────────────────
+  # These combine sentences from multiple leaf subjects.
+
+  Beginner Essentials:
+    includes:
+      - Greetings
+      - Introductions
+      - Numbers and Time
+
+  Out and About:
+    includes:
+      - Food and Drink
+      - Shopping
+      - Directions
+
+  Full Mix:
+    includes:
+      - Greetings
+      - Introductions
+      - Numbers and Time
+      - Food and Drink
+      - Shopping
+      - Directions
+      - Health
+      - Travel
+      - Work and Daily Life
+      - Weather
+      - At the fishmonger
+      - At the butcher
+      - At the gym
+
+  At the fishmonger:
+    sentences:
+      - the octopus i took last week was wonderful
+      - i want one more
+      - my wife doesn't like sardines
+      - i want a quarter of a kilo of anchovies
+      - can you clean it please?
+      - this is a bit too small
+      - maybe i will come again tomorrow to see if you have it
+      - this is only for today
+      - this is for three days
+      - it was very strong but with water it was perfect
+      - maybe a few more
+      - 200 grams more
+
+  At the butcher:
+    sentences:
+      - i want approximately 300 grams
+      - i want 700 grams of minced meat with 15 percent fat
+      - i want a piece of chuck roast of about one kilo and 400 grams
+      - i want souvlaki but from the thigh
+      - will you be open on sunday?
+
+  At the gym:
+    sentences:
+      - I am using this
+      - I am using both
+      - I have just one more set
+      - I have three more sets
+      - I am not using this
+      - We can use this together
+      - Can you turn on the light please?
+      - Can you turn on the fan?
+      - Can you turn on the A/C?
+      - Where are the dip bars?
+      - Can I have the key for locker 14?
+      - Can I take this?
+      - Did you want this?
+      - Are you using this?
+
+    At my places:
+      includes:
+        - At the fishmonger
+        - At the butcher
+        - At the gym
