@@ -26,7 +26,6 @@ You'll need a **Gemini API key** to use the AI features. Get one from [aistudio.
 flutter analyze                          # lint
 dart format --line-length 120 lib/       # format (120-char lines)
 flutter build apk                        # Android release
-flutter build linux                      # Linux desktop
 ```
 
 Docs for the Sentence Bank YAML format live in [`docs/sentence_bank.md`](docs/sentence_bank.md).
@@ -37,14 +36,13 @@ Docs for the Sentence Bank YAML format live in [`docs/sentence_bank.md`](docs/se
 - **Persistence**: `AppStorage` wraps `SharedPreferencesAsync`. All domain models implement `toJson` / `fromJson`.
 - **Spaced repetition**: an integer "global step" derived from which notification snapshots have already fired; each word has a `startStep` anchor.
 - **AI**: `AiService` calls `gemini-2.5-flash` (falls back to `gemini-2.5-flash-lite` on rate limit) for sentence generation and prediction scoring.
-- **Notifications**: `flutter_local_notifications` (Android / iOS / Linux DBus). Reschedules a 10-step window on every state change.
+- **Notifications**: `flutter_local_notifications`. Reschedules a 10-step window on every state change.
 
 ## Platforms
 
-- **Android** (primary target — runtime notification permission on 13+, foreground service for Sentence Bank auto mode)
-- **Linux desktop** (DBus notifications)
-- **Web** (notifications and file I/O are no-ops)
-- **iOS / macOS / Windows** — Flutter targets generate, but not actively tested.
+**Android** is the only platform target included in this repository (runtime notification permission on 13+, foreground service for Sentence Bank auto mode).
+
+Other Flutter targets (iOS, web, desktop) are not included. To add one, run `flutter create --platforms=<platform> .` from the project root.
 
 ## License
 
