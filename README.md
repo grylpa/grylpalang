@@ -13,7 +13,12 @@ A Flutter vocabulary trainer that uses **spaced repetition via local notificatio
 
 ## Gemini API key
 
-You'll need a **Gemini API key** to use the AI features. Get one from [aistudio.google.com](https://aistudio.google.com/). There's no build-time configuration — you enter the key directly inside the app under **Settings → AI API Key**.
+You'll need a **Gemini API key** to use the AI features. There's no build-time configuration — the whole flow happens inside the app under **Settings → AI**:
+
+- Tap **Get a free Gemini API key** to open Google AI Studio (a free personal key needs no credit card).
+- Paste the key into the **Gemini API key** field, then tap **Test** to confirm it works.
+
+## Documentation
 
 Docs for the Sentence Bank YAML format live in [`docs/sentence_bank.md`](docs/sentence_bank.md).
 
