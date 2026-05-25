@@ -11,22 +11,9 @@ A Flutter vocabulary trainer that uses **spaced repetition via local notificatio
 - Persistent on-disk MP3 cache for Google Translate TTS (used as a fallback for languages where the platform voice has weak prosody, e.g. Greek questions).
 - All user data (settings, words, history, snapshots) is stored locally on device — no server backend.
 
-## Quick start
+## Gemini API key
 
-```bash
-flutter pub get
-flutter run
-```
-
-You'll need a **Gemini API key** to use the AI features. Get one from [aistudio.google.com](https://aistudio.google.com/) and paste it into Settings → AI API Key.
-
-## Commands
-
-```bash
-flutter analyze                          # lint
-dart format --line-length 120 lib/       # format (120-char lines)
-flutter build apk                        # Android release
-```
+You'll need a **Gemini API key** to use the AI features. Get one from [aistudio.google.com](https://aistudio.google.com/). There's no build-time configuration — you enter the key directly inside the app under **Settings → AI API Key**.
 
 Docs for the Sentence Bank YAML format live in [`docs/sentence_bank.md`](docs/sentence_bank.md).
 
