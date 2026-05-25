@@ -18,9 +18,9 @@ You'll need a **Gemini API key** to use the AI features. There's no build-time c
 - Tap **Get a free Gemini API key** to open Google AI Studio (a free personal key needs no credit card).
 - Paste the key into the **Gemini API key** field, then tap **Test** to confirm it works.
 
-## Documentation
+## Sentence Bank format
 
-Docs for the Sentence Bank YAML format live in [`docs/sentence_bank.md`](docs/sentence_bank.md).
+The bundled [`assets/sentence_bank.yaml`](assets/sentence_bank.yaml) documents its own format in the header comments (subjects, meta-subjects, and the auto-mode timing/TTS options) — edit that file or point the app at your own YAML URL in Settings.
 
 ## Architecture
 
