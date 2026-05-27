@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/sentence_bank.dart';
+import '../services/auto_playlist_controller.dart';
 import '../services/google_translate_tts.dart';
 import '../services/sentence_bank_foreground_service.dart';
 import '../services/sentence_bank_service.dart';
@@ -58,6 +59,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   final _tts = FlutterTts();
   final _googleTts = GoogleTranslateTts();
+  late final _autoPlaylist = AutoPlaylistController(_googleTts);
+  StreamSubscription<int>? _autoOrdinalSub;
+  List<String> _autoTranslations = [];
+  bool _autoPreparing = false;
   // Languages where flutter_tts gives flat/wrong intonation for questions.
   // For these, we prefer the Google Translate audio endpoint.
   static const _googleTtsLanguages = {'el'};
@@ -87,7 +92,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   // Auto-mode
   bool _autoMode = false;
   Timer? _autoTimer;
-  bool _autoShowingTranslation = false;
   bool _ttsPlaying = false;
   bool _autoSpeakingSource = false; // true while speaking the source sentence in auto mode
   bool _announcingRetry = false;    // true while speaking the "retrying translation" announcement
@@ -156,16 +160,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (locale == null) return false;
     final lang = locale.toLowerCase().split(RegExp('[-_]')).first;
     if (!_googleTtsLanguages.contains(lang)) return false;
-    if (!_googleTts.canSpeak(text)) {
-      debugPrint('[gTTS] skip: text too long (${text.length}) — using flutter_tts');
-      return false;
-    }
+    if (!_googleTts.canSpeak(text)) return false;
     try {
       await _tts.stop();
       await _googleTts.speak(text, lang);
       return true;
-    } catch (e) {
-      debugPrint('[gTTS] google speak failed, falling back to flutter_tts: $e');
+    } catch (_) {
       return false;
     }
   }
@@ -431,32 +431,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   void _autoPrevious() {
     if (!_autoMode || !mounted) return;
-    _autoTimer?.cancel();
-    _tts.stop();
-    _googleTts.stop();
-    _previousSentence();
-    setState(() {
-      _autoShowingTranslation = false;
-      _ttsPlaying = false;
-      _autoSpeakingSource = false;
-      _ttsRepeatsDone = 0;
-    });
-    _scheduleTranslationReveal();
+    _autoPlaylist.previous();
   }
 
   void _autoNext() {
     if (!_autoMode || !mounted) return;
-    _autoTimer?.cancel();
-    _tts.stop();
-    _googleTts.stop();
-    _nextSentence();
-    setState(() {
-      _autoShowingTranslation = false;
-      _ttsPlaying = false;
-      _autoSpeakingSource = false;
-      _ttsRepeatsDone = 0;
-    });
-    _scheduleTranslationReveal();
+    _autoPlaylist.next();
   }
 
   Future<String?> _getTranslation() async {
@@ -644,25 +624,60 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   // ── Auto mode ─────────────────────────────────────────────────────────────
 
   Future<void> _startAuto() async {
-    if (_currentSentences().isEmpty) return;
-    setState(() {
-      _autoMode = true;
-      _autoShowingTranslation = false;
-      _showTranslation = false;
-      _translatedSentence = null;
-      _sourceSentence = _currentSource();
-    });
-    // Request battery-optimization exemption (no-op if already granted).
-    await SentenceBankForegroundService.requestBatteryExemption();
-    // Start the foreground service so Android keeps the process alive.
-    final err = await SentenceBankForegroundService.start(subject: _selectedSubject ?? 'Sentence Bank');
-    final running = await SentenceBankForegroundService.isRunning();
-    debugPrint('[gTTS] foreground service start err=$err running=$running');
-    if (err != null && mounted) {
-      lpSnack(context, 'Background mode unavailable: $err', 6000);
+    final sents = _currentSentences();
+    if (sents.isEmpty) return;
+    final state = context.read<AppState>();
+    final settings = state.settings;
+
+    // Build the sentence list in play order (shuffle order if on).
+    final order = _shuffledOrder;
+    final ordered = [for (var o = 0; o < sents.length; o++) sents[order != null ? order[o % order.length] : o]];
+
+    setState(() { _autoMode = true; _autoPreparing = true; });
+    if (mounted) lpSnack(context, 'Preparing audio…', 4000);
+
+    try {
+      // Translate the whole subject (cached entries return instantly).
+      final translations = await _service.translateBatch(
+        sentences: ordered,
+        sourceLang: _bank!.language,
+        targetLang: settings.targetLanguage,
+        apiKey: settings.aiApiKey,
+      );
+      if (!mounted || !_autoMode) return;
+      _autoTranslations = translations;
+
+      final locale = _localeForLanguage(settings.targetLanguage);
+      final lang = (locale ?? 'el').toLowerCase().split(RegExp('[-_]')).first;
+
+      _autoOrdinalSub?.cancel();
+      _autoOrdinalSub = _autoPlaylist.currentOrdinalStream.listen(_onAutoOrdinal);
+
+      await _autoPlaylist.start(
+        translations: translations,
+        langCode: lang,
+        repeatCount: state.sentenceBankResolvedTtsRepeatCount,
+        preDelaySec: 0,
+        repeatDelaySec: settings.sentenceBankTtsRepeatDelayOverride ?? _bank?.ttsRepeatDelay ?? 1,
+        postDelaySec: _bank?.autoPostTtsDelay ?? 2,
+        startOrdinal: _sentenceIndex,
+      );
+      if (mounted) setState(() => _autoPreparing = false);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _autoPreparing = false; _autoMode = false; });
+      lpSnack(context, 'Could not start auto mode: $e', 6000);
     }
-    _loadCachedTranslationForCurrent();
-    _scheduleTranslationReveal();
+  }
+
+  void _onAutoOrdinal(int ord) {
+    if (!mounted) return;
+    setState(() {
+      _sentenceIndex = ord;
+      _sourceSentence = _currentSource();
+      _translatedSentence = ord < _autoTranslations.length ? _autoTranslations[ord] : null;
+      _showTranslation = true;
+    });
   }
 
   void _stopAuto() {
@@ -670,14 +685,28 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     _autoTimer = null;
     _tts.stop();
     _googleTts.stop();
+    _autoOrdinalSub?.cancel();
+    _autoOrdinalSub = null;
+    _autoPlaylist.stop();
+    _saveAutoPosition();
     setState(() {
       _autoMode = false;
-      _autoShowingTranslation = false;
+      _autoPreparing = false;
       _ttsPlaying = false;
       _autoSpeakingSource = false;
       _ttsRepeatsDone = 0;
     });
     SentenceBankForegroundService.stop();
+  }
+
+  void _saveAutoPosition() {
+    final subject = _selectedSubject;
+    if (subject == null) return;
+    final sents = _currentSentences();
+    if (sents.isEmpty) return;
+    final order = _shuffledOrder;
+    final actual = order != null ? order[_sentenceIndex % order.length] : _sentenceIndex % sents.length;
+    _service.savePosition(subject, actual);
   }
 
   void _scheduleTranslationReveal() {
@@ -712,7 +741,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       if (!waited) return; // auto cancelled or unmounted
     }
 
-    setState(() { _showTranslation = true; _autoShowingTranslation = true; });
+    setState(() { _showTranslation = true; });
     _ttsRepeatsDone = 0; // reset for this sentence
 
     if (translation != null && _ttsSupported()) {
@@ -762,7 +791,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   void _autoAdvance() {
     if (!_autoMode || !mounted) return;
     _nextSentence();
-    setState(() => _autoShowingTranslation = false);
     _scheduleTranslationReveal();
   }
 
@@ -771,6 +799,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     _autoTimer?.cancel();
     _tts.stop();
     _googleTts.dispose();
+    _autoOrdinalSub?.cancel();
+    _autoPlaylist.dispose();
     if (_autoMode) SentenceBankForegroundService.stop();
     super.dispose();
   }
@@ -1039,13 +1069,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            _autoShowingTranslation
-                ? (_ttsPlaying
-                    ? 'Speaking translation…'
-                    : (_ttsRepeatsDone < repeatCount - 1
-                        ? 'Repeating soon…'
-                        : 'Next sentence soon…'))
-                : 'Showing source…',
+            _autoPreparing ? 'Preparing audio…' : 'Auto mode — playing (works when locked)',
             style: Theme.of(context).textTheme.bodySmall,
             textAlign: TextAlign.center,
           ),

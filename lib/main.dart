@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 // import 'package:katalaveno/services/notification_service.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 import 'package:provider/provider.dart';
 import 'package:timezone/data/latest.dart' as tz;
 // import 'package:timezone/timezone.dart' as tz;
@@ -14,6 +15,14 @@ final GlobalKey<NavigatorState> rootNavKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Background audio (native media session) for Sentence Bank auto mode — this
+  // is what survives a screen lock. Must run before runApp.
+  await JustAudioBackground.init(
+    androidNotificationChannelId: 'com.grylpa.katalaveno.audio',
+    androidNotificationChannelName: 'Sentence Bank',
+    androidNotificationOngoing: true,
+  );
 
   // Foreground service for Sentence Bank auto mode (Android only, no-op elsewhere).
   FlutterForegroundTask.initCommunicationPort();

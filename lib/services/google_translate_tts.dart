@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -41,34 +41,21 @@ class GoogleTranslateTts {
   bool _completedThisPlay = false;
   bool _audioContextSet = false;
 
-  // TEMP diagnostics: trace the audio path so we can see why playback is
-  // silent when the screen is locked. Remove once the background issue is fixed.
-  static void _log(String msg) => debugPrint('[gTTS] $msg');
-
   GoogleTranslateTts() {
-    _player.onPlayerComplete.listen((_) => _fireComplete('onPlayerComplete'));
+    _player.onPlayerComplete.listen((_) => _fireComplete());
     // Some Android builds don't reliably emit onPlayerComplete for byte
     // sources, which would stall any playback chain (e.g. auto mode). Arm a
     // duration-based fallback once the clip is prepared; whichever fires
     // first wins, and _fireComplete dedupes so onComplete runs exactly once.
     _player.onDurationChanged.listen((d) {
-      _log('onDurationChanged: ${d.inMilliseconds}ms');
       if (_completedThisPlay || d <= Duration.zero) return;
       _completeWatchdog?.cancel();
-      _completeWatchdog = Timer(d + const Duration(milliseconds: 800),
-          () => _fireComplete('watchdog'));
+      _completeWatchdog = Timer(d + const Duration(milliseconds: 800), _fireComplete);
     });
-    _player.onPlayerStateChanged.listen((s) => _log('state: $s'));
-    _player.onLog.listen((m) => _log('player.onLog: $m'),
-        onError: (e) => _log('player.onLog ERROR: $e'));
   }
 
-  void _fireComplete(String reason) {
-    if (_completedThisPlay) {
-      _log('complete ignored (already fired) via $reason');
-      return;
-    }
-    _log('complete via $reason');
+  void _fireComplete() {
+    if (_completedThisPlay) return;
     _completedThisPlay = true;
     _completeWatchdog?.cancel();
     _completeWatchdog = null;
@@ -142,21 +129,26 @@ class GoogleTranslateTts {
 
     final mem = _memCache[key];
     if (mem != null) {
-      _log('fetch: memory hit (${mem.length}b)');
       unawaited(_touch(diskFile));
       return mem;
     }
 
     if (await diskFile.exists()) {
       final bytes = await diskFile.readAsBytes();
-      _log('fetch: disk hit (${bytes.length}b)');
       _rememberInMemory(key, bytes);
       unawaited(_touch(diskFile));
       return bytes;
     }
 
-    _log('fetch: network request…');
+    final bytes = await _downloadBytes(text, langCode);
+    _rememberInMemory(key, bytes);
 
+    // Persist to disk in the background — don't make playback wait on it.
+    unawaited(_persistToDisk(diskFile, bytes));
+    return bytes;
+  }
+
+  Future<Uint8List> _downloadBytes(String text, String langCode) async {
     final uri = Uri.https(_kHost, _kPath, {
       'ie': 'UTF-8',
       'q': text,
@@ -170,17 +162,26 @@ class GoogleTranslateTts {
       'Referer': 'https://translate.google.com/',
     }).timeout(const Duration(seconds: 8));
 
-    _log('fetch: network status ${resp.statusCode} (${resp.bodyBytes.length}b)');
     if (resp.statusCode != 200) {
       throw Exception('Google TTS HTTP ${resp.statusCode}');
     }
+    return resp.bodyBytes;
+  }
 
-    final bytes = resp.bodyBytes;
-    _rememberInMemory(key, bytes);
-
-    // Persist to disk in the background — don't make playback wait on it.
-    unawaited(_persistToDisk(diskFile, bytes));
-    return bytes;
+  /// Ensures the MP3 for [text]/[langCode] exists on disk and returns its path.
+  /// Downloads (and caches) if missing. Used to build native playlists, which
+  /// need file URIs rather than in-memory bytes. Throws on network failure.
+  Future<String> ensureFile(String text, String langCode) async {
+    final diskFile = await _diskFileFor(text, langCode);
+    if (await diskFile.exists()) {
+      unawaited(_touch(diskFile));
+      return diskFile.path;
+    }
+    final bytes = await _downloadBytes(text, langCode);
+    await _evictIfFull();
+    await diskFile.writeAsBytes(bytes, flush: true);
+    _diskCount = (_diskCount ?? 0) + 1;
+    return diskFile.path;
   }
 
   Future<void> _touch(File file) async {
@@ -201,8 +202,6 @@ class GoogleTranslateTts {
     }
   }
 
-  /// Fetches and plays [text] in [langCode]. Throws on failure (caller can
-  /// fall back to another TTS).
   /// Configures the player for reliable background/locked playback.
   ///
   /// `focus: mixWithOthers` maps to Android `AUDIOFOCUS_NONE`, so audioplayers
@@ -219,20 +218,15 @@ class GoogleTranslateTts {
     );
   }
 
+  /// Fetches and plays [text] in [langCode]. Throws on failure (caller can
+  /// fall back to another TTS).
   Future<void> speak(String text, String langCode) async {
-    _log('speak: "${text.length > 40 ? '${text.substring(0, 40)}…' : text}" [$langCode]');
     final bytes = await _fetch(text, langCode);
     await _ensureAudioContext();
     await _player.stop();
     _completeWatchdog?.cancel();
     _completedThisPlay = false;
-    try {
-      await _player.play(BytesSource(bytes, mimeType: 'audio/mpeg'));
-      _log('play() returned ok');
-    } catch (e) {
-      _log('play() THREW: $e');
-      rethrow;
-    }
+    await _player.play(BytesSource(bytes, mimeType: 'audio/mpeg'));
   }
 
   Future<void> stop() {
