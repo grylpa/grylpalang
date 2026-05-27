@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -37,8 +37,42 @@ class GoogleTranslateTts {
 
   void Function()? onComplete;
 
+  Timer? _completeWatchdog;
+  bool _completedThisPlay = false;
+  bool _audioContextSet = false;
+
+  // TEMP diagnostics: trace the audio path so we can see why playback is
+  // silent when the screen is locked. Remove once the background issue is fixed.
+  static void _log(String msg) => debugPrint('[gTTS] $msg');
+
   GoogleTranslateTts() {
-    _player.onPlayerComplete.listen((_) => onComplete?.call());
+    _player.onPlayerComplete.listen((_) => _fireComplete('onPlayerComplete'));
+    // Some Android builds don't reliably emit onPlayerComplete for byte
+    // sources, which would stall any playback chain (e.g. auto mode). Arm a
+    // duration-based fallback once the clip is prepared; whichever fires
+    // first wins, and _fireComplete dedupes so onComplete runs exactly once.
+    _player.onDurationChanged.listen((d) {
+      _log('onDurationChanged: ${d.inMilliseconds}ms');
+      if (_completedThisPlay || d <= Duration.zero) return;
+      _completeWatchdog?.cancel();
+      _completeWatchdog = Timer(d + const Duration(milliseconds: 800),
+          () => _fireComplete('watchdog'));
+    });
+    _player.onPlayerStateChanged.listen((s) => _log('state: $s'));
+    _player.onLog.listen((m) => _log('player.onLog: $m'),
+        onError: (e) => _log('player.onLog ERROR: $e'));
+  }
+
+  void _fireComplete(String reason) {
+    if (_completedThisPlay) {
+      _log('complete ignored (already fired) via $reason');
+      return;
+    }
+    _log('complete via $reason');
+    _completedThisPlay = true;
+    _completeWatchdog?.cancel();
+    _completeWatchdog = null;
+    onComplete?.call();
   }
 
   /// Returns true if the [text] fits in a single endpoint request.
@@ -108,16 +142,20 @@ class GoogleTranslateTts {
 
     final mem = _memCache[key];
     if (mem != null) {
+      _log('fetch: memory hit (${mem.length}b)');
       unawaited(_touch(diskFile));
       return mem;
     }
 
     if (await diskFile.exists()) {
       final bytes = await diskFile.readAsBytes();
+      _log('fetch: disk hit (${bytes.length}b)');
       _rememberInMemory(key, bytes);
       unawaited(_touch(diskFile));
       return bytes;
     }
+
+    _log('fetch: network request…');
 
     final uri = Uri.https(_kHost, _kPath, {
       'ie': 'UTF-8',
@@ -132,6 +170,7 @@ class GoogleTranslateTts {
       'Referer': 'https://translate.google.com/',
     }).timeout(const Duration(seconds: 8));
 
+    _log('fetch: network status ${resp.statusCode} (${resp.bodyBytes.length}b)');
     if (resp.statusCode != 200) {
       throw Exception('Google TTS HTTP ${resp.statusCode}');
     }
@@ -164,15 +203,49 @@ class GoogleTranslateTts {
 
   /// Fetches and plays [text] in [langCode]. Throws on failure (caller can
   /// fall back to another TTS).
-  Future<void> speak(String text, String langCode) async {
-    final bytes = await _fetch(text, langCode);
-    await _player.stop();
-    await _player.play(BytesSource(bytes, mimeType: 'audio/mpeg'));
+  /// Configures the player for reliable background/locked playback.
+  ///
+  /// `focus: mixWithOthers` maps to Android `AUDIOFOCUS_NONE`, so audioplayers
+  /// registers no focus listener and never auto-pauses on focus loss. This is
+  /// the key to surviving a screen lock: with the default `gain` focus, the
+  /// system (and flutter_tts grabbing focus for each source line) triggers a
+  /// focus-loss that pauses our player and it never resumes. `stayAwake` keeps
+  /// the player's wake mode on as a belt-and-suspenders measure. Set once.
+  Future<void> _ensureAudioContext() async {
+    if (_audioContextSet) return;
+    _audioContextSet = true;
+    await _player.setAudioContext(
+      AudioContextConfig(stayAwake: true, focus: AudioContextConfigFocus.mixWithOthers).build(),
+    );
   }
 
-  Future<void> stop() => _player.stop();
+  Future<void> speak(String text, String langCode) async {
+    _log('speak: "${text.length > 40 ? '${text.substring(0, 40)}…' : text}" [$langCode]');
+    final bytes = await _fetch(text, langCode);
+    await _ensureAudioContext();
+    await _player.stop();
+    _completeWatchdog?.cancel();
+    _completedThisPlay = false;
+    try {
+      await _player.play(BytesSource(bytes, mimeType: 'audio/mpeg'));
+      _log('play() returned ok');
+    } catch (e) {
+      _log('play() THREW: $e');
+      rethrow;
+    }
+  }
 
-  Future<void> dispose() => _player.dispose();
+  Future<void> stop() {
+    // Manual stop: suppress completion so a late event doesn't advance auto mode.
+    _completeWatchdog?.cancel();
+    _completedThisPlay = true;
+    return _player.stop();
+  }
+
+  Future<void> dispose() {
+    _completeWatchdog?.cancel();
+    return _player.dispose();
+  }
 
   /// Deletes every cached MP3 on disk and clears the in-memory cache.
   /// Used by the "Clear audio cache" button in Settings.

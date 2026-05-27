@@ -93,6 +93,12 @@ class SentenceBankForegroundService {
     return result is ServiceRequestFailure ? result.error.toString() : null;
   }
 
+  /// Whether the foreground service is currently running. Used for diagnostics.
+  static Future<bool> isRunning() async {
+    if (!_isAndroid) return false;
+    return FlutterForegroundTask.isRunningService;
+  }
+
   /// Stop the foreground service and dismiss the notification.
   static Future<void> stop() async {
     if (!_isAndroid) return;

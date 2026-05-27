@@ -156,12 +156,16 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (locale == null) return false;
     final lang = locale.toLowerCase().split(RegExp('[-_]')).first;
     if (!_googleTtsLanguages.contains(lang)) return false;
-    if (!_googleTts.canSpeak(text)) return false;
+    if (!_googleTts.canSpeak(text)) {
+      debugPrint('[gTTS] skip: text too long (${text.length}) — using flutter_tts');
+      return false;
+    }
     try {
       await _tts.stop();
       await _googleTts.speak(text, lang);
       return true;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[gTTS] google speak failed, falling back to flutter_tts: $e');
       return false;
     }
   }
@@ -652,6 +656,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     await SentenceBankForegroundService.requestBatteryExemption();
     // Start the foreground service so Android keeps the process alive.
     final err = await SentenceBankForegroundService.start(subject: _selectedSubject ?? 'Sentence Bank');
+    final running = await SentenceBankForegroundService.isRunning();
+    debugPrint('[gTTS] foreground service start err=$err running=$running');
     if (err != null && mounted) {
       lpSnack(context, 'Background mode unavailable: $err', 6000);
     }
