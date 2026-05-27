@@ -38,4 +38,4 @@ Other Flutter targets (iOS, web, desktop) are not included. To add one, run `flu
 
 ## License
 
-MIT (or your preferred license — replace this line).
+TBD
