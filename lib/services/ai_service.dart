@@ -38,26 +38,69 @@ class AiService {
   //   }
   // }
 
-  static Future<http.Response> queryModel(String apiKey, body) async {
+  // A 429 whose RetryInfo asks us to wait longer than this is a daily-cap
+  // exhaustion (per-minute windows recover in <60s). We don't block on those —
+  // we return the 429 so the caller can surface "try again later".
+  static const Duration _maxBackoff = Duration(seconds: 60);
+
+  /// Parses `error.details[].retryDelay` (e.g. "27s") from a 429 body.
+  static Duration? _retryDelayFrom(String body) {
     try {
-      final uri = Uri.parse('$_modelEndpoint?key=$apiKey');
-      final resp = await http.post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
-      );
-
-      if (resp.statusCode == 429) {
-        final uri2 = Uri.parse('$_fallbackModelEndpoint?key=$apiKey');
-        final resp2 = await http.post(
-          uri2,
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode(body),
-        );
-        return resp2;
+      final details = (jsonDecode(body)['error']?['details'] as List?) ?? const [];
+      for (final d in details) {
+        if (d is Map && (d['@type']?.toString().contains('RetryInfo') ?? false)) {
+          final m = RegExp(r'^(\d+(?:\.\d+)?)s$').firstMatch((d['retryDelay'] ?? '').toString().trim());
+          if (m != null) return Duration(milliseconds: (double.parse(m.group(1)!) * 1000).round());
+        }
       }
+    } catch (_) {}
+    return null;
+  }
 
-      return resp;
+  /// True if a 429 body is a *daily* quota exhaustion (vs a per-minute window).
+  /// Waiting it out is pointless, so callers should bail immediately.
+  static bool isDailyQuota(String body) {
+    try {
+      final details = (jsonDecode(body)['error']?['details'] as List?) ?? const [];
+      for (final d in details) {
+        if (d is Map && (d['@type']?.toString().contains('QuotaFailure') ?? false)) {
+          for (final v in (d['violations'] as List?) ?? const []) {
+            final id = '${(v as Map)['quotaId'] ?? ''} ${v['quotaMetric'] ?? ''}'.toLowerCase();
+            if (id.contains('perday') || id.contains('per_day') || id.contains('per day')) return true;
+          }
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  static Future<http.Response> _post(String endpoint, String apiKey, body) =>
+      http.post(Uri.parse('$endpoint?key=$apiKey'),
+          headers: {'Content-Type': 'application/json'}, body: jsonEncode(body));
+
+  static Future<http.Response> queryModel(String apiKey, body, {int maxRetries = 3}) async {
+    try {
+      var resp = await _post(_modelEndpoint, apiKey, body);
+      if (resp.statusCode != 429) return resp;
+
+      // Primary is rate-limited — try the lite model.
+      var fb = await _post(_fallbackModelEndpoint, apiKey, body);
+      if (fb.statusCode != 429) return fb;
+
+      // Daily cap on both models: waiting won't help today — return now.
+      if (isDailyQuota(fb.body) || isDailyQuota(resp.body)) return fb;
+
+      // Per-minute window: honor RetryInfo with bounded backoff (recovers <60s).
+      for (var attempt = 0; attempt < maxRetries; attempt++) {
+        final delay = _retryDelayFrom(fb.body) ?? _retryDelayFrom(resp.body);
+        if (delay == null || delay > _maxBackoff) return fb;
+        await Future.delayed(delay + const Duration(milliseconds: 300));
+        resp = await _post(_modelEndpoint, apiKey, body);
+        if (resp.statusCode != 429) return resp;
+        fb = await _post(_fallbackModelEndpoint, apiKey, body);
+        if (fb.statusCode != 429) return fb;
+      }
+      return fb;
     } catch (e) {
       // Keep the real cause (SocketException, HandshakeException, etc.)
       throw AiException('Network/HTTP failure calling Gemini: $e');

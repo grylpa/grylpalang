@@ -76,6 +76,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   // Signature of the last built playlist; if unchanged we resume instead of
   // rebuilding (avoids the "Preparing audio…" delay on every play).
   String? _preparedSig;
+  // Signature (subject/order/target language) the cached _autoTranslations were
+  // computed for — so a voice change reuses them instead of re-translating.
+  String? _translationsSig;
   // Languages where flutter_tts gives flat/wrong intonation for questions.
   // For these, we prefer the Google Translate audio endpoint.
   static const _googleTtsLanguages = {'el'};
@@ -333,10 +336,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         },
       );
       if (failed > 0 && mounted) {
-        lpSnack(context, '$failed sentence${failed == 1 ? '' : 's'} could not be translated — tap "Clear translations" in Settings to retry.', 8000);
+        lpSnack(context, "$failed sentence${failed == 1 ? '' : 's'} couldn't be translated.", 5000);
       }
     } catch (e) {
-      if (mounted) lpSnack(context, 'Batch translation error: $e', 6000);
+      if (mounted) lpSnack(context, e.toString().replaceFirst('Exception: ', ''), 5000);
     } finally {
       if (mounted) {
         setState(() { _batchRunning = false; _batchDone = 0; _batchTotal = 0; });
@@ -430,7 +433,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     } catch (e) {
       if (!mounted) return null;
       setState(() => _translating = false);
-      lpSnack(context, 'Translation failed: $e', 6000);
+      lpSnack(context, e.toString().replaceFirst('Exception: ', ''), 5000);
       return null;
     }
   }
@@ -464,7 +467,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     } catch (e) {
       if (!mounted) return;
       setState(() => _ttsPlaying = false);
-      lpSnack(context, 'TTS failed: $e', 6000);
+      lpSnack(context, 'Audio playback failed.', 4000);
     }
   }
 
@@ -598,15 +601,30 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
     setState(() { _autoPreparing = true; _prepDone = 0; _prepTotal = ordered.length; });
     try {
-      // Translate the whole subject (cached entries return instantly).
-      final translations = await _service.translateBatch(
-        sentences: ordered,
-        sourceLang: _bank!.language,
-        targetLang: settings.targetLanguage,
-        apiKey: settings.aiApiKey,
-      );
-      if (!mounted) return;
-      _autoTranslations = translations;
+      // Translations depend only on subject/order/target language — not the
+      // voice — so reuse the in-memory set across voice changes instead of
+      // re-hitting the translator.
+      final translationsSig =
+          [_selectedSubject, _lastReloadToken, order?.join(','), settings.targetLanguage].join('¦');
+      List<String> translations;
+      if (translationsSig == _translationsSig && _autoTranslations.length == ordered.length) {
+        translations = _autoTranslations;
+      } else {
+        translations = await _service.translateBatch(
+          sentences: ordered,
+          sourceLang: _bank!.language,
+          targetLang: settings.targetLanguage,
+          apiKey: settings.aiApiKey,
+        );
+        if (!mounted) return;
+        _autoTranslations = translations;
+        // Only mark this set reusable if every sentence actually translated;
+        // otherwise leave it unset so the failed ones retry on the next build.
+        final anyFailed = [
+          for (var i = 0; i < ordered.length; i++) translations[i].trim() == ordered[i].trim()
+        ].any((f) => f);
+        _translationsSig = anyFailed ? null : translationsSig;
+      }
 
       // Pre-render every clip to a file so the native playlist survives lock:
       // translation per target language, gendered/voiced source per source language.
@@ -617,7 +635,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       final sourcePaths = <String?>[];
       for (var o = 0; o < translations.length; o++) {
         if (!mounted) return;
-        translationPaths.add(await _ensureClipFile(translations[o], settings.targetLanguage, gender));
+        // If the translation failed (equals the source), speak it with the
+        // source-language engine instead of the target — never read English
+        // text with a Greek accent.
+        final failed = translations[o].trim() == ordered[o].trim();
+        final clipLang = failed ? _bank!.language : settings.targetLanguage;
+        translationPaths.add(await _ensureClipFile(translations[o], clipLang, gender, preferVoice: failed ? sourceVoice : ''));
         sourcePaths.add(speakSource
             ? await _ensureClipFileOrNull(ordered[o], _bank!.language, gender, preferVoice: sourceVoice)
             : null);
@@ -644,7 +667,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     } catch (e) {
       if (!mounted) return;
       setState(() { _autoPreparing = false; });
-      lpSnack(context, 'Could not prepare audio: $e', 6000);
+      lpSnack(context, 'Could not prepare audio.', 4000);
     }
   }
 
@@ -984,8 +1007,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           ListTile(
             dense: true,
             title: const Text('Automatic'),
-            trailing: current.isEmpty ? const Icon(Icons.check) : null,
-            onTap: () { Navigator.pop(ctx); _selectVoiceAndGenerate(''); },
+            trailing: current.isEmpty
+                ? const Icon(Icons.check)
+                : IconButton(
+                    icon: const Icon(Icons.download_outlined),
+                    tooltip: 'Use & download',
+                    onPressed: () { Navigator.pop(ctx); _selectVoiceAndGenerate(''); },
+                  ),
           ),
           if (byLocale.isEmpty)
             const Padding(
@@ -1009,8 +1037,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                         onPressed: () => _previewVoice(v),
                       ),
                       title: Text('Voice ${i + 1}'),
-                      trailing: Icon(id == current ? Icons.check : Icons.download_outlined),
-                      onTap: () { Navigator.pop(ctx); _selectVoiceAndGenerate(id); },
+                      trailing: id == current
+                          ? const Icon(Icons.check)
+                          : IconButton(
+                              icon: const Icon(Icons.download_outlined),
+                              tooltip: 'Use & download',
+                              onPressed: () { Navigator.pop(ctx); _selectVoiceAndGenerate(id); },
+                            ),
                     );
                   }),
               ],
@@ -1168,7 +1201,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           Text(
             _autoPreparing
                 ? 'Preparing audio… $_prepDone/$_prepTotal'
-                : 'Auto mode — playing (works when locked)',
+                : 'Auto mode — playing',
             style: Theme.of(context).textTheme.bodySmall,
             textAlign: TextAlign.center,
           ),

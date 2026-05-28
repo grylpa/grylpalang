@@ -2,10 +2,31 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/timezone.dart' as tz;
 import 'package:yaml/yaml.dart';
 
 import '../models/sentence_bank.dart';
 import 'ai_service.dart';
+
+/// Builds the daily-quota message with the reset time (midnight US-Pacific, the
+/// Gemini free-tier reset) expressed in the device's local timezone.
+String _dailyQuotaMessage() {
+  try {
+    final la = tz.getLocation('America/Los_Angeles');
+    final nowLa = tz.TZDateTime.now(la);
+    final local = tz.TZDateTime(la, nowLa.year, nowLa.month, nowLa.day + 1).toLocal();
+    final now = DateTime.now();
+    final hh = local.hour.toString().padLeft(2, '0');
+    final mm = local.minute.toString().padLeft(2, '0');
+    final dayDiff = DateTime(local.year, local.month, local.day)
+        .difference(DateTime(now.year, now.month, now.day))
+        .inDays;
+    final when = dayDiff <= 0 ? ' today' : (dayDiff == 1 ? ' tomorrow' : '');
+    return 'Daily Gemini quota reached — resets around $hh:$mm$when.';
+  } catch (_) {
+    return 'Daily Gemini quota reached — try again later.';
+  }
+}
 
 /// Loads, parses, and manages translations for the Sentence Bank.
 class SentenceBankService {
@@ -199,8 +220,13 @@ class SentenceBankService {
       apiKey: apiKey,
     );
 
-    cache[key] = translation;
-    await _saveCache(cache);
+    // Only cache a real translation — a result equal to the source means the AI
+    // failed/echoed; caching it would poison the cache (and get spoken by the
+    // target-language TTS). Leave it uncached so it retries next time.
+    if (translation.trim() != sentence.trim()) {
+      cache[key] = translation;
+      await _saveCache(cache);
+    }
     return translation;
   }
 
@@ -228,18 +254,33 @@ class SentenceBankService {
     }
 
     if (toFetch.isNotEmpty) {
-      final fetched = await _translateBatchViaAi(
-        sentences: [for (final i in toFetch) sentences[i]],
-        sourceLang: sourceLang,
-        targetLang: targetLang,
-        apiKey: apiKey,
-      );
-
-      for (var fi = 0; fi < toFetch.length; fi++) {
-        final origIdx = toFetch[fi];
-        final translation = fi < fetched.length ? fetched[fi] : sentences[origIdx];
-        results[origIdx] = translation;
-        cache[_cacheKey(sourceLang, targetLang, sentences[origIdx])] = translation;
+      // Translate in chunks — sending a whole large subject in one request
+      // overflows the model and the tail comes back untranslated.
+      const chunkSize = 30;
+      for (var start = 0; start < toFetch.length; start += chunkSize) {
+        final chunkIdx = toFetch.sublist(start, (start + chunkSize).clamp(0, toFetch.length));
+        List<String> fetched;
+        try {
+          fetched = await _translateBatchViaAi(
+            sentences: [for (final i in chunkIdx) sentences[i]],
+            sourceLang: sourceLang,
+            targetLang: targetLang,
+            apiKey: apiKey,
+          );
+        } catch (_) {
+          // Auto mode must keep playing — fall back to source for this chunk
+          // (it gets read by the source voice and retried on the next build).
+          fetched = [for (final i in chunkIdx) sentences[i]];
+        }
+        for (var ci = 0; ci < chunkIdx.length; ci++) {
+          final origIdx = chunkIdx[ci];
+          final translation = ci < fetched.length ? fetched[ci] : sentences[origIdx];
+          results[origIdx] = translation;
+          // Don't cache failures (translation == source); leave them to retry.
+          if (translation.trim() != sentences[origIdx].trim()) {
+            cache[_cacheKey(sourceLang, targetLang, sentences[origIdx])] = translation;
+          }
+        }
       }
 
       await _saveCache(cache);
@@ -392,16 +433,13 @@ $numberedList
 
     final resp = await AiService.queryModel(apiKey, body);
     if (resp.statusCode != 200) {
-      // Fall back to translating one by one.
-      final result = <String>[];
-      for (final s in sentences) {
-        try {
-          result.add(await _translateViaAi(sentence: s, sourceLang: sourceLang, targetLang: targetLang, apiKey: apiKey));
-        } catch (_) {
-          result.add(s);
-        }
+      // Surface the real cause instead of silently returning the source text.
+      // queryModel already backs off on transient (per-minute) 429s, so a 429
+      // here means the daily free-tier cap is exhausted.
+      if (resp.statusCode == 429) {
+        throw Exception(_dailyQuotaMessage());
       }
-      return result;
+      throw Exception('Translation failed (Gemini error ${resp.statusCode}).');
     }
 
     try {
