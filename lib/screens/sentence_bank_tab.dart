@@ -1,8 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -59,10 +65,16 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   final _tts = FlutterTts();
   final _googleTts = GoogleTranslateTts();
-  late final _autoPlaylist = AutoPlaylistController(_googleTts);
+  final _autoPlaylist = AutoPlaylistController();
   StreamSubscription<int>? _autoOrdinalSub;
+  Directory? _synthDir;
   List<String> _autoTranslations = [];
   bool _autoPreparing = false;
+  int _prepDone = 0;
+  int _prepTotal = 0;
+  // Signature of the last built playlist; if unchanged we resume instead of
+  // rebuilding (avoids the "Preparing audio…" delay on every play).
+  String? _preparedSig;
   // Languages where flutter_tts gives flat/wrong intonation for questions.
   // For these, we prefer the Google Translate audio endpoint.
   static const _googleTtsLanguages = {'el'};
@@ -85,17 +97,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   int _batchTotal = 0;
   bool _batchRunning = false;
 
-  // Voice strategy: null = not checked yet, true = real gendered voice available
-  // for the target language (use it for both), false = use pitch for both.
-  bool? _useRealVoice;
 
-  // Auto-mode
+  // Auto-mode (driven by the native playlist in AutoPlaylistController).
   bool _autoMode = false;
-  Timer? _autoTimer;
-  bool _ttsPlaying = false;
-  bool _autoSpeakingSource = false; // true while speaking the source sentence in auto mode
-  bool _announcingRetry = false;    // true while speaking the "retrying translation" announcement
-  int _ttsRepeatsDone = 0; // how many times we've played the translation TTS this sentence
+  bool _ttsPlaying = false; // tracks the manual single-sentence speaker button
 
   late SentenceBankService _service;
   int _lastReloadToken = -1;
@@ -110,65 +115,26 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   void initState() {
     super.initState();
     _tts.setCompletionHandler(_onTtsComplete);
-    _googleTts.onComplete = _onTtsComplete;
     _tts.setCancelHandler(() {
       if (!mounted) return;
       setState(() => _ttsPlaying = false);
     });
+    // Manual single-clip playback (speaker button) finishes → re-enable it.
+    // Auto playback loops, so it never reaches `completed`.
+    _autoPlaylist.playerStateStream.listen((s) {
+      if (s.processingState == ProcessingState.completed && mounted && !_autoMode) {
+        setState(() => _ttsPlaying = false);
+      }
+    });
   }
 
+  // Completion of the manual single-sentence speaker button (flutter_tts).
+  // Auto mode no longer uses this — it's driven entirely by the native playlist.
   void _onTtsComplete() {
     if (!mounted) return;
     setState(() => _ttsPlaying = false);
-    if (!_autoMode) return;
-    if (_announcingRetry) {
-      // Retry announcement finished — the backoff timer is already running.
-      setState(() => _announcingRetry = false);
-      return;
-    }
-    if (_autoSpeakingSource) {
-      // Source TTS finished — pause then reveal translation.
-      setState(() => _autoSpeakingSource = false);
-      _autoTimer?.cancel();
-      final override = context.read<AppState>().settings.sentenceBankSourcePauseOverride;
-      final pause = override ?? _bank?.autoSourcePause ?? 1;
-      _autoTimer = Timer(Duration(seconds: pause), _autoRevealTranslation);
-    } else {
-      // Translation TTS finished — check if we need to repeat.
-      final repeatCount = context.read<AppState>().sentenceBankResolvedTtsRepeatCount;
-      if (_ttsRepeatsDone < repeatCount - 1) {
-        // More repeats needed — wait tts_repeat_delay then speak again.
-        _autoTimer?.cancel();
-        final override = context.read<AppState>().settings.sentenceBankTtsRepeatDelayOverride;
-        final delay = override ?? _bank?.ttsRepeatDelay ?? 1;
-        _autoTimer = Timer(Duration(seconds: delay), () {
-          if (!_autoMode || !mounted) return;
-          _ttsRepeatsDone++;
-          _speakTranslation();
-        });
-      } else {
-        _scheduleNextInAuto();
-      }
-    }
   }
 
-  /// Speaks [text] using Google Translate's audio endpoint when the locale's
-  /// language is in [_googleTtsLanguages] (e.g. Greek — flutter_tts gives flat
-  /// intonation on questions). Falls back to flutter_tts on any failure.
-  /// Returns true if Google TTS was used and started playing successfully.
-  Future<bool> _speakViaGoogleIfPreferred(String text, String? locale) async {
-    if (locale == null) return false;
-    final lang = locale.toLowerCase().split(RegExp('[-_]')).first;
-    if (!_googleTtsLanguages.contains(lang)) return false;
-    if (!_googleTts.canSpeak(text)) return false;
-    try {
-      await _tts.stop();
-      await _googleTts.speak(text, lang);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
 
   @override
   void didChangeDependencies() {
@@ -477,48 +443,23 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   // ── TTS ───────────────────────────────────────────────────────────────────
 
-  /// Returns true if a real gendered voice exists for the *target* language.
-  /// Result is cached for the session so it's only probed once.
-  Future<bool> _resolveVoiceStrategy(String? targetLocale, String gender) async {
-    if (_useRealVoice != null) return _useRealVoice!;
-    _useRealVoice = await _applyGenderedVoice(targetLocale, gender);
-    // If we applied a voice above, undo it — we just wanted the boolean result.
-    // The actual voice will be applied again before speaking.
-    return _useRealVoice!;
-  }
-
   Future<void> _speakTranslation() async {
     if (!_ttsSupported()) {
       lpSnack(context, 'TTS is not available on this platform.', 4000);
       return;
     }
     final translation = await _getTranslation();
-    if (translation == null) return;
-    if (!mounted) return;
+    if (translation == null || !mounted) return;
 
     final settings = context.read<AppState>().settings;
-    final locale = _localeForLanguage(settings.targetLanguage);
-    final gender = settings.sentenceBankVoiceGender;
-
     try {
       setState(() => _ttsPlaying = true);
-      if (await _speakViaGoogleIfPreferred(translation, locale)) return;
-
       await _tts.stop();
-      if (locale != null) await _tts.setLanguage(locale);
-      await _tts.setSpeechRate(0.45);
-
-      // Use a real voice only if the target language actually has one —
-      // so source and target always sound like the same "gender strategy".
-      final useReal = await _resolveVoiceStrategy(locale, gender);
-      if (useReal) {
-        await _applyGenderedVoice(locale, gender);
-        await _tts.setPitch(1.0);
-      } else {
-        await _tts.setPitch(gender == 'male' ? (_bank?.ttsPitchLow ?? 0.85) : (_bank?.ttsPitchHigh ?? 1.1));
-      }
-
-      await _tts.speak(translation);
+      // Use the exact same clip the playlist would (Greek → Google MP3, others →
+      // synthesized) so the manual speaker and auto mode always sound identical.
+      final path = await _ensureClipFile(translation, settings.targetLanguage, settings.sentenceBankVoiceGender);
+      await _autoPlaylist.playSingle(path);
+      _preparedSig = null; // single playback clears the loaded playlist
     } catch (e) {
       if (!mounted) return;
       setState(() => _ttsPlaying = false);
@@ -535,6 +476,18 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
       final langPrefix = locale?.substring(0, 2).toLowerCase();
 
+      // Region preference: the device's own region first (if it speaks the
+      // source language — e.g. an en-GB phone), otherwise US → UK(GB) → AU.
+      final regionPrefs = <String>[];
+      final dev = WidgetsBinding.instance.platformDispatcher.locale;
+      if (langPrefix != null && dev.languageCode.toLowerCase() == langPrefix) {
+        final c = (dev.countryCode ?? '').toLowerCase();
+        if (c.isNotEmpty) regionPrefs.add(c);
+      }
+      for (final r in const ['us', 'gb', 'au']) {
+        if (!regionPrefs.contains(r)) regionPrefs.add(r);
+      }
+
       // Score each voice: higher = better match.
       Map? best;
       int bestScore = -1;
@@ -548,7 +501,14 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         // Must match the target language.
         if (langPrefix != null && !vLocale.startsWith(langPrefix)) continue;
 
-        int score = 0;
+        int score = 1; // any matching-language voice is a valid candidate
+
+        // Region preference dominates (×100) so accent wins over the gender
+        // heuristic, which only breaks ties within the same region.
+        final rp = vLocale.split(RegExp('[-_]'));
+        final vRegion = rp.length > 1 ? rp[1] : '';
+        final ri = regionPrefs.indexOf(vRegion);
+        if (ri >= 0) score += (regionPrefs.length - ri) * 100;
 
         // Explicit gender field (most reliable).
         if (vGender == gender) score += 10;
@@ -594,48 +554,48 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
   }
 
-  Future<void> _speakSource() async {
-    final src = _sourceSentence;
-    if (src == null || !_ttsSupported()) return;
-    final settings = context.read<AppState>().settings;
-    final sourceLang = _bank?.language ?? '';
-    final sourceLocale = _localeForLanguage(sourceLang);
-    final targetLocale = _localeForLanguage(settings.targetLanguage);
-    final gender = settings.sentenceBankVoiceGender;
-    try {
-      await _tts.stop();
-      if (sourceLocale != null) await _tts.setLanguage(sourceLocale);
-      await _tts.setSpeechRate(0.45);
-      // Mirror the same voice strategy as the target language for consistency.
-      final useReal = await _resolveVoiceStrategy(targetLocale, gender);
-      if (useReal) {
-        await _applyGenderedVoice(sourceLocale, gender);
-        await _tts.setPitch(1.0);
-      } else {
-        await _tts.setPitch(gender == 'male' ? (_bank?.ttsPitchLow ?? 0.85) : (_bank?.ttsPitchHigh ?? 1.1));
-      }
-      setState(() { _ttsPlaying = true; _autoSpeakingSource = true; });
-      await _tts.speak(src);
-    } catch (e) {
-      setState(() { _ttsPlaying = false; _autoSpeakingSource = false; });
-    }
-  }
-
   // ── Auto mode ─────────────────────────────────────────────────────────────
 
   Future<void> _startAuto() async {
+    if (_currentSentences().isEmpty) return;
+    setState(() => _autoMode = true);
+    await _buildOrResumePlaylist(play: true);
+  }
+
+  /// Resumes the loaded playlist if nothing changed; otherwise (re)builds every
+  /// clip file and the native playlist. When [play] is false it builds but does
+  /// not start playback — used by the voice picker so generation happens at
+  /// selection time and the next Play is instant.
+  Future<void> _buildOrResumePlaylist({required bool play}) async {
     final sents = _currentSentences();
     if (sents.isEmpty) return;
     final state = context.read<AppState>();
     final settings = state.settings;
-
-    // Build the sentence list in play order (shuffle order if on).
     final order = _shuffledOrder;
     final ordered = [for (var o = 0; o < sents.length; o++) sents[order != null ? order[o % order.length] : o]];
 
-    setState(() { _autoMode = true; _autoPreparing = true; });
-    if (mounted) lpSnack(context, 'Preparing audio…', 4000);
+    final sig = [
+      _selectedSubject,
+      _lastReloadToken,
+      order?.join(','),
+      settings.targetLanguage,
+      _bank?.language,
+      settings.sentenceBankSpeakSource,
+      settings.sentenceBankSourceVoice,
+      settings.sentenceBankVoiceGender,
+      state.sentenceBankResolvedTtsRepeatCount,
+      settings.sentenceBankSourcePauseOverride ?? _bank?.autoSourcePause,
+      settings.sentenceBankTtsRepeatDelayOverride ?? _bank?.ttsRepeatDelay,
+      _bank?.autoPostTtsDelay,
+    ].join('¦');
 
+    if (sig == _preparedSig && _autoPlaylist.isLoaded) {
+      _autoOrdinalSub ??= _autoPlaylist.currentOrdinalStream.listen(_onAutoOrdinal);
+      if (play) await _autoPlaylist.resumeAt(_sentenceIndex);
+      return;
+    }
+
+    setState(() { _autoPreparing = true; _prepDone = 0; _prepTotal = ordered.length; });
     try {
       // Translate the whole subject (cached entries return instantly).
       final translations = await _service.translateBatch(
@@ -644,29 +604,46 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         targetLang: settings.targetLanguage,
         apiKey: settings.aiApiKey,
       );
-      if (!mounted || !_autoMode) return;
+      if (!mounted) return;
       _autoTranslations = translations;
 
-      final locale = _localeForLanguage(settings.targetLanguage);
-      final lang = (locale ?? 'el').toLowerCase().split(RegExp('[-_]')).first;
+      // Pre-render every clip to a file so the native playlist survives lock:
+      // translation per target language, gendered/voiced source per source language.
+      final speakSource = settings.sentenceBankSpeakSource;
+      final gender = settings.sentenceBankVoiceGender;
+      final sourceVoice = settings.sentenceBankSourceVoice;
+      final translationPaths = <String>[];
+      final sourcePaths = <String?>[];
+      for (var o = 0; o < translations.length; o++) {
+        if (!mounted) return;
+        translationPaths.add(await _ensureClipFile(translations[o], settings.targetLanguage, gender));
+        sourcePaths.add(speakSource
+            ? await _ensureClipFileOrNull(ordered[o], _bank!.language, gender, preferVoice: sourceVoice)
+            : null);
+        if (mounted) setState(() => _prepDone = o + 1);
+      }
+      if (!mounted) return;
 
       _autoOrdinalSub?.cancel();
       _autoOrdinalSub = _autoPlaylist.currentOrdinalStream.listen(_onAutoOrdinal);
 
       await _autoPlaylist.start(
         translations: translations,
-        langCode: lang,
+        translationPaths: translationPaths,
+        sourcePaths: sourcePaths,
         repeatCount: state.sentenceBankResolvedTtsRepeatCount,
-        preDelaySec: 0,
+        sourcePauseSec: settings.sentenceBankSourcePauseOverride ?? _bank?.autoSourcePause ?? 1,
         repeatDelaySec: settings.sentenceBankTtsRepeatDelayOverride ?? _bank?.ttsRepeatDelay ?? 1,
         postDelaySec: _bank?.autoPostTtsDelay ?? 2,
         startOrdinal: _sentenceIndex,
+        autoPlay: play && _autoMode,
       );
+      _preparedSig = sig;
       if (mounted) setState(() => _autoPreparing = false);
     } catch (e) {
       if (!mounted) return;
-      setState(() { _autoPreparing = false; _autoMode = false; });
-      lpSnack(context, 'Could not start auto mode: $e', 6000);
+      setState(() { _autoPreparing = false; });
+      lpSnack(context, 'Could not prepare audio: $e', 6000);
     }
   }
 
@@ -681,10 +658,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   }
 
   void _stopAuto() {
-    _autoTimer?.cancel();
-    _autoTimer = null;
     _tts.stop();
-    _googleTts.stop();
     _autoOrdinalSub?.cancel();
     _autoOrdinalSub = null;
     _autoPlaylist.stop();
@@ -693,8 +667,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _autoMode = false;
       _autoPreparing = false;
       _ttsPlaying = false;
-      _autoSpeakingSource = false;
-      _ttsRepeatsDone = 0;
     });
     SentenceBankForegroundService.stop();
   }
@@ -709,96 +681,132 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     _service.savePosition(subject, actual);
   }
 
-  void _scheduleTranslationReveal() {
-    _autoTimer?.cancel();
-    final speakSource = context.read<AppState>().settings.sentenceBankSpeakSource;
-    if (speakSource && _ttsSupported()) {
-      // Speak source immediately — no initial delay.
-      // Completion handler waits autoSourcePause then calls _autoRevealTranslation.
-      _speakSource();
-    } else {
-      final delay = _bank?.autoShowDelay ?? 3;
-      _autoTimer = Timer(Duration(seconds: delay), _autoRevealTranslation);
-    }
+  String _ttsLangCode(String languageName) {
+    final locale = _localeForLanguage(languageName);
+    return (locale ?? 'en').toLowerCase().split(RegExp('[-_]')).first;
   }
 
-  Future<void> _autoRevealTranslation() async {
-    if (!_autoMode || !mounted) return;
-
-    // Retry on transient failures (e.g. 429) so a walking user doesn't get
-    // skipped sentences. Backoff: 15s, 30s, 60s, 120s. Bail out if auto stops.
-    String? translation;
-    const backoffs = [3, 6, 12, 24];
-    for (var attempt = 0; attempt <= backoffs.length; attempt++) {
-      translation = await _getTranslation();
-      if (!mounted || !_autoMode) return;
-      if (translation != null) break;
-      if (attempt == backoffs.length) break;
-      await _announceRetry();
-      if (!mounted || !_autoMode) return;
-      _autoTimer?.cancel();
-      final waited = await _waitInAuto(backoffs[attempt]);
-      if (!waited) return; // auto cancelled or unmounted
-    }
-
-    setState(() { _showTranslation = true; });
-    _ttsRepeatsDone = 0; // reset for this sentence
-
-    if (translation != null && _ttsSupported()) {
-      await _speakTranslation();
-    } else {
-      _scheduleNextInAuto();
-    }
+  Future<Directory> _ensureSynthDir() async {
+    if (_synthDir != null) return _synthDir!;
+    final base = await getApplicationSupportDirectory();
+    final dir = Directory('${base.path}/tts_synth_cache');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    _synthDir = dir;
+    return dir;
   }
 
-  /// Speaks "Retrying translation" in the source-language TTS so a walking
-  /// user knows the silence is because of a transient failure, not a stuck app.
-  Future<void> _announceRetry() async {
-    if (!_ttsSupported()) return;
-    final sourceLocale = _localeForLanguage(_bank?.language ?? '');
+  /// Produces a playable audio file for [text] in [languageName]. Greek-class
+  /// languages use Google TTS (question intonation); others use native
+  /// flutter_tts synthesis (offline, gendered). Throws on failure.
+  Future<String> _ensureClipFile(String text, String languageName, String gender, {String preferVoice = ''}) async {
+    final code = _ttsLangCode(languageName);
+    if (_googleTtsLanguages.contains(code)) {
+      return _googleTts.ensureFile(text, code);
+    }
+    return _synthToFile(text, _localeForLanguage(languageName), code, gender, preferVoice);
+  }
+
+  /// Like [_ensureClipFile] but returns null instead of throwing — used for the
+  /// optional source clip so one failure just drops that source.
+  Future<String?> _ensureClipFileOrNull(String text, String languageName, String gender, {String preferVoice = ''}) async {
     try {
-      await _tts.stop();
-      if (sourceLocale != null) await _tts.setLanguage(sourceLocale);
+      return await _ensureClipFile(text, languageName, gender, preferVoice: preferVoice);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Renders [text] to a WAV via flutter_tts, cached on disk so it's only
+  /// synthesized once per (voice/gender, text). When [preferVoice] is a chosen
+  /// voice ("name__SEP__locale"), that exact voice is used; otherwise it falls
+  /// back to picking a voice by [gender].
+  Future<String> _synthToFile(String text, String? locale, String code, String gender, String preferVoice) async {
+    final dir = await _ensureSynthDir();
+    final voiceKey = preferVoice.isNotEmpty ? preferVoice : gender;
+    // Version token; bump to force re-synthesis (p1 = leading silence,
+    // p2 = device-region-first Automatic voice selection, p3 = 500ms lead).
+    final key = sha1.convert(utf8.encode('$code|$voiceKey|p3|$text')).toString();
+    final file = File('${dir.path}/$key.wav');
+    if (await file.exists()) return file.path;
+
+    await _tts.stop();
+    final parts = preferVoice.split('__SEP__');
+    if (preferVoice.isNotEmpty && parts.length == 2) {
+      if (parts[1].isNotEmpty) await _tts.setLanguage(parts[1]);
+      await _tts.setVoice({'name': parts[0], 'locale': parts[1]});
       await _tts.setSpeechRate(0.45);
       await _tts.setPitch(1.0);
-      if (!mounted || !_autoMode) return;
-      setState(() { _announcingRetry = true; _ttsPlaying = true; });
-      await _tts.speak('Retrying translation');
-    } catch (_) {
-      if (!mounted) return;
-      setState(() { _announcingRetry = false; _ttsPlaying = false; });
+    } else {
+      if (locale != null) await _tts.setLanguage(locale);
+      await _tts.setSpeechRate(0.45);
+      final hasVoice = await _applyGenderedVoice(locale, gender);
+      await _tts.setPitch(
+        hasVoice ? 1.0 : (gender == 'male' ? (_bank?.ttsPitchLow ?? 0.85) : (_bank?.ttsPitchHigh ?? 1.1)),
+      );
     }
+    await _tts.awaitSynthCompletion(true);
+    await _tts.synthesizeToFile(text, file.path, true);
+    if (!await file.exists()) throw Exception('TTS synthesis produced no file');
+    // The audio path drops the first frames when a clip starts — worst on a
+    // cold start right after (re)generating files. Pad leading silence so it
+    // eats silence, not speech.
+    await _padWavStart(file, 500);
+    return file.path;
   }
 
-  /// Sleeps for [seconds] while in auto mode. Returns false if auto mode
-  /// was cancelled or the widget was unmounted during the wait.
-  Future<bool> _waitInAuto(int seconds) async {
-    final completer = Completer<bool>();
-    _autoTimer = Timer(Duration(seconds: seconds), () {
-      if (!completer.isCompleted) completer.complete(mounted && _autoMode);
-    });
-    final ok = await completer.future;
-    return ok;
-  }
+  /// Inserts [ms] of leading silence into a PCM WAV (matching its own format),
+  /// so the start of the clip isn't clipped on playback. Best-effort.
+  Future<void> _padWavStart(File f, int ms) async {
+    try {
+      final b = await f.readAsBytes();
+      if (b.length < 44) return;
+      if (String.fromCharCodes(b.sublist(0, 4)) != 'RIFF' ||
+          String.fromCharCodes(b.sublist(8, 12)) != 'WAVE') return;
+      int u32(int o) => b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
+      int u16(int o) => b[o] | (b[o + 1] << 8);
 
-  void _scheduleNextInAuto() {
-    if (!_autoMode || !mounted) return;
-    _autoTimer?.cancel();
-    final delay = _bank?.autoPostTtsDelay ?? 2;
-    _autoTimer = Timer(Duration(seconds: delay), _autoAdvance);
-  }
+      var pos = 12;
+      var channels = 1, rate = 22050, bits = 16, dataPos = -1, dataLen = 0;
+      while (pos + 8 <= b.length) {
+        final id = String.fromCharCodes(b.sublist(pos, pos + 4));
+        final size = u32(pos + 4);
+        final body = pos + 8;
+        if (id == 'fmt ') {
+          channels = u16(body + 2);
+          rate = u32(body + 4);
+          bits = u16(body + 14);
+        } else if (id == 'data') {
+          dataPos = body;
+          dataLen = size;
+          break;
+        }
+        pos = body + size + (size & 1);
+      }
+      if (dataPos < 0 || rate <= 0 || channels <= 0 || bits <= 0) return;
 
-  void _autoAdvance() {
-    if (!_autoMode || !mounted) return;
-    _nextSentence();
-    _scheduleTranslationReveal();
+      final silenceLen = (rate * ms ~/ 1000) * channels * (bits ~/ 8);
+      final out = BytesBuilder()
+        ..add(b.sublist(0, dataPos))
+        ..add(Uint8List(silenceLen))
+        ..add(b.sublist(dataPos));
+      final bytes = out.toBytes();
+      void put32(int o, int v) {
+        bytes[o] = v & 0xff;
+        bytes[o + 1] = (v >> 8) & 0xff;
+        bytes[o + 2] = (v >> 16) & 0xff;
+        bytes[o + 3] = (v >> 24) & 0xff;
+      }
+      put32(4, bytes.length - 8); // RIFF chunk size
+      put32(dataPos - 4, dataLen + silenceLen); // data chunk size
+      await f.writeAsBytes(bytes, flush: true);
+    } catch (_) {
+      // Padding is best-effort; on any parse issue leave the file as-is.
+    }
   }
 
   @override
   void dispose() {
-    _autoTimer?.cancel();
     _tts.stop();
-    _googleTts.dispose();
     _autoOrdinalSub?.cancel();
     _autoPlaylist.dispose();
     if (_autoMode) SentenceBankForegroundService.stop();
@@ -853,8 +861,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
 
     final bank = _bank!;
-    final settings = context.select<AppState, ({String targetLang, String gender, int repeatCount})>(
-      (s) => (targetLang: s.settings.targetLanguage, gender: s.settings.sentenceBankVoiceGender, repeatCount: s.sentenceBankResolvedTtsRepeatCount),
+    final settings = context.select<AppState, ({String targetLang, int repeatCount})>(
+      (s) => (targetLang: s.settings.targetLanguage, repeatCount: s.sentenceBankResolvedTtsRepeatCount),
     );
 
     return Padding(
@@ -862,13 +870,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Top row: subject picker + gender toggle.
+          // Top row: subject picker + source-voice picker.
           Row(
             children: [
               Expanded(child: _buildSubjectPicker(bank)),
               if (_ttsSupported()) ...[
                 const SizedBox(width: 8),
-                _buildGenderToggle(settings.gender),
+                _buildVoiceButton(),
               ],
             ],
           ),
@@ -924,28 +932,135 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     );
   }
 
-  /// A compact single icon button that toggles between lower and higher pitch voice.
-  Widget _buildGenderToggle(String gender) {
-    final isLow = gender == 'male';
-    final state = context.read<AppState>();
-    final color = isLow
-        ? Theme.of(context).colorScheme.primary
-        : Theme.of(context).colorScheme.onSurfaceVariant;
+  /// Opens a picker of the device's installed voices for the source language
+  /// (e.g. English US/UK/AU, male/female). The chosen voice is used to
+  /// pre-render the source clips; changing it re-synthesizes them.
+  Widget _buildVoiceButton() {
     return IconButton.outlined(
-      tooltip: isLow ? 'Voice: Lower pitch (tap to switch)' : 'Voice: Higher pitch (tap to switch)',
-      icon: Icon(Icons.graphic_eq, color: color),
-      style: isLow
-          ? IconButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-              side: BorderSide(color: Theme.of(context).colorScheme.primary),
-            )
-          : null,
-      onPressed: () {
-        setState(() => _useRealVoice = null); // re-probe on next speech
-        final s = state.settings;
-        state.updateSettings(s.copyWith(sentenceBankVoiceGender: isLow ? 'female' : 'male'));
-      },
+      tooltip: 'Source voice',
+      icon: const Icon(Icons.record_voice_over_outlined),
+      onPressed: _autoMode ? null : _showVoicePicker,
     );
+  }
+
+  Future<void> _showVoicePicker() async {
+    final state = context.read<AppState>();
+    final sourceLang = _bank?.language ?? 'English';
+    final code = _ttsLangCode(sourceLang);
+
+    List<dynamic> raw;
+    try {
+      raw = (await _tts.getVoices) as List? ?? const [];
+    } catch (_) {
+      raw = const [];
+    }
+    final matches = <Map>[
+      for (final v in raw)
+        if (v is Map && (v['locale'] as String? ?? '').toLowerCase().startsWith(code)) v,
+    ]..sort((a, b) => '${a['locale']}'.compareTo('${b['locale']}'));
+
+    // Group by locale; within a locale the device exposes no reliable gender,
+    // so voices are just numbered (preview to tell them apart).
+    final byLocale = <String, List<Map>>{};
+    for (final v in matches) {
+      byLocale.putIfAbsent((v['locale'] as String? ?? '').toString(), () => []).add(v);
+    }
+
+    // Order sections the same way Automatic picks: device region first (if it
+    // speaks this language), then US → UK(GB) → AU, then the rest alphabetically.
+    final regionPrefs = <String>[];
+    final dev = WidgetsBinding.instance.platformDispatcher.locale;
+    if (dev.languageCode.toLowerCase() == code && (dev.countryCode ?? '').isNotEmpty) {
+      regionPrefs.add(dev.countryCode!.toLowerCase());
+    }
+    for (final r in const ['us', 'gb', 'au']) {
+      if (!regionPrefs.contains(r)) regionPrefs.add(r);
+    }
+    int regionRank(String locale) {
+      final rp = locale.toLowerCase().split(RegExp('[-_]'));
+      final i = regionPrefs.indexOf(rp.length > 1 ? rp[1] : '');
+      return i >= 0 ? i : regionPrefs.length;
+    }
+    final orderedLocales = byLocale.keys.toList()
+      ..sort((a, b) {
+        final r = regionRank(a).compareTo(regionRank(b));
+        return r != 0 ? r : a.compareTo(b);
+      });
+
+    if (!mounted) return;
+    final current = state.settings.sentenceBankSourceVoice;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text('Source voice — $sourceLang'),
+        children: [
+          // const Padding(
+          //   padding: EdgeInsets.fromLTRB(24, 0, 24, 8),
+          //   child: Text('▶ previews · tap a row to use it (regenerates audio now)',
+          //       style: TextStyle(fontSize: 12)),
+          // ),
+          ListTile(
+            dense: true,
+            title: const Text('Automatic'),
+            trailing: current.isEmpty ? const Icon(Icons.check) : null,
+            onTap: () { Navigator.pop(ctx); _selectVoiceAndGenerate(''); },
+          ),
+          if (byLocale.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('No installed voices found for this language.'),
+            ),
+          for (final loc in orderedLocales)
+            ExpansionTile(
+              title: Text('$loc  (${byLocale[loc]!.length})'),
+              children: [
+                for (var i = 0; i < byLocale[loc]!.length; i++)
+                  Builder(builder: (_) {
+                    final v = byLocale[loc]![i];
+                    final id = '${v['name']}__SEP__$loc';
+                    return ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.only(left: 32, right: 16),
+                      leading: IconButton(
+                        icon: const Icon(Icons.play_arrow_outlined),
+                        tooltip: 'Preview',
+                        onPressed: () => _previewVoice(v),
+                      ),
+                      title: Text('Voice ${i + 1}'),
+                      trailing: Icon(id == current ? Icons.check : Icons.download_outlined),
+                      onTap: () { Navigator.pop(ctx); _selectVoiceAndGenerate(id); },
+                    );
+                  }),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Speaks a sample of the current source sentence in voice [v] (live, instant)
+  /// so the user can compare voices before committing.
+  Future<void> _previewVoice(Map v) async {
+    try {
+      await _autoPlaylist.stop();
+      await _tts.stop();
+      final loc = (v['locale'] as String? ?? '').toString();
+      if (loc.isNotEmpty) await _tts.setLanguage(loc);
+      await _tts.setVoice({'name': (v['name'] as String? ?? ''), 'locale': loc});
+      await _tts.setSpeechRate(0.45);
+      await _tts.setPitch(1.0);
+      await _tts.speak(_currentSource() ?? 'This is a sample sentence.');
+    } catch (_) {}
+  }
+
+  /// Commits [voiceId] ('' = automatic) and generates the audio immediately so
+  /// the next Play is instant.
+  Future<void> _selectVoiceAndGenerate(String voiceId) async {
+    final state = context.read<AppState>();
+    await state.saveSettingsOnly(state.settings.copyWith(sentenceBankSourceVoice: voiceId));
+    _preparedSig = null; // force a rebuild with the new voice
+    await _buildOrResumePlaylist(play: false);
+    if (mounted) lpSnack(context, 'Voice ready.', 2500);
   }
 
   Widget _buildSentenceCard(String targetLang) {
@@ -1069,7 +1184,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            _autoPreparing ? 'Preparing audio…' : 'Auto mode — playing (works when locked)',
+            _autoPreparing
+                ? 'Preparing audio… $_prepDone/$_prepTotal'
+                : 'Auto mode — playing (works when locked)',
             style: Theme.of(context).textTheme.bodySmall,
             textAlign: TextAlign.center,
           ),
@@ -1082,6 +1199,17 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (_autoPreparing) ...[
+          Row(
+            children: [
+              const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+              const SizedBox(width: 12),
+              Text('Preparing audio… $_prepDone/$_prepTotal',
+                  style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
         Row(
           children: [
             Expanded(

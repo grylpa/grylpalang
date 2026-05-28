@@ -3,66 +3,31 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
-/// Thin TTS using the unofficial Google Translate audio endpoint.
-/// Returns MP3 bytes for short snippets and plays them via audioplayers.
+/// Fetches and caches MP3 audio from the unofficial Google Translate audio
+/// endpoint. Used for the target language (e.g. Greek), whose offline system
+/// voice gives flat, statement-like intonation for questions — Google's audio
+/// handles it properly. The endpoint is unofficial — it may rate-limit (429) or
+/// change without notice — so callers should fall back to flutter_tts on failure.
 ///
-/// Why we use it: Android's offline Greek voices give a flat, statement-like
-/// intonation for question marks. Google Translate's audio handles it
-/// properly. The endpoint is not officially supported — it may rate-limit
-/// (HTTP 429) or change without notice — so callers should fall back to
-/// flutter_tts on failure.
-///
-/// MP3s are cached persistently on disk (capped at [_kMaxDiskEntries]) so
-/// they never need to be re-fetched. A small in-memory cache speeds up
-/// immediate replay.
+/// This is a pure fetch/cache service; playback is done by the caller (via
+/// just_audio). MP3s are cached persistently on disk (capped at
+/// [_kMaxDiskEntries]) so they're only fetched once.
 class GoogleTranslateTts {
   static const _kHost = 'translate.google.com';
   static const _kPath = '/translate_tts';
   static const _kMaxLen = 200; // endpoint truncates ~200 chars per request
-  static const _kMaxMemoryEntries = 50;
   static const _kMaxDiskEntries = 10000;
   static const _kEvictionBatch = 200; // delete this many at a time when over cap
   static const _kCacheDirName = 'google_tts_cache';
 
-  final _player = AudioPlayer();
-  final _memCache = <String, Uint8List>{};
-
   Future<Directory>? _diskDirInit;
   int? _diskCount;
 
-  void Function()? onComplete;
-
-  Timer? _completeWatchdog;
-  bool _completedThisPlay = false;
-  bool _audioContextSet = false;
-
-  GoogleTranslateTts() {
-    _player.onPlayerComplete.listen((_) => _fireComplete());
-    // Some Android builds don't reliably emit onPlayerComplete for byte
-    // sources, which would stall any playback chain (e.g. auto mode). Arm a
-    // duration-based fallback once the clip is prepared; whichever fires
-    // first wins, and _fireComplete dedupes so onComplete runs exactly once.
-    _player.onDurationChanged.listen((d) {
-      if (_completedThisPlay || d <= Duration.zero) return;
-      _completeWatchdog?.cancel();
-      _completeWatchdog = Timer(d + const Duration(milliseconds: 800), _fireComplete);
-    });
-  }
-
-  void _fireComplete() {
-    if (_completedThisPlay) return;
-    _completedThisPlay = true;
-    _completeWatchdog?.cancel();
-    _completeWatchdog = null;
-    onComplete?.call();
-  }
-
-  /// Returns true if the [text] fits in a single endpoint request.
+  /// Returns true if [text] fits in a single endpoint request.
   bool canSpeak(String text) => text.length <= _kMaxLen;
 
   static String _hashKey(String text, String langCode) =>
@@ -111,43 +76,6 @@ class GoogleTranslateTts {
     _diskCount = count - deleted;
   }
 
-  void _rememberInMemory(String key, Uint8List bytes) {
-    _memCache[key] = bytes;
-    if (_memCache.length > _kMaxMemoryEntries) {
-      _memCache.remove(_memCache.keys.first);
-    }
-  }
-
-  /// Fetches MP3 bytes for [text] in [langCode] (e.g. `'el'`).
-  /// Order: in-memory → disk → network. Throws on network failure.
-  ///
-  /// On every cache hit we bump the disk file's mtime so eviction is LRU
-  /// (least-recently-used) rather than FIFO by creation date.
-  Future<Uint8List> _fetch(String text, String langCode) async {
-    final key = _hashKey(text, langCode);
-    final diskFile = await _diskFileFor(text, langCode);
-
-    final mem = _memCache[key];
-    if (mem != null) {
-      unawaited(_touch(diskFile));
-      return mem;
-    }
-
-    if (await diskFile.exists()) {
-      final bytes = await diskFile.readAsBytes();
-      _rememberInMemory(key, bytes);
-      unawaited(_touch(diskFile));
-      return bytes;
-    }
-
-    final bytes = await _downloadBytes(text, langCode);
-    _rememberInMemory(key, bytes);
-
-    // Persist to disk in the background — don't make playback wait on it.
-    unawaited(_persistToDisk(diskFile, bytes));
-    return bytes;
-  }
-
   Future<Uint8List> _downloadBytes(String text, String langCode) async {
     final uri = Uri.https(_kHost, _kPath, {
       'ie': 'UTF-8',
@@ -169,8 +97,7 @@ class GoogleTranslateTts {
   }
 
   /// Ensures the MP3 for [text]/[langCode] exists on disk and returns its path.
-  /// Downloads (and caches) if missing. Used to build native playlists, which
-  /// need file URIs rather than in-memory bytes. Throws on network failure.
+  /// Downloads (and caches) if missing. Throws on network failure.
   Future<String> ensureFile(String text, String langCode) async {
     final diskFile = await _diskFileFor(text, langCode);
     if (await diskFile.exists()) {
@@ -184,6 +111,7 @@ class GoogleTranslateTts {
     return diskFile.path;
   }
 
+  /// Bumps the file's mtime so disk eviction is LRU rather than FIFO.
   Future<void> _touch(File file) async {
     try {
       await file.setLastModified(DateTime.now());
@@ -192,57 +120,7 @@ class GoogleTranslateTts {
     }
   }
 
-  Future<void> _persistToDisk(File file, Uint8List bytes) async {
-    try {
-      await _evictIfFull();
-      await file.writeAsBytes(bytes, flush: false);
-      _diskCount = (_diskCount ?? 0) + 1;
-    } catch (_) {
-      // Caching failures are non-fatal.
-    }
-  }
-
-  /// Configures the player for reliable background/locked playback.
-  ///
-  /// `focus: mixWithOthers` maps to Android `AUDIOFOCUS_NONE`, so audioplayers
-  /// registers no focus listener and never auto-pauses on focus loss. This is
-  /// the key to surviving a screen lock: with the default `gain` focus, the
-  /// system (and flutter_tts grabbing focus for each source line) triggers a
-  /// focus-loss that pauses our player and it never resumes. `stayAwake` keeps
-  /// the player's wake mode on as a belt-and-suspenders measure. Set once.
-  Future<void> _ensureAudioContext() async {
-    if (_audioContextSet) return;
-    _audioContextSet = true;
-    await _player.setAudioContext(
-      AudioContextConfig(stayAwake: true, focus: AudioContextConfigFocus.mixWithOthers).build(),
-    );
-  }
-
-  /// Fetches and plays [text] in [langCode]. Throws on failure (caller can
-  /// fall back to another TTS).
-  Future<void> speak(String text, String langCode) async {
-    final bytes = await _fetch(text, langCode);
-    await _ensureAudioContext();
-    await _player.stop();
-    _completeWatchdog?.cancel();
-    _completedThisPlay = false;
-    await _player.play(BytesSource(bytes, mimeType: 'audio/mpeg'));
-  }
-
-  Future<void> stop() {
-    // Manual stop: suppress completion so a late event doesn't advance auto mode.
-    _completeWatchdog?.cancel();
-    _completedThisPlay = true;
-    return _player.stop();
-  }
-
-  Future<void> dispose() {
-    _completeWatchdog?.cancel();
-    return _player.dispose();
-  }
-
-  /// Deletes every cached MP3 on disk and clears the in-memory cache.
-  /// Used by the "Clear audio cache" button in Settings.
+  /// Deletes every cached MP3 on disk. Used by the "Clear audio cache" button.
   static Future<void> clearAllCachedAudio() async {
     final base = await getApplicationSupportDirectory();
     final dir = Directory('${base.path}/$_kCacheDirName');

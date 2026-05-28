@@ -6,8 +6,6 @@ import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'google_translate_tts.dart';
-
 /// Drives Sentence Bank auto mode through a native media session (just_audio +
 /// just_audio_background). The whole subject is pre-built into one playlist of
 /// audio clips + silence gaps; ExoPlayer advances clip-to-clip natively, so
@@ -17,9 +15,6 @@ import 'google_translate_tts.dart';
 /// Milestone A: Greek translation clips only (cached Google-TTS MP3s) + silence
 /// gaps + repeats. The gendered English source is added in a later step.
 class AutoPlaylistController {
-  AutoPlaylistController(this._greekTts);
-
-  final GoogleTranslateTts _greekTts;
   final AudioPlayer _player = AudioPlayer();
 
   // Playlist clip index → ordinal (position of the sentence in the play order
@@ -37,10 +32,36 @@ class AutoPlaylistController {
   /// Emits true/false as playback starts/pauses.
   Stream<bool> get playingStream => _player.playingStream;
 
+  /// Player state (used by the caller to detect manual single-clip completion).
+  Stream<PlayerState> get playerStateStream => _player.playerStateStream;
+
+  /// Plays a single clip (manual speaker button). Reuses the one player so we
+  /// never have two just_audio instances (just_audio_background supports one).
+  /// This clears the loaded playlist, so the next auto-start rebuilds.
+  Future<void> playSingle(String path) async {
+    _clipToOrdinal = [];
+    await _player.stop();
+    await _player.setLoopMode(LoopMode.off);
+    await _player.setAudioSources([_fileSource(path, 'single', 'Katalaveno')]);
+    await _player.play();
+  }
+
   int? get currentOrdinal {
     final i = _player.currentIndex;
     if (i == null || i < 0 || i >= _clipToOrdinal.length) return null;
     return _clipToOrdinal[i];
+  }
+
+  /// True once a playlist has been built. just_audio retains the audio source
+  /// across stop(), so we can resume without rebuilding (see [resumeAt]).
+  bool get isLoaded => _clipToOrdinal.isNotEmpty;
+
+  /// Resumes the already-loaded playlist from [ordinal] without rebuilding —
+  /// instant, no file work. Caller guarantees the playlist is still valid.
+  Future<void> resumeAt(int ordinal) async {
+    if (!isLoaded) return;
+    await _seekToOrdinal(ordinal);
+    await _player.play();
   }
 
   /// Pre-builds the playlist and starts playing from [startOrdinal].
@@ -58,6 +79,7 @@ class AutoPlaylistController {
     required int repeatDelaySec,
     required int postDelaySec,
     int startOrdinal = 0,
+    bool autoPlay = true,
   }) async {
     final dir = await getApplicationSupportDirectory();
     final sources = <AudioSource>[];
@@ -105,7 +127,7 @@ class AutoPlaylistController {
         _ordinalCtrl.add(_clipToOrdinal[i]);
       }
     });
-    await _player.play();
+    if (autoPlay) await _player.play();
   }
 
   Future<void> next() async {

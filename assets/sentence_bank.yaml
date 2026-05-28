@@ -216,8 +216,8 @@ subjects:
       - Did you want this?
       - Are you using this?
 
-    At my places:
-      includes:
-        - At the fishmonger
-        - At the butcher
-        - At the gym
+  At my places:
+    includes:
+      - At the fishmonger
+      - At the butcher
+      - At the gym

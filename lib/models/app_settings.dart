@@ -20,7 +20,8 @@ class AppSettings {
 
   // Sentence Bank settings
   String sentenceBankUrl;           // URL to fetch sentence_bank.yaml (empty = use bundled asset)
-  String sentenceBankVoiceGender;   // 'male' | 'female'
+  String sentenceBankVoiceGender;   // 'male' | 'female' (fallback when no explicit source voice)
+  String sentenceBankSourceVoice;   // chosen source-language TTS voice "namelocale" ('' = auto)
   bool sentenceBankSpeakSource;     // in auto mode, speak the source sentence before the translation
   int? sentenceBankTtsRepeatCountOverride; // overrides tts_repeat_count from YAML (null = use YAML value)
   int? sentenceBankSourcePauseOverride; // overrides auto_source_pause from YAML (null = use YAML value)
@@ -46,6 +47,7 @@ class AppSettings {
     required this.modeReverse,
     required this.sentenceBankUrl,
     required this.sentenceBankVoiceGender,
+    this.sentenceBankSourceVoice = '',
     required this.sentenceBankSpeakSource,
     this.sentenceBankTtsRepeatCountOverride,
     this.sentenceBankSourcePauseOverride,
@@ -72,6 +74,7 @@ class AppSettings {
     bool? modeReverse,
     String? sentenceBankUrl,
     String? sentenceBankVoiceGender,
+    String? sentenceBankSourceVoice,
     bool? sentenceBankSpeakSource,
     Object? sentenceBankTtsRepeatCountOverride = _keep,
     Object? sentenceBankSourcePauseOverride = _keep,
@@ -97,6 +100,7 @@ class AppSettings {
       modeReverse: modeReverse ?? this.modeReverse,
       sentenceBankUrl: sentenceBankUrl ?? this.sentenceBankUrl,
       sentenceBankVoiceGender: sentenceBankVoiceGender ?? this.sentenceBankVoiceGender,
+      sentenceBankSourceVoice: sentenceBankSourceVoice ?? this.sentenceBankSourceVoice,
       sentenceBankSpeakSource: sentenceBankSpeakSource ?? this.sentenceBankSpeakSource,
       sentenceBankTtsRepeatCountOverride: identical(sentenceBankTtsRepeatCountOverride, _keep)
           ? this.sentenceBankTtsRepeatCountOverride
@@ -132,6 +136,7 @@ class AppSettings {
     'modeReverse': modeReverse,
     'sentenceBankUrl': sentenceBankUrl,
     'sentenceBankVoiceGender': sentenceBankVoiceGender,
+    'sentenceBankSourceVoice': sentenceBankSourceVoice,
     'sentenceBankSpeakSource': sentenceBankSpeakSource,
     'sentenceBankTtsRepeatCountOverride': sentenceBankTtsRepeatCountOverride,
     'sentenceBankSourcePauseOverride': sentenceBankSourcePauseOverride,
@@ -165,6 +170,7 @@ class AppSettings {
       modeReverse: json['modeReverse'] as bool? ?? true,
       sentenceBankUrl: json['sentenceBankUrl'] as String? ?? '',
       sentenceBankVoiceGender: json['sentenceBankVoiceGender'] as String? ?? 'female',
+      sentenceBankSourceVoice: json['sentenceBankSourceVoice'] as String? ?? '',
       sentenceBankSpeakSource: json['sentenceBankSpeakSource'] as bool? ?? false,
       // Migration: if the new override key is absent, fall back to the
       // pre-override `sentenceBankTtsRepeatCount` value so the user's choice
