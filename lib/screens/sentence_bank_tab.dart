@@ -336,7 +336,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         },
       );
       if (failed > 0 && mounted) {
-        lpSnack(context, "$failed sentence${failed == 1 ? '' : 's'} couldn't be translated.", 5000);
+        lpSnack(context, "$failed sentence${failed == 1 ? '' : 's'} couldn't be translated yet — tap Translate again to retry.", 6000);
       }
     } catch (e) {
       if (mounted) lpSnack(context, e.toString().replaceFirst('Exception: ', ''), 5000);
@@ -1229,7 +1229,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           children: [
             Expanded(
               child: OutlinedButton.icon(
-                onPressed: (_showTranslation && !_batchRunning) ? null : _onTranslateButton,
+                onPressed: _batchRunning ? null : _onTranslateButton,
                 icon: (_translating || _batchRunning)
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.translate),

@@ -61,7 +61,7 @@ class AutoPlaylistController {
   Future<void> resumeAt(int ordinal) async {
     if (!isLoaded) return;
     await _seekToOrdinal(ordinal);
-    await _player.play();
+    unawaited(_player.play()); // see note in start(): play() completes only on stop
   }
 
   /// Pre-builds the playlist and starts playing from [startOrdinal].
@@ -127,7 +127,10 @@ class AutoPlaylistController {
         _ordinalCtrl.add(_clipToOrdinal[i]);
       }
     });
-    if (autoPlay) await _player.play();
+    // Don't await: with LoopMode.all, play()'s future only completes when
+    // playback stops, which never happens for a looping playlist. Awaiting it
+    // would hang start() and leave the caller's "Preparing…" indicator up.
+    if (autoPlay) unawaited(_player.play());
   }
 
   Future<void> next() async {

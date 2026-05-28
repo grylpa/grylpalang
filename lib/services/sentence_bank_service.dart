@@ -28,6 +28,28 @@ String _dailyQuotaMessage() {
   }
 }
 
+/// A translation failure with a user-readable [message]. [daily] marks the
+/// free-tier daily-quota exhaustion, where retrying further chunks is pointless.
+class TranslationException implements Exception {
+  final String message;
+  final bool daily;
+  TranslationException(this.message, {this.daily = false});
+  @override
+  String toString() => message;
+}
+
+/// Turns a failed Gemini response into a message that means something to a user.
+TranslationException _translationError(int status, String body) {
+  if (status == 429) {
+    final daily = AiService.isDailyQuota(body);
+    return TranslationException(
+      daily ? _dailyQuotaMessage() : 'Gemini is busy right now — wait a moment and try again.',
+      daily: daily,
+    );
+  }
+  return TranslationException('Translation failed — please try again later.');
+}
+
 /// Loads, parses, and manages translations for the Sentence Bank.
 class SentenceBankService {
   static const String _kAssetPath = 'assets/sentence_bank.yaml';
@@ -230,8 +252,64 @@ class SentenceBankService {
     return translation;
   }
 
+  /// Fetches AI translations for [unique] sentences (already de-duplicated and
+  /// known to be uncached), in chunks, writing each success into [cache] and
+  /// persisting after every chunk. Returns a parallel list of results (the
+  /// source text where a translation failed). When [graceful] is false a chunk
+  /// error propagates to the caller (so the manual button can report it);
+  /// otherwise the chunk falls back to source so auto mode keeps playing.
+  Future<List<String>> _fetchUnique({
+    required List<String> unique,
+    required String sourceLang,
+    required String targetLang,
+    required String apiKey,
+    required Map<String, String> cache,
+    required bool graceful,
+    int chunkSize = 30,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    final out = List<String>.filled(unique.length, '');
+    var done = 0;
+    // Chunk requests — sending a whole large subject at once overflows the model
+    // and the tail comes back untranslated.
+    for (var start = 0; start < unique.length; start += chunkSize) {
+      final end = (start + chunkSize).clamp(0, unique.length);
+      final chunk = unique.sublist(start, end);
+      List<String> fetched;
+      try {
+        fetched = await _translateBatchViaAi(
+          sentences: chunk,
+          sourceLang: sourceLang,
+          targetLang: targetLang,
+          apiKey: apiKey,
+        );
+      } catch (e) {
+        // A daily-quota failure means every remaining chunk will fail too, so
+        // the manual run stops and reports it. Any other error (transient 5xx,
+        // a bad chunk) only fails this chunk — skip it and keep going so the
+        // rest of a large run still completes. Auto mode ([graceful]) never
+        // throws: it falls back to source so playback continues.
+        if (!graceful && e is TranslationException && e.daily) rethrow;
+        fetched = [...chunk];
+      }
+      for (var c = 0; c < chunk.length; c++) {
+        final tr = c < fetched.length ? fetched[c] : chunk[c];
+        out[start + c] = tr;
+        // Don't cache failures (translation == source); leave them to retry.
+        if (tr.trim() != chunk[c].trim()) {
+          cache[_cacheKey(sourceLang, targetLang, chunk[c])] = tr;
+        }
+      }
+      await _saveCache(cache);
+      done += chunk.length;
+      onProgress?.call(done, unique.length);
+    }
+    return out;
+  }
+
   /// Translate a batch of sentences, returning cached ones immediately and
-  /// fetching the rest from AI in a single request.
+  /// fetching the rest. Each distinct uncached sentence is fetched only once,
+  /// even if it appears multiple times in [sentences].
   Future<List<String>> translateBatch({
     required List<String> sentences,
     required String sourceLang,
@@ -242,48 +320,33 @@ class SentenceBankService {
 
     final cache = await _loadCache();
     final results = List<String?>.filled(sentences.length, null);
-    final toFetch = <int>[];
+    final perIndexKey = [for (final s in sentences) _cacheKey(sourceLang, targetLang, s)];
 
+    // Collect each distinct uncached sentence once.
+    final unique = <String>[];
+    final keyToUnique = <String, int>{};
     for (var i = 0; i < sentences.length; i++) {
-      final key = _cacheKey(sourceLang, targetLang, sentences[i]);
+      final key = perIndexKey[i];
       if (cache.containsKey(key)) {
         results[i] = cache[key];
-      } else {
-        toFetch.add(i);
+      } else if (!keyToUnique.containsKey(key)) {
+        keyToUnique[key] = unique.length;
+        unique.add(sentences[i]);
       }
     }
 
-    if (toFetch.isNotEmpty) {
-      // Translate in chunks — sending a whole large subject in one request
-      // overflows the model and the tail comes back untranslated.
-      const chunkSize = 30;
-      for (var start = 0; start < toFetch.length; start += chunkSize) {
-        final chunkIdx = toFetch.sublist(start, (start + chunkSize).clamp(0, toFetch.length));
-        List<String> fetched;
-        try {
-          fetched = await _translateBatchViaAi(
-            sentences: [for (final i in chunkIdx) sentences[i]],
-            sourceLang: sourceLang,
-            targetLang: targetLang,
-            apiKey: apiKey,
-          );
-        } catch (_) {
-          // Auto mode must keep playing — fall back to source for this chunk
-          // (it gets read by the source voice and retried on the next build).
-          fetched = [for (final i in chunkIdx) sentences[i]];
-        }
-        for (var ci = 0; ci < chunkIdx.length; ci++) {
-          final origIdx = chunkIdx[ci];
-          final translation = ci < fetched.length ? fetched[ci] : sentences[origIdx];
-          results[origIdx] = translation;
-          // Don't cache failures (translation == source); leave them to retry.
-          if (translation.trim() != sentences[origIdx].trim()) {
-            cache[_cacheKey(sourceLang, targetLang, sentences[origIdx])] = translation;
-          }
-        }
+    if (unique.isNotEmpty) {
+      final fetched = await _fetchUnique(
+        unique: unique,
+        sourceLang: sourceLang,
+        targetLang: targetLang,
+        apiKey: apiKey,
+        cache: cache,
+        graceful: true,
+      );
+      for (var i = 0; i < sentences.length; i++) {
+        results[i] ??= fetched[keyToUnique[perIndexKey[i]]!];
       }
-
-      await _saveCache(cache);
     }
 
     return [for (var i = 0; i < sentences.length; i++) results[i] ?? sentences[i]];
@@ -305,52 +368,53 @@ class SentenceBankService {
   }) async {
     if (sourceLang.toLowerCase() == targetLang.toLowerCase()) return 0;
 
-    final cache = await _loadCache();
-
-    // Collect only uncached sentences (preserving original index for writing back).
-    final uncached = <({int idx, String sentence})>[];
-    for (var i = 0; i < sentences.length; i++) {
-      if (!cache.containsKey(_cacheKey(sourceLang, targetLang, sentences[i]))) {
-        uncached.add((idx: i, sentence: sentences[i]));
-      }
-    }
-
-    if (uncached.isEmpty) {
-      onProgress?.call(0, 0);
-      return 0;
-    }
-
-    final total = uncached.length;
-    var done = 0;
+    // Try the whole set, then automatically retry whatever is still missing a
+    // couple more times before asking the user to tap again — transient 5xx /
+    // "busy" errors usually clear. Successes are cached, so each pass only
+    // targets the leftovers. A daily-quota failure throws straight out (no point
+    // retrying today).
+    const maxAttempts = 3;
     var failed = 0;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      final cache = await _loadCache();
 
-    for (var start = 0; start < uncached.length; start += chunkSize) {
-      final chunk = uncached.sublist(start, (start + chunkSize).clamp(0, uncached.length));
-      final chunkSentences = chunk.map((e) => e.sentence).toList();
+      // Collect each distinct uncached sentence once (a sentence repeated in the
+      // subject is translated a single time).
+      final unique = <String>[];
+      final seen = <String>{};
+      for (final s in sentences) {
+        final key = _cacheKey(sourceLang, targetLang, s);
+        if (cache.containsKey(key) || !seen.add(key)) continue;
+        unique.add(s);
+      }
 
-      final translations = await _translateBatchViaAi(
-        sentences: chunkSentences,
+      if (unique.isEmpty) {
+        onProgress?.call(0, 0);
+        return 0;
+      }
+
+      // Report the total up front so the UI shows "0/N" during the first chunk
+      // instead of nothing until the first chunk finishes.
+      onProgress?.call(0, unique.length);
+
+      final fetched = await _fetchUnique(
+        unique: unique,
         sourceLang: sourceLang,
         targetLang: targetLang,
         apiKey: apiKey,
+        cache: cache,
+        graceful: false,
+        chunkSize: chunkSize,
+        onProgress: onProgress,
       );
 
-      for (var ci = 0; ci < chunk.length; ci++) {
-        final orig = chunk[ci].sentence;
-        final translation = ci < translations.length ? translations[ci] : orig;
-        // Only cache if we got an actual translation (not a fallback to source text).
-        if (translation != orig) {
-          cache[_cacheKey(sourceLang, targetLang, orig)] = translation;
-        } else {
-          failed++;
-        }
+      failed = 0;
+      for (var u = 0; u < unique.length; u++) {
+        if (fetched[u].trim() == unique[u].trim()) failed++;
       }
-
-      await _saveCache(cache);
-      done += chunk.length;
-      onProgress?.call(done, total);
+      if (failed == 0) return 0;
+      if (attempt < maxAttempts - 1) await Future.delayed(const Duration(seconds: 2));
     }
-
     return failed;
   }
 
@@ -383,7 +447,7 @@ Sentence: $sentence
     };
 
     final resp = await AiService.queryModel(apiKey, body);
-    if (resp.statusCode != 200) throw Exception('AI translation failed (${resp.statusCode}).');
+    if (resp.statusCode != 200) throw _translationError(resp.statusCode, resp.body);
 
     final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
     final candidates = decoded['candidates'] as List?;
@@ -432,15 +496,8 @@ $numberedList
     };
 
     final resp = await AiService.queryModel(apiKey, body);
-    if (resp.statusCode != 200) {
-      // Surface the real cause instead of silently returning the source text.
-      // queryModel already backs off on transient (per-minute) 429s, so a 429
-      // here means the daily free-tier cap is exhausted.
-      if (resp.statusCode == 429) {
-        throw Exception(_dailyQuotaMessage());
-      }
-      throw Exception('Translation failed (Gemini error ${resp.statusCode}).');
-    }
+    // Surface a human-readable cause instead of silently returning source text.
+    if (resp.statusCode != 200) throw _translationError(resp.statusCode, resp.body);
 
     try {
       final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
