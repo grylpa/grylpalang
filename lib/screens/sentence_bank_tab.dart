@@ -13,6 +13,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/sentence_bank.dart';
+import '../services/audio_utils.dart';
 import '../services/auto_playlist_controller.dart';
 import '../services/google_translate_tts.dart';
 import '../services/sentence_bank_foreground_service.dart';
@@ -700,11 +701,14 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   /// flutter_tts synthesis (offline, gendered). Throws on failure.
   Future<String> _ensureClipFile(String text, String languageName, String gender, {String preferVoice = ''}) async {
     final code = _ttsLangCode(languageName);
+    // Greek-class languages use the Google audio endpoint (better question
+    // intonation than the offline voice); others use device synthesis.
     if (_googleTtsLanguages.contains(code)) {
       return _googleTts.ensureFile(text, code);
     }
     return _synthToFile(text, _localeForLanguage(languageName), code, gender, preferVoice);
   }
+
 
   /// Like [_ensureClipFile] but returns null instead of throwing — used for the
   /// optional source clip so one failure just drops that source.
@@ -724,10 +728,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final dir = await _ensureSynthDir();
     final voiceKey = preferVoice.isNotEmpty ? preferVoice : gender;
     // Version token; bump to force re-synthesis (p1 = leading silence,
-    // p2 = device-region-first Automatic voice selection, p3 = 500ms lead).
-    final key = sha1.convert(utf8.encode('$code|$voiceKey|p3|$text')).toString();
+    // p2 = region-first Automatic voice, p3 = 500ms lead, p5 = 24kHz cap).
+    final key = sha1.convert(utf8.encode('$code|$voiceKey|p5|$text')).toString();
     final file = File('${dir.path}/$key.wav');
     if (await file.exists()) return file.path;
+    await _evictSynthIfFull(dir);
 
     await _tts.stop();
     final parts = preferVoice.split('__SEP__');
@@ -747,61 +752,45 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     await _tts.awaitSynthCompletion(true);
     await _tts.synthesizeToFile(text, file.path, true);
     if (!await file.exists()) throw Exception('TTS synthesis produced no file');
-    // The audio path drops the first frames when a clip starts — worst on a
-    // cold start right after (re)generating files. Pad leading silence so it
-    // eats silence, not speech.
-    await _padWavStart(file, 500);
+    // Downsample to mono (smaller cache) and prepend 500ms silence — the audio
+    // path drops the first frames at a clip boundary / cold start.
+    await _normalizeSynthWav(file);
     return file.path;
   }
 
-  /// Inserts [ms] of leading silence into a PCM WAV (matching its own format),
-  /// so the start of the clip isn't clipped on playback. Best-effort.
-  Future<void> _padWavStart(File f, int ms) async {
+  /// Converts a synthesized WAV to mono, caps the sample rate at [maxRate]
+  /// (never upsamples — keeps the device's native rate if it's already lower),
+  /// and prepends [padMs] of silence. Best-effort: untouched if unparseable.
+  Future<void> _normalizeSynthWav(File f, {int padMs = 500, int maxRate = 24000}) async {
     try {
-      final b = await f.readAsBytes();
-      if (b.length < 44) return;
-      if (String.fromCharCodes(b.sublist(0, 4)) != 'RIFF' ||
-          String.fromCharCodes(b.sublist(8, 12)) != 'WAVE') return;
-      int u32(int o) => b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
-      int u16(int o) => b[o] | (b[o + 1] << 8);
+      final parsed = parseWavPcm16(await f.readAsBytes());
+      if (parsed == null) return;
+      final outRate = parsed.rate > maxRate ? maxRate : parsed.rate;
+      final down = resamplePcm16Mono(parsed.samples, parsed.rate, outRate);
+      final sil = silencePcm16(outRate, padMs);
+      final combined = Int16List(sil.length + down.length)
+        ..setAll(0, sil)
+        ..setAll(sil.length, down);
+      await f.writeAsBytes(pcm16MonoToWav(combined, outRate), flush: true);
+    } catch (_) {}
+  }
 
-      var pos = 12;
-      var channels = 1, rate = 22050, bits = 16, dataPos = -1, dataLen = 0;
-      while (pos + 8 <= b.length) {
-        final id = String.fromCharCodes(b.sublist(pos, pos + 4));
-        final size = u32(pos + 4);
-        final body = pos + 8;
-        if (id == 'fmt ') {
-          channels = u16(body + 2);
-          rate = u32(body + 4);
-          bits = u16(body + 14);
-        } else if (id == 'data') {
-          dataPos = body;
-          dataLen = size;
-          break;
-        }
-        pos = body + size + (size & 1);
+  /// Same 10k cap + LRU eviction the Google/Gemini caches use, for the device
+  /// synthesis cache.
+  Future<void> _evictSynthIfFull(Directory dir, {int cap = 10000, int batch = 200}) async {
+    try {
+      final files = (await dir.list(followLinks: false).toList()).whereType<File>().toList();
+      if (files.length < cap) return;
+      files.sort((a, b) => a.statSync().modified.compareTo(b.statSync().modified));
+      var deleted = 0;
+      for (final fi in files) {
+        if (deleted >= batch) break;
+        try {
+          await fi.delete();
+          deleted++;
+        } catch (_) {}
       }
-      if (dataPos < 0 || rate <= 0 || channels <= 0 || bits <= 0) return;
-
-      final silenceLen = (rate * ms ~/ 1000) * channels * (bits ~/ 8);
-      final out = BytesBuilder()
-        ..add(b.sublist(0, dataPos))
-        ..add(Uint8List(silenceLen))
-        ..add(b.sublist(dataPos));
-      final bytes = out.toBytes();
-      void put32(int o, int v) {
-        bytes[o] = v & 0xff;
-        bytes[o + 1] = (v >> 8) & 0xff;
-        bytes[o + 2] = (v >> 16) & 0xff;
-        bytes[o + 3] = (v >> 24) & 0xff;
-      }
-      put32(4, bytes.length - 8); // RIFF chunk size
-      put32(dataPos - 4, dataLen + silenceLen); // data chunk size
-      await f.writeAsBytes(bytes, flush: true);
-    } catch (_) {
-      // Padding is best-effort; on any parse issue leave the file as-is.
-    }
+    } catch (_) {}
   }
 
   @override
@@ -959,15 +948,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         if (v is Map && (v['locale'] as String? ?? '').toLowerCase().startsWith(code)) v,
     ]..sort((a, b) => '${a['locale']}'.compareTo('${b['locale']}'));
 
-    // Group by locale; within a locale the device exposes no reliable gender,
-    // so voices are just numbered (preview to tell them apart).
     final byLocale = <String, List<Map>>{};
     for (final v in matches) {
       byLocale.putIfAbsent((v['locale'] as String? ?? '').toString(), () => []).add(v);
     }
 
-    // Order sections the same way Automatic picks: device region first (if it
-    // speaks this language), then US → UK(GB) → AU, then the rest alphabetically.
+    // Order sections: device region first (if it speaks this language), then
+    // US → UK(GB) → AU, then the rest alphabetically.
     final regionPrefs = <String>[];
     final dev = WidgetsBinding.instance.platformDispatcher.locale;
     if (dev.languageCode.toLowerCase() == code && (dev.countryCode ?? '').isNotEmpty) {
@@ -994,11 +981,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       builder: (ctx) => SimpleDialog(
         title: Text('Source voice — $sourceLang'),
         children: [
-          // const Padding(
-          //   padding: EdgeInsets.fromLTRB(24, 0, 24, 8),
-          //   child: Text('▶ previews · tap a row to use it (regenerates audio now)',
-          //       style: TextStyle(fontSize: 12)),
-          // ),
           ListTile(
             dense: true,
             title: const Text('Automatic'),
@@ -1053,8 +1035,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     } catch (_) {}
   }
 
-  /// Commits [voiceId] ('' = automatic) and generates the audio immediately so
-  /// the next Play is instant.
+  /// Commits the device source voice [voiceId] ('' = automatic) and regenerates
+  /// the audio immediately so the next Play is instant.
   Future<void> _selectVoiceAndGenerate(String voiceId) async {
     final state = context.read<AppState>();
     await state.saveSettingsOnly(state.settings.copyWith(sentenceBankSourceVoice: voiceId));

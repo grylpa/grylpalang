@@ -76,6 +76,10 @@ class GoogleTranslateTts {
     _diskCount = count - deleted;
   }
 
+  // Backoff (ms) when the unofficial endpoint rate-limits a burst of requests
+  // (HTTP 429) — e.g. fetching every clip the first time a subject is opened.
+  static const _kRetryDelaysMs = [400, 900, 2000];
+
   Future<Uint8List> _downloadBytes(String text, String langCode) async {
     final uri = Uri.https(_kHost, _kPath, {
       'ie': 'UTF-8',
@@ -83,17 +87,21 @@ class GoogleTranslateTts {
       'tl': langCode,
       'client': 'tw-ob',
     });
-    final resp = await http.get(uri, headers: {
-      // The endpoint refuses requests without a browser-like UA.
-      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-      'Accept': '*/*',
-      'Referer': 'https://translate.google.com/',
-    }).timeout(const Duration(seconds: 8));
+    for (var attempt = 0;; attempt++) {
+      final resp = await http.get(uri, headers: {
+        // The endpoint refuses requests without a browser-like UA.
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+        'Accept': '*/*',
+        'Referer': 'https://translate.google.com/',
+      }).timeout(const Duration(seconds: 8));
 
-    if (resp.statusCode != 200) {
+      if (resp.statusCode == 200) return resp.bodyBytes;
+      if (resp.statusCode == 429 && attempt < _kRetryDelaysMs.length) {
+        await Future.delayed(Duration(milliseconds: _kRetryDelaysMs[attempt]));
+        continue;
+      }
       throw Exception('Google TTS HTTP ${resp.statusCode}');
     }
-    return resp.bodyBytes;
   }
 
   /// Ensures the MP3 for [text]/[langCode] exists on disk and returns its path.
