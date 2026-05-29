@@ -1,23 +1,7 @@
 import 'dart:typed_data';
 
-/// Small WAV/PCM helpers shared by the TTS engines. All audio in this app is
-/// normalized to 16 kHz mono 16-bit, which is plenty for speech and keeps the
-/// on-disk cache small (no native transcoder needed).
-
-/// Linear-resamples 16-bit mono PCM from [srcRate] to [dstRate].
-Int16List resamplePcm16Mono(Int16List input, int srcRate, int dstRate) {
-  if (srcRate == dstRate || input.length < 2) return input;
-  final outCount = (input.length * dstRate / srcRate).floor();
-  final out = Int16List(outCount);
-  for (var i = 0; i < outCount; i++) {
-    final pos = i * srcRate / dstRate;
-    final i0 = pos.floor();
-    final i1 = i0 + 1 < input.length ? i0 + 1 : i0;
-    final frac = pos - i0;
-    out[i] = (input[i0] * (1 - frac) + input[i1] * frac).round().clamp(-32768, 32767);
-  }
-  return out;
-}
+/// Small WAV/PCM helpers shared by the TTS engines. Clips are kept as 16-bit
+/// mono at the engine's native sample rate (no transcoder needed).
 
 /// Wraps 16-bit mono PCM samples in a WAV container.
 Uint8List pcm16MonoToWav(Int16List samples, int rate) {

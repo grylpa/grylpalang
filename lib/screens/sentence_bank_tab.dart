@@ -751,8 +751,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final dir = await _ensureSynthDir();
     final voiceKey = preferVoice.isNotEmpty ? preferVoice : gender;
     // Version token; bump to force re-synthesis (p1 = leading silence,
-    // p2 = region-first Automatic voice, p3 = 500ms lead, p5 = 24kHz cap).
-    final key = sha1.convert(utf8.encode('$code|$voiceKey|p5|$text')).toString();
+    // p2 = region-first Automatic voice, p3 = 500ms lead, p5 = 24kHz cap,
+    // p6 = native rate, no downsampling).
+    final key = sha1.convert(utf8.encode('$code|$voiceKey|p6|$text')).toString();
     final file = File('${dir.path}/$key.wav');
     if (await file.exists()) return file.path;
     await _evictSynthIfFull(dir);
@@ -775,26 +776,26 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     await _tts.awaitSynthCompletion(true);
     await _tts.synthesizeToFile(text, file.path, true);
     if (!await file.exists()) throw Exception('TTS synthesis produced no file');
-    // Downsample to mono (smaller cache) and prepend 500ms silence — the audio
-    // path drops the first frames at a clip boundary / cold start.
+    // Prepend 500ms silence — the audio path drops the first frames at a clip
+    // boundary / cold start. Keeps the engine's native rate (mono).
     await _normalizeSynthWav(file);
     return file.path;
   }
 
-  /// Converts a synthesized WAV to mono, caps the sample rate at [maxRate]
-  /// (never upsamples — keeps the device's native rate if it's already lower),
-  /// and prepends [padMs] of silence. Best-effort: untouched if unparseable.
-  Future<void> _normalizeSynthWav(File f, {int padMs = 500, int maxRate = 24000}) async {
+  /// Prepends [padMs] of silence to a synthesized WAV (the audio path drops the
+  /// first frames at a clip boundary / cold start). Keeps the engine's native
+  /// sample rate — `parseWavPcm16` already collapses to one (mono) channel, and
+  /// downsampling here used naive decimation (no anti-alias filter), which made
+  /// the voice sound coarse. Best-effort: untouched if unparseable.
+  Future<void> _normalizeSynthWav(File f, {int padMs = 500}) async {
     try {
       final parsed = parseWavPcm16(await f.readAsBytes());
       if (parsed == null) return;
-      final outRate = parsed.rate > maxRate ? maxRate : parsed.rate;
-      final down = resamplePcm16Mono(parsed.samples, parsed.rate, outRate);
-      final sil = silencePcm16(outRate, padMs);
-      final combined = Int16List(sil.length + down.length)
+      final sil = silencePcm16(parsed.rate, padMs);
+      final combined = Int16List(sil.length + parsed.samples.length)
         ..setAll(0, sil)
-        ..setAll(sil.length, down);
-      await f.writeAsBytes(pcm16MonoToWav(combined, outRate), flush: true);
+        ..setAll(sil.length, parsed.samples);
+      await f.writeAsBytes(pcm16MonoToWav(combined, parsed.rate), flush: true);
     } catch (_) {}
   }
 
