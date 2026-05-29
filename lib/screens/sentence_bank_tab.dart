@@ -109,6 +109,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   late SentenceBankService _service;
   int _lastReloadToken = -1;
   bool _lastShuffle = false;
+  // Signature of the playback-affecting settings; when it changes while auto
+  // mode is running we rebuild the playlist so the change takes effect live.
+  String _lastAutoCfg = '';
   bool _initialized = false;
 
   // When shuffle is on, this holds the permuted sentence indices.
@@ -850,7 +853,32 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           _translatedSentence = null;
           _showTranslation = false;
         });
+        // The play order is part of the playlist signature — rebuild so the
+        // change takes effect while auto mode is running.
+        if (_autoMode) _buildOrResumePlaylist(play: true);
       });
+    }
+
+    // Apply playback-affecting setting changes (speak-source, voice, gender,
+    // target language, repeat count, pauses) live while auto mode is running.
+    // The sig check inside _buildOrResumePlaylist no-ops if nothing relevant
+    // actually changed.
+    final autoCfg = context.select<AppState, String>((s) => [
+          s.settings.sentenceBankSpeakSource,
+          s.settings.sentenceBankSourceVoice,
+          s.settings.sentenceBankVoiceGender,
+          s.settings.targetLanguage,
+          s.sentenceBankResolvedTtsRepeatCount,
+          s.settings.sentenceBankSourcePauseOverride,
+          s.settings.sentenceBankTtsRepeatDelayOverride,
+        ].join('¦'));
+    if (autoCfg != _lastAutoCfg) {
+      _lastAutoCfg = autoCfg;
+      if (_autoMode) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _autoMode) _buildOrResumePlaylist(play: true);
+        });
+      }
     }
 
     if (_loading) return const Center(child: CircularProgressIndicator());

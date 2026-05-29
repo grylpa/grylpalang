@@ -171,7 +171,7 @@ class AppSettings {
       sentenceBankUrl: json['sentenceBankUrl'] as String? ?? '',
       sentenceBankVoiceGender: json['sentenceBankVoiceGender'] as String? ?? 'female',
       sentenceBankSourceVoice: json['sentenceBankSourceVoice'] as String? ?? '',
-      sentenceBankSpeakSource: json['sentenceBankSpeakSource'] as bool? ?? false,
+      sentenceBankSpeakSource: json['sentenceBankSpeakSource'] as bool? ?? true,
       // Migration: if the new override key is absent, fall back to the
       // pre-override `sentenceBankTtsRepeatCount` value so the user's choice
       // is preserved across the upgrade.
@@ -180,7 +180,7 @@ class AppSettings {
           : json['sentenceBankTtsRepeatCount'] as int?,
       sentenceBankSourcePauseOverride: json['sentenceBankSourcePauseOverride'] as int?,
       sentenceBankTtsRepeatDelayOverride: json['sentenceBankTtsRepeatDelayOverride'] as int?,
-      sentenceBankShuffle: json['sentenceBankShuffle'] as bool? ?? false,
+      sentenceBankShuffle: json['sentenceBankShuffle'] as bool? ?? true,
     );
     return appSettings;
   }
@@ -205,8 +205,8 @@ class AppSettings {
       modeReverse: true,
       sentenceBankUrl: '',
       sentenceBankVoiceGender: 'female',
-      sentenceBankSpeakSource: false,
-      sentenceBankShuffle: false,
+      sentenceBankSpeakSource: true,
+      sentenceBankShuffle: true,
     );
   }
 }
