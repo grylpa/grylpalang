@@ -33,6 +33,7 @@ lib*.zip
 .pub/
 /build/
 /coverage/
+release_builds/
 
 # Symbolication related
 app.*.symbols
@@ -46,3 +47,5 @@ app.*.map.json
 /android/app/release
 /android/build/reports/problems/problems-report.html
 /android/.kotlin/sessions/*
+android/key.properties
+
