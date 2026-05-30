@@ -21,6 +21,16 @@ import '../services/sentence_bank_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
 
+/// Speech rate passed to flutter_tts for source-clip synthesis.
+///
+/// flutter_tts normalises this to 0.0–1.0 on both Android and iOS, where
+/// **0.5 is the engine's default (native) rate**. 1.0 is roughly double speed
+/// (unintelligible) and 0.0 is stopped — it is *not* a multiplier. Values below
+/// 0.5 ask the engine to time-stretch, which can add artefacts on some voices.
+/// Adjust here while experimenting; the synth cache invalidates automatically
+/// when this value changes.
+const double kSourceSpeechRate = 0.5;
+
 /// Maps a canonical English language name to a BCP-47 locale code for TTS.
 String? _localeForLanguage(String languageName) {
   const map = <String, String>{
@@ -755,8 +765,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final voiceKey = preferVoice.isNotEmpty ? preferVoice : gender;
     // Version token; bump to force re-synthesis (p1 = leading silence,
     // p2 = region-first Automatic voice, p3 = 500ms lead, p5 = 24kHz cap,
-    // p6 = native rate, no downsampling).
-    final key = sha1.convert(utf8.encode('$code|$voiceKey|p6|$text')).toString();
+    // p6 = native rate, no downsampling, p7 = no pitch-shift fallback). The
+    // current kSourceSpeechRate is folded into the key so changing it
+    // auto-invalidates clips that were synthesised at a different rate.
+    final key = sha1
+        .convert(utf8.encode('$code|$voiceKey|p7|r$kSourceSpeechRate|$text'))
+        .toString();
     final file = File('${dir.path}/$key.wav');
     if (await file.exists()) return file.path;
     await _evictSynthIfFull(dir);
@@ -766,15 +780,15 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (preferVoice.isNotEmpty && parts.length == 2) {
       if (parts[1].isNotEmpty) await _tts.setLanguage(parts[1]);
       await _tts.setVoice({'name': parts[0], 'locale': parts[1]});
-      await _tts.setSpeechRate(0.45);
+      await _tts.setSpeechRate(kSourceSpeechRate);
       await _tts.setPitch(1.0);
     } else {
       if (locale != null) await _tts.setLanguage(locale);
-      await _tts.setSpeechRate(0.45);
-      final hasVoice = await _applyGenderedVoice(locale, gender);
-      await _tts.setPitch(
-        hasVoice ? 1.0 : (gender == 'male' ? (_bank?.ttsPitchLow ?? 0.85) : (_bank?.ttsPitchHigh ?? 1.1)),
-      );
+      await _tts.setSpeechRate(kSourceSpeechRate);
+      // Pick a gendered voice if one exists, but never pitch-shift to fake one:
+      // the engine's pitch-shift adds grainy artefacts to every clip.
+      await _applyGenderedVoice(locale, gender);
+      await _tts.setPitch(1.0);
     }
     await _tts.awaitSynthCompletion(true);
     await _tts.synthesizeToFile(text, file.path, true);
@@ -1091,7 +1105,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       final loc = (v['locale'] as String? ?? '').toString();
       if (loc.isNotEmpty) await _tts.setLanguage(loc);
       await _tts.setVoice({'name': (v['name'] as String? ?? ''), 'locale': loc});
-      await _tts.setSpeechRate(0.45);
+      await _tts.setSpeechRate(kSourceSpeechRate);
       await _tts.setPitch(1.0);
       await _tts.speak(_currentSource() ?? 'This is a sample sentence.');
     } catch (_) {}
