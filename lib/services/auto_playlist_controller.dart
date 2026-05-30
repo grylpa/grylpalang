@@ -75,11 +75,15 @@ class AutoPlaylistController {
     List<String?>? sourcePaths,
     required List<String> translationPaths,
     required int repeatCount,
+    int sourceRepeatCount = 1,
     required int sourcePauseSec,
     required int repeatDelaySec,
     required int postDelaySec,
     int startOrdinal = 0,
     bool autoPlay = true,
+    // When true, each chunk plays as (source → sourcePause → target) repeated
+    // `repeatCount` times, instead of (source × srcReps) then (target × reps).
+    bool alternate = false,
   }) async {
     final dir = await getApplicationSupportDirectory();
     final sources = <AudioSource>[];
@@ -94,17 +98,36 @@ class AutoPlaylistController {
     for (var ord = 0; ord < translations.length; ord++) {
       final text = translations[ord];
       final src = (sourcePaths != null && ord < sourcePaths.length) ? sourcePaths[ord] : null;
-      if (src != null) {
-        sources.add(_fileSource(src, 'src-$ord', text));
-        clipToOrdinal.add(ord);
-        await addSilence(sourcePauseSec, ord);
-      }
       final path = translationPaths[ord];
       final reps = repeatCount < 1 ? 1 : repeatCount;
-      for (var r = 0; r < reps; r++) {
-        if (r > 0) await addSilence(repeatDelaySec, ord);
-        sources.add(_fileSource(path, 't-$ord-$r', text));
-        clipToOrdinal.add(ord);
+
+      if (alternate) {
+        // (source → sourcePause → target) repeated `reps` times, then postDelay.
+        for (var r = 0; r < reps; r++) {
+          if (src != null) {
+            sources.add(_fileSource(src, 'src-$ord-$r', text));
+            clipToOrdinal.add(ord);
+            await addSilence(sourcePauseSec, ord);
+          }
+          sources.add(_fileSource(path, 't-$ord-$r', text));
+          clipToOrdinal.add(ord);
+          if (r < reps - 1) await addSilence(repeatDelaySec, ord);
+        }
+      } else {
+        if (src != null) {
+          final srcReps = sourceRepeatCount < 1 ? 1 : sourceRepeatCount;
+          for (var r = 0; r < srcReps; r++) {
+            if (r > 0) await addSilence(repeatDelaySec, ord);
+            sources.add(_fileSource(src, 'src-$ord-$r', text));
+            clipToOrdinal.add(ord);
+          }
+          await addSilence(sourcePauseSec, ord);
+        }
+        for (var r = 0; r < reps; r++) {
+          if (r > 0) await addSilence(repeatDelaySec, ord);
+          sources.add(_fileSource(path, 't-$ord-$r', text));
+          clipToOrdinal.add(ord);
+        }
       }
       await addSilence(postDelaySec, ord);
     }
@@ -133,6 +156,115 @@ class AutoPlaylistController {
     if (autoPlay) unawaited(_player.play());
   }
 
+  // ── Dynamic mode ──────────────────────────────────────────────────────────
+  //
+  // Builds the playlist incrementally as chunks are prepared (used by Books'
+  // audio mode so playback starts after one chunk and the rest stream in).
+  // Backed by a [ConcatenatingAudioSource] which just_audio lets us mutate
+  // while it's playing.
+
+  // Tracks whether we've sent the first batch of sources to the player yet —
+  // the first append uses setAudioSources, subsequent ones addAudioSources.
+  bool _dynStarted = false;
+  // Per-chunk playback parameters, captured by [beginDynamic] and reused for
+  // every [appendChunk] call so callers don't have to repeat them.
+  int _dynRepeatCount = 1;
+  int _dynSourcePauseSec = 0;
+  int _dynRepeatDelaySec = 0;
+  int _dynPostDelaySec = 0;
+  bool _dynAlternate = false;
+
+  /// Prepares the player for dynamic-playlist mode. Call [appendChunk] as
+  /// chunks become ready; the first call actually sends them to the player,
+  /// subsequent calls extend the in-flight queue without disrupting playback.
+  Future<void> beginDynamic({
+    required int ordinalCount,
+    required int repeatCount,
+    required int sourcePauseSec,
+    required int repeatDelaySec,
+    required int postDelaySec,
+    bool alternate = false,
+    bool loop = false,
+  }) async {
+    _clipToOrdinal = [];
+    _ordinalCount = ordinalCount;
+    _dynStarted = false;
+    _dynRepeatCount = repeatCount < 1 ? 1 : repeatCount;
+    _dynSourcePauseSec = sourcePauseSec;
+    _dynRepeatDelaySec = repeatDelaySec;
+    _dynPostDelaySec = postDelaySec;
+    _dynAlternate = alternate;
+
+    await _player.stop();
+    await _player.setLoopMode(loop ? LoopMode.all : LoopMode.off);
+    _idxSub?.cancel();
+    _idxSub = _player.currentIndexStream.listen((i) {
+      if (i != null && i >= 0 && i < _clipToOrdinal.length) {
+        _ordinalCtrl.add(_clipToOrdinal[i]);
+      }
+    });
+  }
+
+  /// Appends the clips for one chunk to the dynamic playlist. Safe to call
+  /// while playback is in progress — the new sources extend the queue.
+  Future<void> appendChunk({
+    required int ord,
+    required String text,
+    required String? sourcePath,
+    required String translationPath,
+  }) async {
+    final dir = await getApplicationSupportDirectory();
+    final newSources = <AudioSource>[];
+    final newOrdinals = <int>[];
+
+    Future<void> addSilence(int sec) async {
+      if (sec <= 0) return;
+      newSources.add(_fileSource(
+          await _silenceFile(dir, sec), 'sil-$ord-${_clipToOrdinal.length + newSources.length}', 'gap'));
+      newOrdinals.add(ord);
+    }
+
+    if (_dynAlternate) {
+      for (var r = 0; r < _dynRepeatCount; r++) {
+        if (sourcePath != null) {
+          newSources.add(_fileSource(sourcePath, 'src-$ord-$r', text));
+          newOrdinals.add(ord);
+          await addSilence(_dynSourcePauseSec);
+        }
+        newSources.add(_fileSource(translationPath, 't-$ord-$r', text));
+        newOrdinals.add(ord);
+        if (r < _dynRepeatCount - 1) await addSilence(_dynRepeatDelaySec);
+      }
+    } else {
+      if (sourcePath != null) {
+        newSources.add(_fileSource(sourcePath, 'src-$ord', text));
+        newOrdinals.add(ord);
+        await addSilence(_dynSourcePauseSec);
+      }
+      for (var r = 0; r < _dynRepeatCount; r++) {
+        if (r > 0) await addSilence(_dynRepeatDelaySec);
+        newSources.add(_fileSource(translationPath, 't-$ord-$r', text));
+        newOrdinals.add(ord);
+      }
+    }
+    await addSilence(_dynPostDelaySec);
+
+    if (!_dynStarted) {
+      await _player.setAudioSources(newSources);
+      _dynStarted = true;
+    } else {
+      await _player.addAudioSources(newSources);
+    }
+    _clipToOrdinal.addAll(newOrdinals);
+  }
+
+  /// Starts playback of the dynamic playlist. Must be called after at least
+  /// one [appendChunk]. Playback begins at the first clip in the playlist.
+  Future<void> playDynamic() async {
+    if (_clipToOrdinal.isEmpty) return;
+    unawaited(_player.play());
+  }
+
   Future<void> next() async {
     final ord = currentOrdinal;
     if (ord != null && ord + 1 < _ordinalCount) await _seekToOrdinal(ord + 1);
@@ -149,6 +281,9 @@ class AutoPlaylistController {
   }
 
   Future<void> stop() => _player.stop();
+  Future<void> pause() => _player.pause();
+  Future<void> resume() => _player.play();
+  bool get isPlaying => _player.playing;
 
   Future<void> dispose() async {
     await _idxSub?.cancel();

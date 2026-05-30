@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../state/app_state.dart';
+import 'books_tab.dart';
 import 'dashboard_screen.dart';
 import 'notification_history_tab.dart';
 import 'sentence_bank_tab.dart';
@@ -26,6 +27,7 @@ class _MainScaffoldState extends State<MainScaffold> {//with WidgetsBindingObser
     NotificationHistoryTab(),
     PredictionTab(),
     SentenceBankTab(),
+    BooksTab(),
     SettingsScreen(),
   ];
 
@@ -148,6 +150,11 @@ class _MainScaffoldState extends State<MainScaffold> {//with WidgetsBindingObser
                 icon: Icon(Icons.menu_book_outlined),
                 activeIcon: Icon(Icons.menu_book),
                 label: 'Sentences',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.auto_stories_outlined),
+                activeIcon: Icon(Icons.auto_stories),
+                label: 'Books',
               ),
               BottomNavigationBarItem(
                 icon: Icon(Icons.settings_outlined),

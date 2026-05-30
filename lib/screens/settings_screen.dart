@@ -624,6 +624,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ]),
 
+                  // ── Books — Audio mode ──────────────────────────────────────
+                  _section('Books — Audio mode', [
+                    Text(
+                      'Drives the auto-playback in the Books tab. Each chunk is read in '
+                      'the book\'s language, paused, then read in your target language, '
+                      'with both sides repeated.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Text('Chunk by', style: textStyle),
+                        const SizedBox(width: 12),
+                        DropdownButton<String>(
+                          value: s.booksChunkUnit,
+                          items: const [
+                            DropdownMenuItem(value: 'sentence', child: Text('Sentence')),
+                            DropdownMenuItem(value: 'paragraph', child: Text('Paragraph')),
+                          ],
+                          onChanged: (v) {
+                            if (v != null) state.saveSettingsOnly(s.copyWith(booksChunkUnit: v));
+                          },
+                        ),
+                      ],
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('Repeat each side: ${s.booksRepeatCount}×', style: textStyle),
+                      subtitle: Slider(
+                        value: s.booksRepeatCount.toDouble().clamp(1, 5),
+                        min: 1, max: 5, divisions: 4,
+                        label: '${s.booksRepeatCount}×',
+                        onChanged: (v) =>
+                            state.saveSettingsOnly(s.copyWith(booksRepeatCount: v.round())),
+                      ),
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('Pause between source and target: ${s.booksSourcePauseSec}s',
+                          style: textStyle),
+                      subtitle: Slider(
+                        value: s.booksSourcePauseSec.toDouble().clamp(0, 10),
+                        min: 0, max: 10, divisions: 10,
+                        label: '${s.booksSourcePauseSec}s',
+                        onChanged: (v) =>
+                            state.saveSettingsOnly(s.copyWith(booksSourcePauseSec: v.round())),
+                      ),
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('Pause between chunks: ${s.booksBetweenChunksPauseSec}s',
+                          style: textStyle),
+                      subtitle: Slider(
+                        value: s.booksBetweenChunksPauseSec.toDouble().clamp(0, 15),
+                        min: 0, max: 15, divisions: 15,
+                        label: '${s.booksBetweenChunksPauseSec}s',
+                        onChanged: (v) => state
+                            .saveSettingsOnly(s.copyWith(booksBetweenChunksPauseSec: v.round())),
+                      ),
+                    ),
+                  ]),
+
                   // ── Maintenance ─────────────────────────────────────────────
                   _section('Maintenance', [
                     Text(

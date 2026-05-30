@@ -28,6 +28,15 @@ class AppSettings {
   int? sentenceBankTtsRepeatDelayOverride; // overrides tts_repeat_delay from YAML (null = use YAML value)
   bool sentenceBankShuffle;             // randomize sentence order within subject
 
+  // Books mode (Phase 3 audio playback). All times in seconds.
+  String booksChunkUnit;                // 'sentence' | 'paragraph'
+  int booksRepeatCount;                 // times each side (source + target) is repeated
+  int booksSourcePauseSec;              // pause between source and target TTS
+  int booksBetweenChunksPauseSec;       // pause after target before the next chunk
+  // Selected TTS voice keyed by BCP-47 locale (e.g. 'en-US', 'el-GR'). The
+  // voice value is the flutter_tts voice name as returned by getVoices().
+  Map<String, String> booksVoiceByLocale;
+
   AppSettings({
     required this.knownLanguage,
     required this.targetLanguage,
@@ -53,7 +62,12 @@ class AppSettings {
     this.sentenceBankSourcePauseOverride,
     this.sentenceBankTtsRepeatDelayOverride,
     required this.sentenceBankShuffle,
-  });
+    this.booksChunkUnit = 'sentence',
+    this.booksRepeatCount = 2,
+    this.booksSourcePauseSec = 1,
+    this.booksBetweenChunksPauseSec = 2,
+    Map<String, String>? booksVoiceByLocale,
+  }) : booksVoiceByLocale = booksVoiceByLocale ?? <String, String>{};
 
   AppSettings copyWith({
     String? knownLanguage,
@@ -80,6 +94,11 @@ class AppSettings {
     Object? sentenceBankSourcePauseOverride = _keep,
     Object? sentenceBankTtsRepeatDelayOverride = _keep,
     bool? sentenceBankShuffle,
+    String? booksChunkUnit,
+    int? booksRepeatCount,
+    int? booksSourcePauseSec,
+    int? booksBetweenChunksPauseSec,
+    Map<String, String>? booksVoiceByLocale,
   }) {
     return AppSettings(
       knownLanguage: knownLanguage ?? this.knownLanguage,
@@ -112,6 +131,11 @@ class AppSettings {
           ? this.sentenceBankTtsRepeatDelayOverride
           : sentenceBankTtsRepeatDelayOverride as int?,
       sentenceBankShuffle: sentenceBankShuffle ?? this.sentenceBankShuffle,
+      booksChunkUnit: booksChunkUnit ?? this.booksChunkUnit,
+      booksRepeatCount: booksRepeatCount ?? this.booksRepeatCount,
+      booksSourcePauseSec: booksSourcePauseSec ?? this.booksSourcePauseSec,
+      booksBetweenChunksPauseSec: booksBetweenChunksPauseSec ?? this.booksBetweenChunksPauseSec,
+      booksVoiceByLocale: booksVoiceByLocale ?? Map.of(this.booksVoiceByLocale),
     );
   }
 
@@ -142,6 +166,11 @@ class AppSettings {
     'sentenceBankSourcePauseOverride': sentenceBankSourcePauseOverride,
     'sentenceBankTtsRepeatDelayOverride': sentenceBankTtsRepeatDelayOverride,
     'sentenceBankShuffle': sentenceBankShuffle,
+    'booksChunkUnit': booksChunkUnit,
+    'booksRepeatCount': booksRepeatCount,
+    'booksSourcePauseSec': booksSourcePauseSec,
+    'booksBetweenChunksPauseSec': booksBetweenChunksPauseSec,
+    'booksVoiceByLocale': booksVoiceByLocale,
   };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) {
@@ -181,6 +210,13 @@ class AppSettings {
       sentenceBankSourcePauseOverride: json['sentenceBankSourcePauseOverride'] as int?,
       sentenceBankTtsRepeatDelayOverride: json['sentenceBankTtsRepeatDelayOverride'] as int?,
       sentenceBankShuffle: json['sentenceBankShuffle'] as bool? ?? true,
+      booksChunkUnit: json['booksChunkUnit'] as String? ?? 'sentence',
+      booksRepeatCount: (json['booksRepeatCount'] as int?) ?? 2,
+      booksSourcePauseSec: (json['booksSourcePauseSec'] as int?) ?? 1,
+      booksBetweenChunksPauseSec: (json['booksBetweenChunksPauseSec'] as int?) ?? 2,
+      booksVoiceByLocale: (json['booksVoiceByLocale'] as Map?)
+              ?.map((k, v) => MapEntry(k.toString(), v.toString())) ??
+          <String, String>{},
     );
     return appSettings;
   }
