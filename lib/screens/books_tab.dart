@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/book_entry.dart';
+import '../services/book_library_service.dart';
 import '../services/gutenberg_service.dart';
 import '../services/local_books_service.dart';
 import 'book_reader.dart';
@@ -25,6 +26,10 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
 
   late GutenbergService _service;
   late LocalBooksService _localBooks;
+  late BookLibraryService _bookLibrary;
+  // Per-book audio resume position — drives the resume icon on cards and the
+  // recently-played sort that pins played books to the top.
+  Map<String, ({int chapter, int ordinal, int at})> _audioPositions = {};
   List<BookEntry> _remoteBooks = [];
   // Progress of the current Gutendex fetch (visible while > 0 and not done).
   int _pagesDone = 0;
@@ -63,6 +68,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
       final prefs = SharedPreferencesAsync();
       _service = GutenbergService(prefs);
       _localBooks = LocalBooksService(prefs);
+      _bookLibrary = BookLibraryService(prefs);
       _bootstrap(prefs);
     }
   }
@@ -75,9 +81,16 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     }
     _yearController.text = _earliestYear.toString();
     await _reloadLocal();
+    await _reloadAudioPositions();
     // Load whatever's already cached for this year — never auto-fetches. The
     // user triggers a fetch via the "Load from Project Gutenberg" button.
     await _loadFromCache();
+  }
+
+  Future<void> _reloadAudioPositions() async {
+    final positions = await _bookLibrary.loadAllAudioPositions();
+    if (!mounted) return;
+    setState(() => _audioPositions = positions);
   }
 
   Future<void> _setEarliestYear(int year) async {
@@ -197,6 +210,24 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     }
   }
 
+  /// Opens the book directly into audio playback at the saved chapter/ordinal.
+  /// Refreshes the resume map after the reader is popped so the card's icon
+  /// reflects any progress made in that session.
+  Future<void> _resumeBook(BookEntry b) async {
+    final pos = _audioPositions[b.id];
+    if (pos == null) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => BookReader(
+          book: b,
+          initialChapterIndex: pos.chapter,
+          autoStartAudio: true,
+        ),
+      ),
+    );
+    if (mounted) await _reloadAudioPositions();
+  }
+
   Future<void> _removeLocal(BookEntry b) async {
     await _localBooks.remove(b.id);
     await _reloadLocal();
@@ -252,9 +283,22 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
         list.sort((a, b) => b.wordCount.compareTo(a.wordCount));
         break;
     }
-    // Local imports were collected separately above (bypassing filters) and go
-    // first; the sorted remote list follows.
-    return [...localList, ...list];
+    // Order: recently-played books (newest first) → local imports → other
+    // remote books in the user's sort. A recently-played local book still goes
+    // to the very top, ahead of un-played locals.
+    final combined = [...localList, ...list];
+    final recent = <BookEntry>[];
+    final rest = <BookEntry>[];
+    for (final b in combined) {
+      if (_audioPositions.containsKey(b.id)) {
+        recent.add(b);
+      } else {
+        rest.add(b);
+      }
+    }
+    recent.sort((a, b) =>
+        (_audioPositions[b.id]!.at).compareTo(_audioPositions[a.id]!.at));
+    return [...recent, ...rest];
   }
 
   String _lengthBucket(int wc) {
@@ -513,6 +557,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
   }
 
   Widget _buildCard(BookEntry b) {
+    final hasResume = _audioPositions.containsKey(b.id);
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: InkWell(
@@ -533,6 +578,12 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
                         errorBuilder: (_, _, _) => const Icon(Icons.broken_image),
                       ),
               ),
+              if (hasResume)
+                IconButton(
+                  tooltip: 'Resume audio from chunk ${_audioPositions[b.id]!.ordinal + 1}',
+                  icon: const Icon(Icons.play_circle, size: 28),
+                  onPressed: () => _resumeBook(b),
+                ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -717,15 +768,15 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
               Row(
                 children: [
                   Expanded(
-                    // Audio mode (Phase 3) lands later; Open launches the reader.
                     child: FilledButton.icon(
                       onPressed: b.epubUrl.isEmpty
                           ? null
-                          : () {
+                          : () async {
                               Navigator.of(context).pop();
-                              Navigator.of(context).push(
+                              await Navigator.of(context).push(
                                 MaterialPageRoute(builder: (_) => BookReader(book: b)),
                               );
+                              if (mounted) await _reloadAudioPositions();
                             },
                       icon: const Icon(Icons.menu_book_outlined),
                       label: const Text('Open'),

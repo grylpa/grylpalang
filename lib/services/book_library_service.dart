@@ -73,15 +73,17 @@ class BookLibraryService {
     await _prefs.setString(_kPositionsKey, jsonEncode(map));
   }
 
-  /// Audio playback position — saved chapter + chunk ordinal, so the user can
-  /// pick up the auto-play exactly where they left off across app restarts.
-  Future<({int chapter, int ordinal})?> loadAudioPosition(String bookId) async {
+  /// Audio playback position — saved chapter + chunk ordinal + last-touched
+  /// timestamp, so the user can pick up the auto-play across app restarts and
+  /// the Books tab can sort recently-played books to the top.
+  Future<({int chapter, int ordinal, int at})?> loadAudioPosition(String bookId) async {
     final map = await _loadPositionsMap();
     final entry = map[bookId];
     if (entry is Map) {
       final audio = entry['audio'];
       if (audio is Map && audio['chapter'] is int && audio['ordinal'] is int) {
-        return (chapter: audio['chapter'] as int, ordinal: audio['ordinal'] as int);
+        final at = (audio['at'] is int) ? audio['at'] as int : 0;
+        return (chapter: audio['chapter'] as int, ordinal: audio['ordinal'] as int, at: at);
       }
     }
     return null;
@@ -90,9 +92,36 @@ class BookLibraryService {
   Future<void> saveAudioPosition(String bookId, int chapterIndex, int ordinal) async {
     final map = await _loadPositionsMap();
     final entry = _entryFor(map, bookId);
-    entry['audio'] = {'chapter': chapterIndex, 'ordinal': ordinal};
+    entry['audio'] = {
+      'chapter': chapterIndex,
+      'ordinal': ordinal,
+      'at': DateTime.now().millisecondsSinceEpoch,
+    };
     map[bookId] = entry;
     await _prefs.setString(_kPositionsKey, jsonEncode(map));
+  }
+
+  /// Returns the entire {bookId → (chapter, ordinal, at)} audio-position map.
+  /// Used by the Books tab to render a resume affordance on each book that has
+  /// one and to sort recently-played books to the top.
+  Future<Map<String, ({int chapter, int ordinal, int at})>> loadAllAudioPositions() async {
+    final map = await _loadPositionsMap();
+    final out = <String, ({int chapter, int ordinal, int at})>{};
+    for (final e in map.entries) {
+      final entry = e.value;
+      if (entry is Map) {
+        final audio = entry['audio'];
+        if (audio is Map && audio['chapter'] is int && audio['ordinal'] is int) {
+          final at = (audio['at'] is int) ? audio['at'] as int : 0;
+          out[e.key] = (
+            chapter: audio['chapter'] as int,
+            ordinal: audio['ordinal'] as int,
+            at: at,
+          );
+        }
+      }
+    }
+    return out;
   }
 
   Future<void> clearAudioPosition(String bookId) async {

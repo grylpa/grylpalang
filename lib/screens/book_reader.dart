@@ -59,7 +59,19 @@ String _bookLocale(String raw) {
 /// per book. Audio mode comes in Phase 3.
 class BookReader extends StatefulWidget {
   final BookEntry book;
-  const BookReader({super.key, required this.book});
+  /// If set, opens at this chapter rather than the saved chapter index — used
+  /// by the Books tab's per-book Resume action so it lands in the chapter the
+  /// audio was paused in even if the user has since navigated elsewhere.
+  final int? initialChapterIndex;
+  /// If true, starts the audio session automatically after the book loads,
+  /// jumping to the saved resume ordinal if there is one.
+  final bool autoStartAudio;
+  const BookReader({
+    super.key,
+    required this.book,
+    this.initialChapterIndex,
+    this.autoStartAudio = false,
+  });
 
   @override
   State<BookReader> createState() => _BookReaderState();
@@ -80,12 +92,13 @@ class _BookReaderState extends State<BookReader> {
   bool _audioPrep = false;
   bool _audioPaused = false;
   int _prepDone = 0;
-  int _prepTotal = 0;
   String? _audioError;
   // Current chunk index + the chunk text and translation lists, so the play
   // view can show exactly what's being read at this moment.
   List<String> _chunks = const [];
-  List<String> _translations = const [];
+  // Per-ordinal translation, populated lazily as we translate ahead of the
+  // playhead. Entries are null until their batch is fetched.
+  List<String?> _translations = const [];
   int _currentOrdinal = 0;
   // Saved audio position for the *current* chapter (null if there isn't one),
   // shown in the AppBar as "Resume chunk N".
@@ -101,6 +114,10 @@ class _BookReaderState extends State<BookReader> {
   static const int _kAudioLookAhead = 4;
   // Keep this many already-played chunks before deleting their files.
   static const int _kAudioKeepBehind = 1;
+  // Translate in small batches just ahead of the playhead, instead of all at
+  // once — so a 712-chunk chapter starts playing after a single batch (~5s)
+  // instead of after translating every chunk first.
+  static const int _kTranslateBatchSize = 10;
 
   @override
   void initState() {
@@ -116,15 +133,22 @@ class _BookReaderState extends State<BookReader> {
       final saved = await _library.loadChapterIndex(widget.book.id);
       final audio = await _library.loadAudioPosition(widget.book.id);
       if (!mounted) return;
-      final chIdx = chapters.isEmpty ? 0 : saved.clamp(0, chapters.length - 1);
+      // Prefer an explicitly-passed initial chapter (e.g. from the Books tab's
+      // Resume action), else the saved last-read chapter.
+      final wanted = widget.initialChapterIndex ?? saved;
+      final chIdx = chapters.isEmpty ? 0 : wanted.clamp(0, chapters.length - 1);
       setState(() {
         _chapters = chapters;
         _chapterIndex = chIdx;
-        // If the saved audio position is for the chapter we're opening, surface
-        // a "Resume chunk N" affordance.
         _resumeOrdinal = (audio != null && audio.chapter == chIdx) ? audio.ordinal : null;
         _loading = false;
       });
+      // Auto-start audio if requested (Resume from Books tab).
+      if (widget.autoStartAudio && mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _startAudio(fromOrdinal: _resumeOrdinal ?? 0);
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -141,6 +165,11 @@ class _BookReaderState extends State<BookReader> {
       // Persist last-viewed chapter on the way out. We intentionally don't await:
       // dispose runs synchronously, and the prefs write completes regardless.
       _library.saveChapterIndex(widget.book.id, _chapterIndex);
+      // Also snapshot the audio ordinal if a session is in flight, so leaving
+      // the reader mid-playback doesn't lose the resume point.
+      if (_audioMode) {
+        _library.saveAudioPosition(widget.book.id, _chapterIndex, _currentOrdinal);
+      }
     }
     _ordinalSub?.cancel();
     _playerStateSub?.cancel();
@@ -194,30 +223,14 @@ class _BookReaderState extends State<BookReader> {
       _audioPaused = false;
       _audioError = null;
       _prepDone = 0;
-      // Forward-only: we only prep chunks from startAt onwards.
-      _prepTotal = chunks.length - startAt;
       _chunks = chunks;
-      _translations = const [];
+      // Lazy translation buffer — filled in small batches just ahead of the
+      // playhead, instead of being computed upfront.
+      _translations = List<String?>.filled(chunks.length, null);
       _currentOrdinal = startAt;
     });
 
     try {
-      // 1) Translate everything in one batch (fast, cached) so we know the
-      //    target text for every chunk before any audio is synthesised.
-      final service = SentenceBankService(SharedPreferencesAsync());
-      final translations = await service.translateBatch(
-        sentences: chunks,
-        sourceLang: widget.book.language.isEmpty ? 'English' : widget.book.language,
-        targetLang: settings.targetLanguage,
-        apiKey: apiKey,
-      );
-      if (!mounted || !_audioMode) return;
-      setState(() => _translations = translations);
-
-      // 2) Synth + append just the *first* chunk (from `startAt`), then start
-      //    playback. The remaining chunks are synthesised in the background and
-      //    appended to the playlist as they're ready — playback never has to
-      //    wait for the whole chapter to be prepared.
       final sourceLocale = _bookLocale(widget.book.language);
       final targetLocale = _localeForLanguage(settings.targetLanguage) ?? 'en-US';
 
@@ -241,41 +254,41 @@ class _BookReaderState extends State<BookReader> {
       _playerStateSub = _audioPlaylist.playerStateStream.listen((s) {
         if (!mounted) return;
         setState(() => _audioPaused = !s.playing);
+        if (s.processingState == ProcessingState.completed) {
+          _onChapterAudioCompleted();
+        }
       });
 
-      // Prepare and append the starting chunk.
-      await _prepareAndAppendChunk(
-        ord: startAt,
-        chunk: chunks[startAt],
-        translation: translations[startAt],
-        sourceLocale: sourceLocale,
-        targetLocale: targetLocale,
-      );
-      if (!mounted || !_audioMode) return;
-      setState(() {
-        _audioPrep = false;
-        _prepDone = 1;
-        _resumeOrdinal = null;
-      });
-      await _audioPlaylist.playDynamic();
-
-      // Background prep: synth and append the rest in reading order, but never
-      // get more than `_kAudioLookAhead` chunks ahead of the playhead — this
-      // caps how many audio files exist on disk at once.
-      for (var i = startAt + 1; i < chunks.length; i++) {
+      // Single streaming loop. The first iteration also translates + synths the
+      // starting chunk (so playback can begin), then flips _audioPrep off and
+      // calls playDynamic(). Subsequent iterations just keep the queue topped
+      // up, paced to stay at most `_kAudioLookAhead` chunks ahead of playback.
+      for (var i = startAt; i < chunks.length; i++) {
         while (mounted && _audioMode && (i - _currentOrdinal > _kAudioLookAhead)) {
           await Future.delayed(const Duration(milliseconds: 500));
         }
         if (!mounted || !_audioMode) return;
+        await _ensureTranslation(i, apiKey: apiKey, settings: settings);
+        if (!mounted || !_audioMode) return;
         await _prepareAndAppendChunk(
           ord: i,
           chunk: chunks[i],
-          translation: translations[i],
+          translation: _translations[i] ?? chunks[i],
           sourceLocale: sourceLocale,
           targetLocale: targetLocale,
         );
         if (!mounted || !_audioMode) return;
-        setState(() => _prepDone = _prepDone + 1);
+        if (i == startAt) {
+          // First chunk ready — start playback and drop out of "preparing" UI.
+          await _audioPlaylist.playDynamic();
+          setState(() {
+            _audioPrep = false;
+            _prepDone = 1;
+            _resumeOrdinal = null;
+          });
+        } else {
+          setState(() => _prepDone = _prepDone + 1);
+        }
       }
     } catch (e) {
       if (!mounted) return;
@@ -285,6 +298,27 @@ class _BookReaderState extends State<BookReader> {
         _audioError = e.toString().replaceFirst('Exception: ', '');
       });
     }
+  }
+
+  /// Makes sure `_translations[ord]` is set, fetching a small batch of
+  /// translations starting at [ord] from the AI cache / API on demand.
+  Future<void> _ensureTranslation(int ord, {required String apiKey, required dynamic settings}) async {
+    if (ord < _translations.length && _translations[ord] != null) return;
+    final end = (ord + _kTranslateBatchSize).clamp(0, _chunks.length);
+    final subset = _chunks.sublist(ord, end);
+    final service = SentenceBankService(SharedPreferencesAsync());
+    final fetched = await service.translateBatch(
+      sentences: subset,
+      sourceLang: widget.book.language.isEmpty ? 'English' : widget.book.language,
+      targetLang: settings.targetLanguage,
+      apiKey: apiKey,
+    );
+    if (!mounted) return;
+    setState(() {
+      for (var i = 0; i < subset.length; i++) {
+        _translations[ord + i] = fetched[i];
+      }
+    });
   }
 
   Future<void> _prepareAndAppendChunk({
@@ -334,6 +368,50 @@ class _BookReaderState extends State<BookReader> {
       await _library.saveAudioPosition(widget.book.id, _chapterIndex, _currentOrdinal);
     }
     // _audioPaused gets updated by the playerState stream listener.
+  }
+
+  /// Skip back one chunk. The playlist's previous() seeks to the previous
+  /// ordinal's first clip (or no-ops if already at chunk 0).
+  Future<void> _skipBack() async {
+    if (!_audioMode || _audioPrep) return;
+    await _audioPlaylist.previous();
+  }
+
+  /// Skip forward one chunk. If the next chunk hasn't been appended yet
+  /// (background prep hasn't reached it), this silently no-ops; just try again
+  /// in a moment.
+  Future<void> _skipForward() async {
+    if (!_audioMode || _audioPrep) return;
+    await _audioPlaylist.next();
+  }
+
+  /// Player reached the end of the current chapter's playlist. If there's a
+  /// next chapter, advance to it and start a new audio session from chunk 0;
+  /// otherwise stop and surface the resume marker (so the user can pick up at
+  /// the start of this chapter next time if they want).
+  bool _advancing = false; // guard so we don't double-fire on the completed event
+  Future<void> _onChapterAudioCompleted() async {
+    if (_advancing || !_audioMode) return;
+    _advancing = true;
+    try {
+      final chapters = _chapters;
+      if (chapters == null || _chapterIndex >= chapters.length - 1) {
+        await _stopAudio();
+        return;
+      }
+      // Stop the current session first (this saves the final ordinal, but
+      // we'll overwrite it for the *next* chapter so reopening lands there).
+      await _stopAudio();
+      if (!mounted) return;
+      await _gotoChapter(_chapterIndex + 1);
+      if (!mounted) return;
+      // Reset audio position to the new chapter's start so the resume marker
+      // is consistent with where we actually are.
+      await _library.saveAudioPosition(widget.book.id, _chapterIndex, 0);
+      await _startAudio(fromOrdinal: 0);
+    } finally {
+      _advancing = false;
+    }
   }
 
   Future<void> _stopAudio() async {
@@ -634,7 +712,9 @@ class _BookReaderState extends State<BookReader> {
   /// chunk, plus pause/stop controls.
   Widget _buildAudioScaffold() {
     final src = (_currentOrdinal < _chunks.length) ? _chunks[_currentOrdinal] : '';
-    final tr = (_currentOrdinal < _translations.length) ? _translations[_currentOrdinal] : '';
+    final tr = (_currentOrdinal < _translations.length)
+        ? (_translations[_currentOrdinal] ?? '')
+        : '';
     final theme = Theme.of(context);
     return Scaffold(
       body: SafeArea(
@@ -648,7 +728,7 @@ class _BookReaderState extends State<BookReader> {
                 children: [
                   Text(
                     _audioPrep
-                        ? 'Preparing… $_prepDone / $_prepTotal'
+                        ? 'Preparing first clip…'
                         : '${_currentOrdinal + 1} / ${_chunks.length}',
                     style: theme.textTheme.labelSmall,
                   ),
@@ -668,7 +748,7 @@ class _BookReaderState extends State<BookReader> {
                             const CircularProgressIndicator(),
                             const SizedBox(height: 16),
                             Text(
-                              'Translating + synthesising clips…',
+                              'Translating + synthesising the first chunk…',
                               style: theme.textTheme.bodySmall,
                               textAlign: TextAlign.center,
                             ),
@@ -698,13 +778,30 @@ class _BookReaderState extends State<BookReader> {
                         ),
                 ),
               ),
-              // Bottom: pause/resume (disabled while prepping).
+              // Bottom: previous chunk / pause-resume / next chunk.
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: FilledButton.icon(
-                  onPressed: _audioPrep ? null : _pauseOrResume,
-                  icon: Icon(_audioPaused ? Icons.play_arrow : Icons.pause),
-                  label: Text(_audioPaused ? 'Resume' : 'Pause'),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    IconButton.outlined(
+                      onPressed: _audioPrep ? null : _skipBack,
+                      tooltip: 'Previous chunk',
+                      icon: const Icon(Icons.skip_previous),
+                    ),
+                    const SizedBox(width: 12),
+                    FilledButton.icon(
+                      onPressed: _audioPrep ? null : _pauseOrResume,
+                      icon: Icon(_audioPaused ? Icons.play_arrow : Icons.pause),
+                      label: Text(_audioPaused ? 'Resume' : 'Pause'),
+                    ),
+                    const SizedBox(width: 12),
+                    IconButton.outlined(
+                      onPressed: _audioPrep ? null : _skipForward,
+                      tooltip: 'Next chunk',
+                      icon: const Icon(Icons.skip_next),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -748,30 +845,62 @@ class _BookReaderState extends State<BookReader> {
       return const Center(child: Text('No readable chapters in this EPUB.'));
     }
     final ch = chapters[_chapterIndex];
-    return SingleChildScrollView(
+    // Split the chapter into the same chunks audio mode uses, so each one can
+    // be tapped to "play from here". Lets the user jump audio to any
+    // sentence/paragraph without having to navigate by chunk number.
+    final unit = context.watch<AppState>().settings.booksChunkUnit;
+    final chunks = BookLibraryService.chunkText(ch.text, unit);
+    final headerCount = (_audioError != null) ? 2 : 1;
+
+    return ListView.builder(
       controller: _scroll,
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (_audioError != null)
-            Container(
-              padding: const EdgeInsets.all(8),
-              margin: const EdgeInsets.only(bottom: 8),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.errorContainer,
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(_audioError!, style: Theme.of(context).textTheme.labelSmall),
+      padding: const EdgeInsets.fromLTRB(8, 12, 16, 24),
+      itemCount: headerCount + chunks.length,
+      itemBuilder: (_, i) {
+        if (_audioError != null && i == 0) {
+          return Container(
+            padding: const EdgeInsets.all(8),
+            margin: const EdgeInsets.only(left: 8, right: 0, bottom: 8),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.errorContainer,
+              borderRadius: BorderRadius.circular(6),
             ),
-          Text(ch.title, style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 12),
-          SelectableText(
-            ch.text,
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.55),
+            child: Text(_audioError!, style: Theme.of(context).textTheme.labelSmall),
+          );
+        }
+        if (i == headerCount - 1) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(8, 0, 0, 12),
+            child: Text(ch.title, style: Theme.of(context).textTheme.headlineSmall),
+          );
+        }
+        final ord = i - headerCount;
+        final isResume = _resumeOrdinal == ord;
+        return Container(
+          color: isResume ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.35) : null,
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Play audio from here',
+                icon: const Icon(Icons.play_circle_outline, size: 22),
+                onPressed: () => _startAudio(fromOrdinal: ord),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 10, right: 0, bottom: 6),
+                  child: SelectableText(
+                    chunks[ord],
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.45),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
