@@ -91,6 +91,13 @@ class _BookReaderState extends State<BookReader> {
   bool _audioMode = false;
   bool _audioPrep = false;
   bool _audioPaused = false;
+  // True while the Replay button is speaking the current chunk (via live TTS,
+  // so the playlist stays paused at the same position).
+  bool _replaying = false;
+  // Monotonic session token — each replay invocation captures it on entry and
+  // bails out if a newer invocation has bumped it (so a stale Future awaiting
+  // _speakLive can't continue talking on top of a fresh one).
+  int _replaySession = 0;
   int _prepDone = 0;
   String? _audioError;
   // Current chunk index + the chunk text and translation lists, so the play
@@ -360,6 +367,19 @@ class _BookReaderState extends State<BookReader> {
   Future<void> _pauseOrResume() async {
     if (!_audioMode || _audioPrep) return;
     if (_audioPaused) {
+      // If a replay is mid-speak, cut it off (bump session + stop TTS) before
+      // resuming auto playback — otherwise the replay's `await` will continue
+      // and start the next line on top of the resumed playlist.
+      if (_replaying) {
+        ++_replaySession;
+        await _audioTts.stop();
+        if (!mounted) return;
+        setState(() => _replaying = false);
+      }
+      // Seek back to the start of the current chunk so Resume always restarts
+      // it from the beginning, rather than continuing mid-clip from wherever
+      // the pause happened to land.
+      await _audioPlaylist.seekToOrdinal(_currentOrdinal);
       await _audioPlaylist.resume();
     } else {
       await _audioPlaylist.pause();
@@ -368,6 +388,73 @@ class _BookReaderState extends State<BookReader> {
       await _library.saveAudioPosition(widget.book.id, _chapterIndex, _currentOrdinal);
     }
     // _audioPaused gets updated by the playerState stream listener.
+  }
+
+  /// Re-speaks the current chunk's source and target via live TTS and returns
+  /// to the paused state. Doesn't touch the playlist position, so pressing
+  /// Resume afterwards picks up exactly where it was. Pressing Replay again
+  /// (while already replaying) restarts the speak from the top.
+  Future<void> _replayCurrentChunk() async {
+    if (!_audioMode || _currentOrdinal >= _chunks.length) return;
+    // Bump the session token first so any prior invocation still awaiting a
+    // _speakLive sees mySession != _replaySession and bails before talking.
+    final mySession = ++_replaySession;
+    await _audioTts.stop();
+    if (!mounted || mySession != _replaySession) return;
+
+    if (!_audioPaused) {
+      await _audioPlaylist.pause();
+      await _library.saveAudioPosition(widget.book.id, _chapterIndex, _currentOrdinal);
+    }
+    if (!mounted || mySession != _replaySession) return;
+    setState(() => _replaying = true);
+
+    try {
+      final state = context.read<AppState>();
+      final settings = state.settings;
+      final sourceLocale = _bookLocale(widget.book.language);
+      final targetLocale = _localeForLanguage(settings.targetLanguage) ?? 'en-US';
+      final src = _chunks[_currentOrdinal];
+      final tr = (_currentOrdinal < _translations.length)
+          ? _translations[_currentOrdinal]
+          : null;
+
+      await _speakLive(src, sourceLocale);
+      if (!mounted || mySession != _replaySession) return;
+
+      final pauseSec = settings.booksSourcePauseSec;
+      if (pauseSec > 0) await Future.delayed(Duration(seconds: pauseSec));
+      if (!mounted || mySession != _replaySession) return;
+
+      if (tr != null && tr.isNotEmpty) {
+        await _speakLive(tr, targetLocale);
+      }
+    } finally {
+      // Only the *winning* invocation flips _replaying back off — stale ones
+      // shouldn't touch it.
+      if (mounted && mySession == _replaySession) {
+        setState(() => _replaying = false);
+      }
+    }
+  }
+
+  /// Speaks [text] in [locale] via flutter_tts and awaits its completion.
+  /// Honors the user-picked voice for that locale.
+  Future<void> _speakLive(String text, String locale) async {
+    final voiceVal = context.read<AppState>().settings.booksVoiceByLocale[locale] ?? '';
+    final parts = voiceVal.split('__SEP__');
+    final voiceName = parts.isNotEmpty ? parts[0] : '';
+    final voiceLocale = (parts.length == 2 && parts[1].isNotEmpty) ? parts[1] : locale;
+
+    await _audioTts.stop();
+    await _audioTts.setLanguage(voiceName.isNotEmpty ? voiceLocale : locale);
+    if (voiceName.isNotEmpty) {
+      await _audioTts.setVoice({'name': voiceName, 'locale': voiceLocale});
+    }
+    await _audioTts.setSpeechRate(0.5);
+    await _audioTts.setPitch(1.0);
+    await _audioTts.awaitSpeakCompletion(true);
+    await _audioTts.speak(text);
   }
 
   /// Skip back one chunk. The playlist's previous() seeks to the previous
@@ -415,7 +502,11 @@ class _BookReaderState extends State<BookReader> {
   }
 
   Future<void> _stopAudio() async {
-    // Save the final ordinal so the user can resume here later.
+    // First: invalidate any in-flight replay and kill the live TTS so a stale
+    // _speakLive await can't continue talking after the session ends.
+    ++_replaySession;
+    await _audioTts.stop();
+
     if (_audioMode) {
       await _library.saveAudioPosition(widget.book.id, _chapterIndex, _currentOrdinal);
     }
@@ -436,6 +527,7 @@ class _BookReaderState extends State<BookReader> {
       _audioMode = false;
       _audioPrep = false;
       _audioPaused = false;
+      _replaying = false;
       _resumeOrdinal = _currentOrdinal; // surface resume in the AppBar
     });
   }
@@ -683,21 +775,33 @@ class _BookReaderState extends State<BookReader> {
     if (_audioMode) return _buildAudioScaffold();
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.book.title, overflow: TextOverflow.ellipsis),
+        // Tonal background + bumped title style so the book title and the
+        // voice/play actions are easy to spot above the body text.
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
+        elevation: 2,
+        title: Text(
+          widget.book.title,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+        ),
         actions: [
           if (_chapters != null && _chapters!.isNotEmpty) ...[
             IconButton(
+              iconSize: 30,
               tooltip: 'Pick TTS voice (source / target)',
               icon: const Icon(Icons.record_voice_over_outlined),
               onPressed: _showVoicePicker,
             ),
             IconButton(
+              iconSize: 32,
               tooltip: _resumeOrdinal != null
                   ? 'Resume audio from chunk ${_resumeOrdinal! + 1}'
                   : 'Play this chapter as audio',
               icon: const Icon(Icons.play_circle_outline),
               onPressed: () => _startAudio(fromOrdinal: _resumeOrdinal ?? 0),
             ),
+            const SizedBox(width: 4),
           ],
         ],
       ),
@@ -722,7 +826,8 @@ class _BookReaderState extends State<BookReader> {
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
           child: Column(
             children: [
-              // Top: minimal info — chunk position + a stop button.
+              // Top: chunk position + a prominent Stop button — easy to spot,
+              // hard to misread, in the error tint so its purpose is unambiguous.
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -730,12 +835,18 @@ class _BookReaderState extends State<BookReader> {
                     _audioPrep
                         ? 'Preparing first clip…'
                         : '${_currentOrdinal + 1} / ${_chunks.length}',
-                    style: theme.textTheme.labelSmall,
+                    style: theme.textTheme.labelMedium,
                   ),
-                  IconButton(
+                  FilledButton.tonalIcon(
                     onPressed: _stopAudio,
-                    tooltip: 'Stop',
-                    icon: const Icon(Icons.stop_circle_outlined),
+                    icon: const Icon(Icons.stop_circle, size: 22),
+                    label: const Text('Stop'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: theme.colorScheme.errorContainer,
+                      foregroundColor: theme.colorScheme.onErrorContainer,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      textStyle: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
                   ),
                 ],
               ),
@@ -772,6 +883,22 @@ class _BookReaderState extends State<BookReader> {
                                   color: theme.colorScheme.onSurfaceVariant,
                                 ),
                                 textAlign: TextAlign.center,
+                              ),
+                              // Replay button right under the texts so the
+                              // bottom controls are well out of accidental
+                              // tapping range when audio is playing.
+                              const SizedBox(height: 24),
+                              OutlinedButton.icon(
+                                // Single behaviour: tap to (re)play the current
+                                // chunk. If a replay is already going, the
+                                // session token bump in _replayCurrentChunk
+                                // cuts off the in-flight speech before the new
+                                // one starts — no overlap, no toggle state.
+                                onPressed: (!_audioPrep && _audioPaused)
+                                    ? _replayCurrentChunk
+                                    : null,
+                                icon: const Icon(Icons.replay),
+                                label: const Text('Replay this chunk'),
                               ),
                             ],
                           ),
@@ -908,30 +1035,44 @@ class _BookReaderState extends State<BookReader> {
     final chapters = _chapters!;
     final atFirst = _chapterIndex <= 0;
     final atLast = _chapterIndex >= chapters.length - 1;
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            IconButton(
-              onPressed: atFirst ? null : () => _gotoChapter(_chapterIndex - 1),
-              icon: const Icon(Icons.chevron_left),
-              tooltip: 'Previous chapter',
-            ),
-            TextButton(
-              onPressed: () => _pickChapter(chapters),
-              child: Text(
-                '${_chapterIndex + 1} of ${chapters.length}: ${chapters[_chapterIndex].title}',
-                overflow: TextOverflow.ellipsis,
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.secondaryContainer,
+      elevation: 4,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              IconButton.filledTonal(
+                iconSize: 28,
+                onPressed: atFirst ? null : () => _gotoChapter(_chapterIndex - 1),
+                icon: const Icon(Icons.chevron_left),
+                tooltip: 'Previous chapter',
               ),
-            ),
-            IconButton(
-              onPressed: atLast ? null : () => _gotoChapter(_chapterIndex + 1),
-              icon: const Icon(Icons.chevron_right),
-              tooltip: 'Next chapter',
-            ),
-          ],
+              Expanded(
+                child: TextButton(
+                  onPressed: () => _pickChapter(chapters),
+                  style: TextButton.styleFrom(
+                    foregroundColor: theme.colorScheme.onSecondaryContainer,
+                    textStyle: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  child: Text(
+                    '${_chapterIndex + 1} of ${chapters.length}: ${chapters[_chapterIndex].title}',
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+              IconButton.filledTonal(
+                iconSize: 28,
+                onPressed: atLast ? null : () => _gotoChapter(_chapterIndex + 1),
+                icon: const Icon(Icons.chevron_right),
+                tooltip: 'Next chapter',
+              ),
+            ],
+          ),
         ),
       ),
     );

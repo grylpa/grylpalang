@@ -275,6 +275,11 @@ class AutoPlaylistController {
     if (ord != null && ord - 1 >= 0) await _seekToOrdinal(ord - 1);
   }
 
+  /// Seeks the player to the first clip of [ord] (or no-ops if that ordinal
+  /// has no clips in the current playlist — e.g. it hasn't been appended yet
+  /// in dynamic mode).
+  Future<void> seekToOrdinal(int ord) => _seekToOrdinal(ord);
+
   Future<void> _seekToOrdinal(int ord) async {
     final clip = _clipToOrdinal.indexOf(ord);
     if (clip >= 0) await _player.seek(Duration.zero, index: clip);
