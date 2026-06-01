@@ -48,7 +48,7 @@ dependencies:
   crypto: ^3.0.7
   package_info_plus: ^10.1.0
   just_audio: ^0.10.5
-  just_audio_background: ^0.0.1-beta.17
+  audio_service: ^0.18.18
   file_selector: ^1.0.0
   archive: ^4.0.0
 

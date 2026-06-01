@@ -3,19 +3,18 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:just_audio/just_audio.dart';
-import 'package:just_audio_background/just_audio_background.dart';
+import 'package:audio_service/audio_service.dart';
+
+import 'katalaveno_audio_handler.dart';
 import 'package:path_provider/path_provider.dart';
 
-/// Drives Sentence Bank auto mode through a native media session (just_audio +
-/// just_audio_background). The whole subject is pre-built into one playlist of
-/// audio clips + silence gaps; ExoPlayer advances clip-to-clip natively, so
-/// playback keeps going when the screen is locked (the main isolate is
-/// suspended on lock, which is why the old Dart-timer loop stalled).
-///
-/// Milestone A: Greek translation clips only (cached Google-TTS MP3s) + silence
-/// gaps + repeats. The gendered English source is added in a later step.
+/// Drives auto-play mode (Sentence Bank or Books) through the shared
+/// [KatalavenoAudioHandler]'s [AudioPlayer]. The handler also routes system
+/// media-control events (Bluetooth headphones, lockscreen, Android Auto) to
+/// the active session's app-level handlers, so SkipToNext advances by chunk
+/// rather than by clip.
 class AutoPlaylistController {
-  final AudioPlayer _player = AudioPlayer();
+  AudioPlayer get _player => katalavenoAudio.player;
 
   // Playlist clip index → ordinal (position of the sentence in the play order
   // the caller supplied). Lets the UI highlight the right sentence and lets us
@@ -293,7 +292,8 @@ class AutoPlaylistController {
   Future<void> dispose() async {
     await _idxSub?.cancel();
     await _ordinalCtrl.close();
-    await _player.dispose();
+    // Don't dispose `_player` — it's the shared handler's player and other
+    // controllers (e.g. the other tab) may still need it.
   }
 
   AudioSource _fileSource(String path, String id, String title) => AudioSource.file(

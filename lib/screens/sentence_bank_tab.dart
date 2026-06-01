@@ -15,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/sentence_bank.dart';
 import '../services/audio_utils.dart';
 import '../services/auto_playlist_controller.dart';
+import '../services/katalaveno_audio_handler.dart';
 import '../services/google_translate_tts.dart';
 import '../services/sentence_bank_foreground_service.dart';
 import '../services/sentence_bank_service.dart';
@@ -143,6 +144,28 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         setState(() => _ttsPlaying = false);
       }
     });
+    // Persistent media-control binding for this tab. Stays in the stack for the
+    // life of the State so Bluetooth play/pause/skip work whether or not auto
+    // mode is currently running. Book Reader's session binds on top of this
+    // while it's active and pops off when it ends, restoring this fallback.
+    katalavenoAudio.bind(
+      owner: this,
+      onPlay: () async {
+        if (!_autoMode && _currentSentences().isNotEmpty) await _startAuto();
+      },
+      onPause: () async {
+        if (_autoMode) _stopAuto();
+      },
+      onStop: () async {
+        if (_autoMode) _stopAuto();
+      },
+      onSkipNext: () async {
+        if (_autoMode) _autoNext();
+      },
+      onSkipPrev: () async {
+        if (_autoMode) _autoPrevious();
+      },
+    );
   }
 
   // Completion of the manual single-sentence speaker button (flutter_tts).
@@ -576,6 +599,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   Future<void> _startAuto() async {
     if (_currentSentences().isEmpty) return;
     setState(() => _autoMode = true);
+    // Media-control bindings live on the handler stack for the whole tab
+    // lifetime (set up in initState), so we don't (re)bind here.
     await _buildOrResumePlaylist(play: true);
   }
 
@@ -700,6 +725,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     _autoOrdinalSub = null;
     _autoPlaylist.stop();
     _saveAutoPosition();
+    // Persistent media binding stays so a tap on Play (Bluetooth / lockscreen)
+    // can restart auto mode after a stop.
     setState(() {
       _autoMode = false;
       _autoPreparing = false;
@@ -836,6 +863,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   @override
   void dispose() {
+    katalavenoAudio.unbind(this);
     _tts.stop();
     _autoOrdinalSub?.cancel();
     _autoPlaylist.dispose();

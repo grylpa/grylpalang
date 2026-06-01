@@ -14,6 +14,7 @@ import '../models/book_chapter.dart';
 import '../models/book_entry.dart';
 import '../services/auto_playlist_controller.dart';
 import '../services/book_library_service.dart';
+import '../services/katalaveno_audio_handler.dart';
 import '../services/sentence_bank_service.dart';
 import '../state/app_state.dart';
 
@@ -180,6 +181,7 @@ class _BookReaderState extends State<BookReader> {
     }
     _ordinalSub?.cancel();
     _playerStateSub?.cancel();
+    katalavenoAudio.unbind(this);
     _audioPlaylist.dispose();
     _audioTts.stop();
     _scroll.dispose();
@@ -288,6 +290,16 @@ class _BookReaderState extends State<BookReader> {
         if (i == startAt) {
           // First chunk ready — start playback and drop out of "preparing" UI.
           await _audioPlaylist.playDynamic();
+          // Bind media-control callbacks so Bluetooth / lockscreen / Android
+          // Auto route to our chunk-level actions, not the default clip-level.
+          katalavenoAudio.bind(
+            owner: this,
+            onPlay: _pauseOrResume,
+            onPause: _pauseOrResume,
+            onStop: _stopAudio,
+            onSkipNext: _skipForward,
+            onSkipPrev: _skipBack,
+          );
           setState(() {
             _audioPrep = false;
             _prepDone = 1;
@@ -506,6 +518,7 @@ class _BookReaderState extends State<BookReader> {
     // _speakLive await can't continue talking after the session ends.
     ++_replaySession;
     await _audioTts.stop();
+    katalavenoAudio.unbind(this);
 
     if (_audioMode) {
       await _library.saveAudioPosition(widget.book.id, _chapterIndex, _currentOrdinal);

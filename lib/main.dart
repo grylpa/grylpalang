@@ -1,13 +1,12 @@
+import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
-// import 'package:katalaveno/services/notification_service.dart';
-import 'package:just_audio_background/just_audio_background.dart';
 import 'package:provider/provider.dart';
 import 'package:timezone/data/latest.dart' as tz;
-// import 'package:timezone/timezone.dart' as tz;
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'screens/main_scaffold.dart';
+import 'services/katalaveno_audio_handler.dart' as kah;
 import 'services/sentence_bank_foreground_service.dart';
 import 'state/app_state.dart';
 
@@ -16,12 +15,17 @@ final GlobalKey<NavigatorState> rootNavKey = GlobalKey<NavigatorState>();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Background audio (native media session) for Sentence Bank auto mode — this
-  // is what survives a screen lock. Must run before runApp.
-  await JustAudioBackground.init(
-    androidNotificationChannelId: 'com.grylpa.katalaveno.audio',
-    androidNotificationChannelName: 'Sentence Bank',
-    androidNotificationOngoing: true,
+  // Background audio (native media session) — also routes system media-control
+  // events (Bluetooth, lockscreen, Android Auto) into our app handler so e.g.
+  // "next track" advances to the next chunk/sentence rather than the next clip.
+  kah.katalavenoAudio = await AudioService.init(
+    builder: () => kah.KatalavenoAudioHandler(),
+    config: const AudioServiceConfig(
+      androidNotificationChannelId: 'com.grylpa.katalaveno.audio',
+      androidNotificationChannelName: 'Katalaveno audio',
+      androidNotificationOngoing: true,
+      androidStopForegroundOnPause: true,
+    ),
   );
 
   // Foreground service for Sentence Bank auto mode (Android only, no-op elsewhere).
