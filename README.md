@@ -54,3 +54,7 @@ MIT. See [LICENSE](LICENSE).
 ## Attribution
 
 Created by grylpa.
+
+## Contact
+
+info@grylpa.com
