@@ -49,7 +49,7 @@ Translations, generated sentences, explanations, and text-to-speech output may c
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
 
 ## Attribution
 
