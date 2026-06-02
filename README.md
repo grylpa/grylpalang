@@ -46,6 +46,7 @@ It is not medical advice, cognitive training, therapy, diagnosis, or a proven me
 The software is provided as-is, with no warranty or guarantee of correctness, reliability, safety, availability, or fitness for any particular purpose. Use it at your own discretion.
 
 Translations, generated sentences, explanations, and text-to-speech output may contain mistakes. They should be treated as learning aids, not authoritative language instruction.
+
 ## License
 
 MIT
