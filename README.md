@@ -48,4 +48,8 @@ The software is provided as-is, with no warranty or guarantee of correctness, re
 Translations, generated sentences, explanations, and text-to-speech output may contain mistakes. They should be treated as learning aids, not authoritative language instruction.
 ## License
 
-TBD
+MIT
+
+## Attribution
+
+Created by grylpa.
