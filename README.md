@@ -39,7 +39,7 @@ Other Flutter targets (iOS, web, desktop) are not included. To add one, run `flu
 
 ## Disclaimer
 
-This project is a personal software experiment.
+This project is a personal software experiment, is in its alpha stages and not ready for production.
 
 It is not medical advice, cognitive training, therapy, diagnosis, or a proven method for preventing or treating any condition. Any references to memory, attention, learning, brain challenge, or similar ideas describe the design goals and personal motivation behind the project, not scientifically validated claims.
 
