@@ -37,6 +37,15 @@ The bundled [`assets/sentence_bank.yaml`](assets/sentence_bank.yaml) documents i
 
 Other Flutter targets (iOS, web, desktop) are not included. To add one, run `flutter create --platforms=<platform> .` from the project root.
 
+## Disclaimer
+
+This project is a personal software experiment.
+
+It is not medical advice, cognitive training, therapy, diagnosis, or a proven method for preventing or treating any condition. Any references to memory, attention, learning, brain challenge, or similar ideas describe the design goals and personal motivation behind the project, not scientifically validated claims.
+
+The software is provided as-is, with no warranty or guarantee of correctness, reliability, safety, availability, or fitness for any particular purpose. Use it at your own discretion.
+
+Translations, generated sentences, explanations, and text-to-speech output may contain mistakes. They should be treated as learning aids, not authoritative language instruction.
 ## License
 
 TBD
