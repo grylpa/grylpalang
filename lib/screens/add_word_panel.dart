@@ -83,6 +83,8 @@ class _AddWordPanelState extends State<AddWordPanel> {
                     Text('Add new', style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(width: 16),
                     DropdownButton<WordType>(
+                      focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
                       value: _type,
                       onChanged: (val) => setState(() => _type = val ?? WordType.verb),
                       items: const [

@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -19,11 +20,19 @@ class SettingsScreen extends StatefulWidget {
 
 Future<void> _showAbout(BuildContext context) async {
   final info = await PackageInfo.fromPlatform();
+  // Android always reports some buildNumber (defaults to "1" when pubspec omits
+  // `+N`), so we can't tell from PackageInfo alone whether the developer set a
+  // build number. Bundle pubspec.yaml and look at the version line directly.
+  final pubspec = await rootBundle.loadString('pubspec.yaml');
+  final versionLine = pubspec
+      .split('\n')
+      .firstWhere((l) => l.trimLeft().startsWith('version:'), orElse: () => '');
+  final hasExplicitBuild = versionLine.contains('+');
   if (!context.mounted) return;
   showAboutDialog(
     context: context,
     applicationName: 'Katalaveno',
-    applicationVersion: info.buildNumber.isEmpty ? info.version : '${info.version} (build ${info.buildNumber})',
+    applicationVersion: hasExplicitBuild ? '${info.version} (build ${info.buildNumber})' : info.version,
     applicationIcon: ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: Image.asset('assets/icon.png', width: 48, height: 48),
@@ -638,6 +647,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         Text('Chunk by', style: textStyle),
                         const SizedBox(width: 12),
                         DropdownButton<String>(
+                          focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
                           value: s.booksChunkUnit,
                           items: const [
                             DropdownMenuItem(value: 'sentence', child: Text('Sentence')),

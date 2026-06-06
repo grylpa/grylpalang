@@ -991,7 +991,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           value: _selectedSubject,
           isExpanded: true,
           isDense: true,
-          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+          focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
           items: _sortedSubjectNames.map((name) {
             final isMeta = bank.subjects[name] is MetaSubject;
             return DropdownMenuItem(
