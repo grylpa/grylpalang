@@ -36,21 +36,27 @@ class LocalBooksService {
     }
   }
 
-  /// Opens the system file picker, lets the user choose one .epub, copies it
-  /// into app storage, parses minimal metadata, and appends it to the list.
-  /// Returns the new entry, or `null` if the user cancelled.
-  Future<BookEntry?> pickAndImport() async {
-    const group = XTypeGroup(label: 'EPUB', extensions: ['epub']);
-    final picked = await openFile(acceptedTypeGroups: const [group]);
+  /// Opens the system file picker filtered to [format] (`'epub'` or `'txt'`),
+  /// copies the chosen file into app storage, parses minimal metadata when
+  /// possible, and appends it to the list. Returns the new entry, or `null` if
+  /// the user cancelled.
+  Future<BookEntry?> pickAndImport({String format = 'epub'}) async {
+    final group = format == 'txt'
+        ? const XTypeGroup(label: 'Text', extensions: ['txt'])
+        : const XTypeGroup(label: 'EPUB', extensions: ['epub']);
+    final picked = await openFile(acceptedTypeGroups: [group]);
     if (picked == null) return null;
     final src = File(picked.path);
     final bytes = await src.readAsBytes();
 
     final id = '$kIdPrefix${sha1.convert(bytes).toString().substring(0, 12)}';
-    final dest = await _destFile(id);
+    final dest = await _destFile(id, ext: format);
     await dest.writeAsBytes(bytes, flush: true);
 
-    final meta = _parseEpubMetadata(bytes, fallbackTitle: _fileBaseName(picked.path));
+    final fallbackTitle = _fileBaseName(picked.path);
+    final meta = format == 'txt'
+        ? (title: fallbackTitle, author: '', language: '')
+        : _parseEpubMetadata(bytes, fallbackTitle: fallbackTitle);
     final entry = BookEntry(
       id: id,
       title: meta.title,
@@ -72,14 +78,16 @@ class LocalBooksService {
     return entry;
   }
 
-  /// Removes an imported book and its cached EPUB file.
+  /// Removes an imported book and its cached file (epub or txt).
   Future<void> remove(String id) async {
     final current = await list();
     final updated = current.where((b) => b.id != id).toList();
     await _save(updated);
     try {
-      final f = await _destFile(id);
-      if (await f.exists()) await f.delete();
+      for (final ext in const ['epub', 'txt']) {
+        final f = await _destFile(id, ext: ext);
+        if (await f.exists()) await f.delete();
+      }
     } catch (_) {}
   }
 
@@ -87,19 +95,23 @@ class LocalBooksService {
     await _prefs.setString(_kKey, jsonEncode([for (final b in books) b.toJson()]));
   }
 
-  Future<File> _destFile(String id) async {
+  Future<File> _destFile(String id, {required String ext}) async {
     final base = await getApplicationDocumentsDirectory();
     final dir = Directory('${base.path}/$_kDir');
     if (!await dir.exists()) await dir.create(recursive: true);
     final safeName = id.replaceAll(':', '_');
-    return File('${dir.path}/$safeName.epub');
+    return File('${dir.path}/$safeName.$ext');
   }
 
   // ── EPUB metadata (minimal in-house parser) ───────────────────────────────
 
   static String _fileBaseName(String path) {
     final n = path.split(RegExp(r'[\\/]')).last;
-    return n.toLowerCase().endsWith('.epub') ? n.substring(0, n.length - 5) : n;
+    final lower = n.toLowerCase();
+    for (final ext in const ['.epub', '.txt']) {
+      if (lower.endsWith(ext)) return n.substring(0, n.length - ext.length);
+    }
+    return n;
   }
 
   /// Reads the EPUB's container.xml to find the OPF, then extracts the Dublin

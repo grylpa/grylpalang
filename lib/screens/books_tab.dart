@@ -193,9 +193,9 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     setState(() => _localBooksList = local);
   }
 
-  Future<void> _importEpub() async {
+  Future<void> _importLocal(String format) async {
     try {
-      final entry = await _localBooks.pickAndImport();
+      final entry = await _localBooks.pickAndImport(format: format);
       if (entry == null) return; // user cancelled
       await _reloadLocal();
       if (!mounted) return;
@@ -390,9 +390,13 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
               const SizedBox(width: 8),
               _yearField(),
               const SizedBox(width: 8),
-              IconButton.outlined(
-                onPressed: _importEpub,
-                tooltip: 'Import EPUB from phone',
+              PopupMenuButton<String>(
+                tooltip: 'Import book from phone',
+                onSelected: _importLocal,
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'epub', child: Text('Import EPUB')),
+                  PopupMenuItem(value: 'txt', child: Text('Import TXT')),
+                ],
                 icon: const Icon(Icons.file_upload_outlined),
               ),
             ],

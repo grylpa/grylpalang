@@ -180,10 +180,51 @@ class BookLibraryService {
 
   // ── EPUB parsing ──────────────────────────────────────────────────────────
 
-  /// Reads the EPUB at [epubPath] and returns its chapters in reading order.
-  Future<List<BookChapter>> loadChapters(String epubPath) async {
-    final bytes = await File(epubPath).readAsBytes();
+  /// Reads the book file at [path] and returns its chapters in reading order.
+  /// Dispatches on extension — `.txt` uses a plain-text splitter, anything else
+  /// is parsed as EPUB.
+  Future<List<BookChapter>> loadChapters(String path) async {
+    if (path.toLowerCase().endsWith('.txt')) {
+      final text = await File(path).readAsString();
+      return _splitPlainTextChapters(text);
+    }
+    final bytes = await File(path).readAsBytes();
     return _parseChapters(bytes);
+  }
+
+  /// Splits a plain-text book on common chapter headings (`Chapter 1`,
+  /// `CHAPTER II`, `Part Three`, …). If none are found, returns the whole file
+  /// as a single chapter — the reader and chunker handle long bodies fine.
+  static List<BookChapter> _splitPlainTextChapters(String text) {
+    final normalised = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trim();
+    if (normalised.isEmpty) return const [];
+    final headingRe = RegExp(
+      r'^\s*(chapter|part|book)\s+([ivxlcdm]+|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b[^\n]*$',
+      multiLine: true,
+      caseSensitive: false,
+    );
+    final matches = headingRe.allMatches(normalised).toList();
+    if (matches.isEmpty) {
+      return [BookChapter(title: 'Full text', text: normalised)];
+    }
+    final chapters = <BookChapter>[];
+    // Preamble before the first heading, if any.
+    if (matches.first.start > 0) {
+      final preface = normalised.substring(0, matches.first.start).trim();
+      if (preface.isNotEmpty) chapters.add(BookChapter(title: 'Preface', text: preface));
+    }
+    for (var i = 0; i < matches.length; i++) {
+      final start = matches[i].start;
+      final end = i + 1 < matches.length ? matches[i + 1].start : normalised.length;
+      final block = normalised.substring(start, end).trim();
+      final lineBreak = block.indexOf('\n');
+      final title = (lineBreak < 0 ? block : block.substring(0, lineBreak)).trim();
+      final body = lineBreak < 0 ? '' : block.substring(lineBreak + 1).trim();
+      if (body.isEmpty) continue;
+      chapters.add(BookChapter(title: title.isEmpty ? 'Chapter ${chapters.length + 1}' : title, text: body));
+    }
+    if (chapters.isEmpty) return [BookChapter(title: 'Full text', text: normalised)];
+    return chapters;
   }
 
   static List<BookChapter> _parseChapters(Uint8List bytes) {
