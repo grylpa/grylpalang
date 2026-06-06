@@ -23,7 +23,7 @@ Future<void> _showAbout(BuildContext context) async {
   showAboutDialog(
     context: context,
     applicationName: 'Katalaveno',
-    applicationVersion: '${info.version} (build ${info.buildNumber})',
+    applicationVersion: info.buildNumber.isEmpty ? info.version : '${info.version} (build ${info.buildNumber})',
     applicationIcon: ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: Image.asset('assets/icon.png', width: 48, height: 48),
