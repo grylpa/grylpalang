@@ -51,15 +51,37 @@ class MyApp extends StatelessWidget {
 
     WidgetsBinding.instance.addPostFrameCallback((_) { context.read<AppState>().attachNavigator(rootNavKey.currentState); });
 
-    final lightTheme = ThemeData(
-      colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue, brightness: Brightness.light),
-      useMaterial3: true,
-    );
+    ThemeData buildTheme(Brightness brightness) {
+      final scheme = ColorScheme.fromSeed(seedColor: Colors.blue, brightness: brightness);
+      // The "interval unit" dropdown explicitly sets dropdownColor to
+      // surfaceContainerHighest, which reads as a real popup surface on top of
+      // the page. Mirror that here for every popup/dropdown surface in the app
+      // so menus like the EPUB/TXT picker no longer collapse into a plain
+      // black rectangle.
+      return ThemeData(
+        colorScheme: scheme,
+        useMaterial3: true,
+        popupMenuTheme: PopupMenuThemeData(
+          color: scheme.surfaceContainerHighest,
+          surfaceTintColor: scheme.surfaceContainerHighest,
+        ),
+        dropdownMenuTheme: DropdownMenuThemeData(
+          menuStyle: MenuStyle(
+            backgroundColor: WidgetStatePropertyAll(scheme.surfaceContainerHighest),
+            surfaceTintColor: WidgetStatePropertyAll(scheme.surfaceContainerHighest),
+          ),
+        ),
+        menuTheme: MenuThemeData(
+          style: MenuStyle(
+            backgroundColor: WidgetStatePropertyAll(scheme.surfaceContainerHighest),
+            surfaceTintColor: WidgetStatePropertyAll(scheme.surfaceContainerHighest),
+          ),
+        ),
+      );
+    }
 
-    final darkTheme = ThemeData(
-      colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue, brightness: Brightness.dark),
-      useMaterial3: true,
-    );
+    final lightTheme = buildTheme(Brightness.light);
+    final darkTheme = buildTheme(Brightness.dark);
 
     return MaterialApp(
       navigatorKey: rootNavKey,

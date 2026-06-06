@@ -513,6 +513,8 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     // as a "(no match)" item so the widget doesn't assert.
     final stale = _genre != null && !genres.contains(_genre);
     return DropdownButton<String?>(
+      focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       value: _genre,
       isExpanded: true,
       hint: const Text('Genre: any'),
@@ -527,6 +529,8 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
 
   Widget _enumDropdown(String label, String value, List<String> options, ValueChanged<String> onPick) {
     return DropdownButton<String>(
+      focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       value: value,
       isExpanded: true,
       onChanged: (v) {
