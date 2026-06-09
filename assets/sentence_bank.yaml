@@ -36,6 +36,7 @@ subjects:
       - Hello, how are you?
       - Good morning, I hope you have a great day.
       - Nice to meet you.
+      - It was nice to meet you
       - Good evening, how was your day?
       - Goodbye, see you tomorrow.
       - How is everything going?
@@ -83,7 +84,8 @@ subjects:
       - Can I have a glass of water?
       - We would like to order now.
       - It was a little too salty
-      -
+      - I'm full, thank you
+      - Can I have another one?
 
   Shopping:
     sentences:

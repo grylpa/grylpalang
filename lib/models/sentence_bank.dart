@@ -84,7 +84,15 @@ class SentenceBank {
           final refs = (val['includes'] as List?)?.map((e) => e.toString()).toList() ?? [];
           subjects[name] = MetaSubject(name: name, subjectRefs: refs);
         } else if (val.containsKey('sentences')) {
-          final sents = (val['sentences'] as List?)?.map((e) => e.toString()).toList() ?? [];
+          // Empty YAML entries parse to Dart null; `.toString()` on null would
+          // surface the literal word "null" as a sentence. Filter null and
+          // whitespace-only entries — but keep the kept value un-trimmed so
+          // the translation cache key (`sourceLang|targetLang|sentence`) stays
+          // byte-identical to entries cached before this filter existed.
+          final sents = <String>[
+            for (final e in (val['sentences'] as List? ?? const []))
+              if (e != null && e.toString().trim().isNotEmpty) e.toString(),
+          ];
           subjects[name] = LeafSubject(name: name, sentences: sents);
         }
       }

@@ -123,11 +123,21 @@ class SentenceBankService {
   Future<Map<String, String>> _loadCache() async {
     final raw = await _prefs.getString(_kTranslationCacheKey);
     if (raw == null || raw.isEmpty) return {};
+    final out = <String, String>{};
     try {
-      return (jsonDecode(raw) as Map).cast<String, String>();
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        // Per-entry filter: a single non-string value would make a blanket
+        // `.cast<String, String>()` throw on first access and lose the entire
+        // cache. Keep every well-typed pair, drop only the bad ones.
+        decoded.forEach((k, v) {
+          if (k is String && v is String) out[k] = v;
+        });
+      }
     } catch (_) {
-      return {};
+      // Malformed JSON at the top level — nothing recoverable.
     }
+    return out;
   }
 
   Future<void> _saveCache(Map<String, String> cache) async {

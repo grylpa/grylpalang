@@ -637,7 +637,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       return;
     }
 
-    setState(() { _autoPreparing = true; _prepDone = 0; _prepTotal = ordered.length; });
+    setState(() { _autoPreparing = true; _prepDone = 0; _prepTotal = 0; });
     try {
       // Translations depend only on subject/order/target language — not the
       // voice — so reuse the in-memory set across voice changes instead of
@@ -669,22 +669,68 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       final speakSource = settings.sentenceBankSpeakSource;
       final gender = settings.sentenceBankVoiceGender;
       final sourceVoice = settings.sentenceBankSourceVoice;
-      final translationPaths = <String>[];
-      final sourcePaths = <String?>[];
-      for (var o = 0; o < translations.length; o++) {
+      final translationPaths = List<String>.filled(translations.length, '');
+      final sourcePaths = List<String?>.filled(translations.length, null);
+      // Two-pass: cheap cache-existence probe first (in parallel) so the
+      // progress bar reflects *actual* work (synth/download) instead of marching
+      // through every ordinal even when 126/130 are already on disk.
+      final needsWork = <int>[];
+      await Future.wait([
+        for (var o = 0; o < translations.length; o++)
+          () async {
+            final failed = translations[o].trim() == ordered[o].trim();
+            final clipLang = failed ? _bank!.language : settings.targetLanguage;
+            final cached = await _cachedClipFile(
+                translations[o], clipLang, gender, preferVoice: failed ? sourceVoice : '');
+            if (cached != null) {
+              translationPaths[o] = cached;
+            } else {
+              needsWork.add(o);
+            }
+            if (speakSource) {
+              sourcePaths[o] =
+                  await _cachedClipFile(ordered[o], _bank!.language, gender, preferVoice: sourceVoice);
+            }
+          }(),
+      ]);
+      needsWork.sort();
+      // Source clips still missing after the cache probe — append them so
+      // they're (re)synthesised below. Failures stay null (source is optional).
+      final sourceMissing = <int>[
+        if (speakSource)
+          for (var o = 0; o < translations.length; o++)
+            if (sourcePaths[o] == null) o,
+      ];
+
+      if (mounted) setState(() => _prepTotal = needsWork.length + sourceMissing.length);
+      int failureCount = 0;
+
+      for (final o in needsWork) {
         if (!mounted) return;
-        // If the translation failed (equals the source), speak it with the
-        // source-language engine instead of the target — never read English
-        // text with a Greek accent.
         final failed = translations[o].trim() == ordered[o].trim();
         final clipLang = failed ? _bank!.language : settings.targetLanguage;
-        translationPaths.add(await _ensureClipFile(translations[o], clipLang, gender, preferVoice: failed ? sourceVoice : ''));
-        sourcePaths.add(speakSource
-            ? await _ensureClipFileOrNull(ordered[o], _bank!.language, gender, preferVoice: sourceVoice)
-            : null);
-        if (mounted) setState(() => _prepDone = o + 1);
+        try {
+          translationPaths[o] = await _ensureClipFile(
+              translations[o], clipLang, gender, preferVoice: failed ? sourceVoice : '');
+        } catch (_) {
+          // Even after Google→local fallback this one couldn't be produced —
+          // leave the path empty so the playlist controller skips this
+          // ordinal entirely (no silence wait, no aborted prep).
+          translationPaths[o] = '';
+          failureCount++;
+        }
+        if (mounted) setState(() => _prepDone = _prepDone + 1);
+      }
+      for (final o in sourceMissing) {
+        if (!mounted) return;
+        sourcePaths[o] = await _ensureClipFileOrNull(
+            ordered[o], _bank!.language, gender, preferVoice: sourceVoice);
+        if (mounted) setState(() => _prepDone = _prepDone + 1);
       }
       if (!mounted) return;
+      if (failureCount > 0 && mounted) {
+        lpSnack(context, '$failureCount sentence(s) could not be synthesized — skipping them.', 4000);
+      }
 
       _autoOrdinalSub?.cancel();
       _autoOrdinalSub = _autoPlaylist.currentOrdinalStream.listen(_onAutoOrdinal);
@@ -760,14 +806,19 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   }
 
   /// Produces a playable audio file for [text] in [languageName]. Greek-class
-  /// languages use Google TTS (question intonation); others use native
-  /// flutter_tts synthesis (offline, gendered). Throws on failure.
+  /// languages prefer Google TTS (question intonation); on transient failure
+  /// (the unofficial endpoint rate-limits or errors and the result isn't
+  /// cached) we fall back to local flutter_tts with the target locale — worse
+  /// intonation but still audible, far better than skipping the sentence.
+  /// Throws only if every backend fails.
   Future<String> _ensureClipFile(String text, String languageName, String gender, {String preferVoice = ''}) async {
     final code = _ttsLangCode(languageName);
-    // Greek-class languages use the Google audio endpoint (better question
-    // intonation than the offline voice); others use device synthesis.
     if (_googleTtsLanguages.contains(code)) {
-      return _googleTts.ensureFile(text, code);
+      try {
+        return await _googleTts.ensureFile(text, code);
+      } catch (_) {
+        // Fall through to local synthesis below.
+      }
     }
     return _synthToFile(text, _localeForLanguage(languageName), code, gender, preferVoice);
   }
@@ -778,6 +829,26 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   Future<String?> _ensureClipFileOrNull(String text, String languageName, String gender, {String preferVoice = ''}) async {
     try {
       return await _ensureClipFile(text, languageName, gender, preferVoice: preferVoice);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Returns the cached clip path for [text] if it already exists on disk; null
+  /// otherwise. Never synthesizes or hits Google. Used to pre-classify the prep
+  /// loop's work so the progress bar reflects actual misses instead of marching
+  /// through every ordinal (cache hits and all).
+  Future<String?> _cachedClipFile(String text, String languageName, String gender, {String preferVoice = ''}) async {
+    try {
+      final code = _ttsLangCode(languageName);
+      if (_googleTtsLanguages.contains(code)) {
+        return _googleTts.cachedFile(text, code);
+      }
+      final dir = await _ensureSynthDir();
+      final voiceKey = preferVoice.isNotEmpty ? preferVoice : gender;
+      final key = sha1.convert(utf8.encode('$code|$voiceKey|p7|r$kSourceSpeechRate|$text')).toString();
+      final file = File('${dir.path}/$key.wav');
+      return await file.exists() ? file.path : null;
     } catch (_) {
       return null;
     }
