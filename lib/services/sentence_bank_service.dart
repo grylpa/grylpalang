@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -140,12 +141,44 @@ class SentenceBankService {
     return out;
   }
 
-  Future<void> _saveCache(Map<String, String> cache) async {
-    await _prefs.setString(_kTranslationCacheKey, jsonEncode(cache));
+  // Serializes every read-merge-write (and clear) of the translation cache
+  // across *all* SentenceBankService instances — the Sentence Bank tab plus the
+  // transient one the Book Reader creates. Each write previously did a full
+  // read-modify-write of the whole map; two overlapping writers would each load
+  // a snapshot and the later save would clobber the earlier one's additions,
+  // silently dropping already-translated sentences and forcing them to be
+  // re-fetched. The mutex makes every mutation an atomic read-merge-write so
+  // additions only ever accumulate.
+  static Future<void> _cacheMutex = Future<void>.value();
+
+  static Future<T> _locked<T>(Future<T> Function() action) async {
+    final prior = _cacheMutex;
+    final completer = Completer<void>();
+    _cacheMutex = completer.future; // never completed with an error, so awaiting is safe
+    await prior;
+    try {
+      return await action();
+    } finally {
+      completer.complete();
+    }
+  }
+
+  /// Additively merges [additions] into the persisted cache: under the mutex,
+  /// re-reads the latest on-disk map, layers the new entries on top, and writes
+  /// back. Never removes entries a concurrent writer added.
+  Future<void> _mergeIntoCache(Map<String, String> additions) async {
+    if (additions.isEmpty) return;
+    await _locked(() async {
+      final current = await _loadCache();
+      current.addAll(additions);
+      await _prefs.setString(_kTranslationCacheKey, jsonEncode(current));
+    });
   }
 
   Future<void> clearTranslationCache() async {
-    await _prefs.remove(_kTranslationCacheKey);
+    await _locked(() async {
+      await _prefs.remove(_kTranslationCacheKey);
+    });
   }
 
   static String _cacheKey(String sourceLang, String targetLang, String sentence) =>
@@ -256,24 +289,22 @@ class SentenceBankService {
     // failed/echoed; caching it would poison the cache (and get spoken by the
     // target-language TTS). Leave it uncached so it retries next time.
     if (translation.trim() != sentence.trim()) {
-      cache[key] = translation;
-      await _saveCache(cache);
+      await _mergeIntoCache({key: translation});
     }
     return translation;
   }
 
   /// Fetches AI translations for [unique] sentences (already de-duplicated and
-  /// known to be uncached), in chunks, writing each success into [cache] and
-  /// persisting after every chunk. Returns a parallel list of results (the
-  /// source text where a translation failed). When [graceful] is false a chunk
-  /// error propagates to the caller (so the manual button can report it);
-  /// otherwise the chunk falls back to source so auto mode keeps playing.
+  /// known to be uncached), in chunks, persisting each chunk's successes via an
+  /// additive merge. Returns a parallel list of results (the source text where a
+  /// translation failed). When [graceful] is false a chunk error propagates to
+  /// the caller (so the manual button can report it); otherwise the chunk falls
+  /// back to source so auto mode keeps playing.
   Future<List<String>> _fetchUnique({
     required List<String> unique,
     required String sourceLang,
     required String targetLang,
     required String apiKey,
-    required Map<String, String> cache,
     required bool graceful,
     int chunkSize = 30,
     void Function(int done, int total)? onProgress,
@@ -302,15 +333,16 @@ class SentenceBankService {
         if (!graceful && e is TranslationException && e.daily) rethrow;
         fetched = [...chunk];
       }
+      final additions = <String, String>{};
       for (var c = 0; c < chunk.length; c++) {
         final tr = c < fetched.length ? fetched[c] : chunk[c];
         out[start + c] = tr;
         // Don't cache failures (translation == source); leave them to retry.
         if (tr.trim() != chunk[c].trim()) {
-          cache[_cacheKey(sourceLang, targetLang, chunk[c])] = tr;
+          additions[_cacheKey(sourceLang, targetLang, chunk[c])] = tr;
         }
       }
-      await _saveCache(cache);
+      await _mergeIntoCache(additions);
       done += chunk.length;
       onProgress?.call(done, unique.length);
     }
@@ -351,7 +383,6 @@ class SentenceBankService {
         sourceLang: sourceLang,
         targetLang: targetLang,
         apiKey: apiKey,
-        cache: cache,
         graceful: true,
       );
       for (var i = 0; i < sentences.length; i++) {
@@ -412,7 +443,6 @@ class SentenceBankService {
         sourceLang: sourceLang,
         targetLang: targetLang,
         apiKey: apiKey,
-        cache: cache,
         graceful: false,
         chunkSize: chunkSize,
         onProgress: onProgress,

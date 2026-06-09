@@ -112,6 +112,14 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   int _batchTotal = 0;
   bool _batchRunning = false;
 
+  // The single in-flight full-subject translation pass and its (order-
+  // independent) signature. The background prefetch (translateAllUncached) and
+  // the playlist build (translateBatch) both funnel through _withTranslationPass
+  // so the same subject is never translated by two overlapping passes — which
+  // wasted API calls and (before the cache mutex) could clobber results.
+  Future<void>? _translationPass;
+  String? _translationPassSig;
+
 
   // Auto-mode (driven by the native playlist in AutoPlaylistController).
   bool _autoMode = false;
@@ -346,6 +354,36 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (cached != null) setState(() => _translatedSentence = cached);
   }
 
+  /// Order-independent signature of the current subject's translation work. The
+  /// background prefetch translates the subject unordered; the playlist build
+  /// translates the same set in play order — both share this sig so they
+  /// recognise they'd be doing the same work.
+  String _subjectTransSig(String targetLang) => '$_selectedSubject|$_lastReloadToken|$targetLang';
+
+  /// Registers [body] as the single in-flight translation pass for [sig]. If a
+  /// pass for the same sig is already running, awaits it and skips [body]
+  /// (returns true — the caller's work is already covered). Otherwise runs
+  /// [body] and returns false.
+  Future<bool> _withTranslationPass(String sig, Future<void> Function() body) async {
+    if (_translationPassSig == sig && _translationPass != null) {
+      await _translationPass;
+      return true;
+    }
+    final completer = Completer<void>();
+    _translationPass = completer.future;
+    _translationPassSig = sig;
+    try {
+      await body();
+      return false;
+    } finally {
+      completer.complete();
+      if (identical(_translationPass, completer.future)) {
+        _translationPass = null;
+        _translationPassSig = null;
+      }
+    }
+  }
+
   Future<void> _startBatchTranslation() async {
     if (_batchRunning || _bank == null) return;
     final sentences = _currentSentences();
@@ -360,20 +398,24 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     setState(() { _batchRunning = true; _batchDone = 0; _batchTotal = 0; });
 
     try {
-      final failed = await _service.translateAllUncached(
-        sentences: sentences,
-        sourceLang: sourceLang,
-        targetLang: targetLang,
-        apiKey: apiKey,
-        onProgress: (done, total) {
-          if (!mounted) return;
-          setState(() { _batchDone = done; _batchTotal = total; });
-          _loadCachedTranslationForCurrent();
-        },
-      );
-      if (failed > 0 && mounted) {
-        lpSnack(context, "$failed sentence${failed == 1 ? '' : 's'} couldn't be translated yet — tap Translate again to retry.", 6000);
-      }
+      // If the playlist build is already translating this subject, this awaits
+      // it and skips — no second concurrent pass.
+      await _withTranslationPass(_subjectTransSig(targetLang), () async {
+        final failed = await _service.translateAllUncached(
+          sentences: sentences,
+          sourceLang: sourceLang,
+          targetLang: targetLang,
+          apiKey: apiKey,
+          onProgress: (done, total) {
+            if (!mounted) return;
+            setState(() { _batchDone = done; _batchTotal = total; });
+            _loadCachedTranslationForCurrent();
+          },
+        );
+        if (failed > 0 && mounted) {
+          lpSnack(context, "$failed sentence${failed == 1 ? '' : 's'} couldn't be translated yet — tap Translate again to retry.", 6000);
+        }
+      });
     } catch (e) {
       if (mounted) lpSnack(context, e.toString().replaceFirst('Exception: ', ''), 5000);
     } finally {
@@ -437,12 +479,23 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   void _autoPrevious() {
     if (!_autoMode || !mounted) return;
-    _autoPlaylist.previous();
+    // When the playlist failed to load (catastrophic prep failure), the
+    // controller's previous() no-ops — fall back to manual sentence nav so the
+    // user can still move forward/back without having to stop auto mode.
+    if (_autoPlaylist.isLoaded) {
+      _autoPlaylist.previous();
+    } else {
+      _previousSentence();
+    }
   }
 
   void _autoNext() {
     if (!_autoMode || !mounted) return;
-    _autoPlaylist.next();
+    if (_autoPlaylist.isLoaded) {
+      _autoPlaylist.next();
+    } else {
+      _nextSentence();
+    }
   }
 
   Future<String?> _getTranslation() async {
@@ -648,12 +701,22 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       if (translationsSig == _translationsSig && _autoTranslations.length == ordered.length) {
         translations = _autoTranslations;
       } else {
-        translations = await _service.translateBatch(
-          sentences: ordered,
-          sourceLang: _bank!.language,
-          targetLang: settings.targetLanguage,
-          apiKey: settings.aiApiKey,
+        Future<List<String>> doBatch() => _service.translateBatch(
+              sentences: ordered,
+              sourceLang: _bank!.language,
+              targetLang: settings.targetLanguage,
+              apiKey: settings.aiApiKey,
+            );
+        // Coalesce with any in-flight background prefetch for this subject so we
+        // don't run two translation passes at once. If a prefetch pass was
+        // already running, it has now finished and cached everything, so the
+        // doBatch() below is pure cache hits (no API calls).
+        late List<String> fetched;
+        final coalesced = await _withTranslationPass(
+          _subjectTransSig(settings.targetLanguage),
+          () async { fetched = await doBatch(); },
         );
+        translations = coalesced ? await doBatch() : fetched;
         if (!mounted) return;
         _autoTranslations = translations;
         // Only mark this set reusable if every sentence actually translated;
@@ -750,6 +813,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       if (mounted) setState(() => _autoPreparing = false);
     } catch (e) {
       if (!mounted) return;
+      // Keep auto mode on so the user can recover by pressing next (which now
+      // falls back to manual sentence nav when no playlist is loaded) — they
+      // shouldn't have to fish the phone out of their pocket to press stop.
       setState(() { _autoPreparing = false; });
       lpSnack(context, 'Could not prepare audio.', 4000);
     }
@@ -889,7 +955,17 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       await _tts.setPitch(1.0);
     }
     await _tts.awaitSynthCompletion(true);
-    await _tts.synthesizeToFile(text, file.path, true);
+    // flutter_tts.synthesizeToFile occasionally hangs on Android (the engine's
+    // completion callback never fires), which would leave the whole prep stuck
+    // with no way for the per-item catch to kick in. Wrap it in a hard timeout
+    // so a hung synthesis becomes a normal per-item failure that gets skipped.
+    try {
+      await _tts.synthesizeToFile(text, file.path, true).timeout(const Duration(seconds: 8));
+    } on TimeoutException {
+      // Best-effort: cancel any in-flight engine work so the next call starts clean.
+      try { await _tts.stop(); } catch (_) {}
+      throw Exception('TTS synthesis timed out');
+    }
     if (!await file.exists()) throw Exception('TTS synthesis produced no file');
     // Prepend 500ms silence — the audio path drops the first frames at a clip
     // boundary / cold start. Keeps the engine's native rate (mono).

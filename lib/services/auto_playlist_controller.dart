@@ -270,12 +270,28 @@ class AutoPlaylistController {
 
   Future<void> next() async {
     final ord = currentOrdinal;
-    if (ord != null && ord + 1 < _ordinalCount) await _seekToOrdinal(ord + 1);
+    if (ord == null) return;
+    // Skip ordinals dropped from the playlist (empty translation path), so
+    // pressing next from sentence 4 lands on sentence 6 if 5 had no audio.
+    for (var n = ord + 1; n < _ordinalCount; n++) {
+      final clip = _clipToOrdinal.indexOf(n);
+      if (clip >= 0) {
+        await _player.seek(Duration.zero, index: clip);
+        return;
+      }
+    }
   }
 
   Future<void> previous() async {
     final ord = currentOrdinal;
-    if (ord != null && ord - 1 >= 0) await _seekToOrdinal(ord - 1);
+    if (ord == null) return;
+    for (var p = ord - 1; p >= 0; p--) {
+      final clip = _clipToOrdinal.indexOf(p);
+      if (clip >= 0) {
+        await _player.seek(Duration.zero, index: clip);
+        return;
+      }
+    }
   }
 
   /// Seeks the player to the first clip of [ord] (or no-ops if that ordinal
