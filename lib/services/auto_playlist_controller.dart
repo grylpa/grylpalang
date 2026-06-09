@@ -98,6 +98,10 @@ class AutoPlaylistController {
       final text = translations[ord];
       final src = (sourcePaths != null && ord < sourcePaths.length) ? sourcePaths[ord] : null;
       final path = translationPaths[ord];
+      // An empty translation path means the caller couldn't produce audio for
+      // this ordinal — skip it entirely (no clips, no silence) so the playlist
+      // jumps to the next sentence.
+      if (path.isEmpty) continue;
       final reps = repeatCount < 1 ? 1 : repeatCount;
 
       if (alternate) {

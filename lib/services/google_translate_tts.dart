@@ -104,6 +104,14 @@ class GoogleTranslateTts {
     }
   }
 
+  /// Returns the cached MP3 path for [text]/[langCode] if it's already on disk,
+  /// else null. Never makes a network call — used by callers to know whether
+  /// they'd be hitting the endpoint, without actually doing so.
+  Future<String?> cachedFile(String text, String langCode) async {
+    final f = await _diskFileFor(text, langCode);
+    return await f.exists() ? f.path : null;
+  }
+
   /// Ensures the MP3 for [text]/[langCode] exists on disk and returns its path.
   /// Downloads (and caches) if missing. Throws on network failure.
   Future<String> ensureFile(String text, String langCode) async {
