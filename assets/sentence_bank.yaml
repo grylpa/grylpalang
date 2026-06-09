@@ -46,8 +46,8 @@ subjects:
 
   Introductions:
     sentences:
-      - My name is Alex.
-      - I am from Canada.
+      - My name is Alexis.
+      - I am from France.
       - I am learning this language.
       - I speak a little.
       - Could you please speak more slowly?
@@ -65,6 +65,10 @@ subjects:
       - The store opens at eight and closes at ten.
       - My birthday is in July.
       - How many do you want?
+      - It is 17 minutes to 10
+      - It is 11 and a quarter
+      - We'll meet in 20 minutes
+      - Let's leave at 5 minutes to 9
 
   Food and Drink:
     sentences:
@@ -73,11 +77,15 @@ subjects:
       - The menu, please.
       - What do you recommend?
       - I am vegetarian.
+      - She is a vegeterian.
+      - he is a vegan.
       - The bill, please.
       - This is delicious.
       - I am hungry, let us eat something.
       - Can I have a glass of water?
       - We would like to order now.
+      - It was a little too salty
+      -
 
   Shopping:
     sentences:
@@ -100,6 +108,10 @@ subjects:
       - Take the second street on the right.
       - The pharmacy is next to the bank.
       - How do I get to the city center?
+      - Go left, left, left and then straight
+      - Go left, right, left, right and it will be there
+      - The bus station is about 20 meters ahead
+      - The church is 937 meters uphill
 
   Health:
     sentences:
@@ -121,7 +133,9 @@ subjects:
       - I need to check in for my flight.
       - Where can I find a taxi?
       - How long is the journey?
-      - I have a reservation under the name Smith.
+      - I have a reservation under the name Arnold.
+      - You must visit this island
+      - Did you climb the mountain?
 
   Work and Daily Life:
     sentences:
@@ -132,7 +146,10 @@ subjects:
       - I have a meeting this afternoon.
       - I work from home on Fridays.
       - My colleague is very helpful.
-      - I am on a deadline today.
+      - I am on a deadline today
+      - It is very quiet today
+      - The music is too loud
+      - The pigeons are noisy
 
   Weather:
     sentences:
