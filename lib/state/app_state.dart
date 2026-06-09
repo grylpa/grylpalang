@@ -18,6 +18,7 @@ import '../services/ai_service.dart';
 import '../services/app_storage.dart';
 import '../services/google_translate_tts.dart';
 import '../services/notification_service.dart';
+import '../services/sentence_bank_service.dart';
 import '../widgets.dart';
 
 class AppState extends ChangeNotifier {
@@ -96,9 +97,10 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> clearSentenceBankTranslationCache() async {
-    const key = 'sentenceBankTranslations';
-    final prefs = SharedPreferencesAsync();
-    await prefs.remove(key);
+    // Route through the service so the clear is serialized with the same mutex
+    // that guards translation-cache writes — otherwise a clear could interleave
+    // with an in-flight read-merge-write and leave the cache in a half state.
+    await SentenceBankService(SharedPreferencesAsync()).clearTranslationCache();
   }
 
   Future<void> clearGoogleTtsAudioCache() async {
