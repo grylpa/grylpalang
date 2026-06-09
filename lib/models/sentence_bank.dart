@@ -28,12 +28,6 @@ class SentenceBank {
   /// Seconds to pause after speaking the source sentence before revealing the translation.
   final int autoSourcePause;
 
-  /// Pitch multiplier for the "lower" voice when no gendered TTS voice is found.
-  final double ttsPitchLow;
-
-  /// Pitch multiplier for the "higher" voice when no gendered TTS voice is found.
-  final double ttsPitchHigh;
-
   /// Seconds to wait between TTS repetitions of the translation.
   final int ttsRepeatDelay;
 
@@ -46,8 +40,6 @@ class SentenceBank {
     required this.autoShowDelay,
     required this.autoPostTtsDelay,
     required this.autoSourcePause,
-    required this.ttsPitchLow,
-    required this.ttsPitchHigh,
     required this.ttsRepeatDelay,
     required this.ttsRepeatCount,
   });
@@ -77,8 +69,6 @@ class SentenceBank {
     final autoShowDelay = (yaml['auto_show_delay'] as int?) ?? 3;
     final autoPostTtsDelay = (yaml['auto_post_tts_delay'] as int?) ?? 2;
     final autoSourcePause = (yaml['auto_source_pause'] as int?) ?? 1;
-    final ttsPitchLow = (yaml['tts_pitch_low'] as num?)?.toDouble() ?? 0.85;
-    final ttsPitchHigh = (yaml['tts_pitch_high'] as num?)?.toDouble() ?? 1.1;
     final ttsRepeatDelay = (yaml['tts_repeat_delay'] as int?) ?? 1;
     final ttsRepeatCount = (yaml['tts_repeat_count'] as int?) ?? 2;
     final rawSubjects = yaml['subjects'];
@@ -100,7 +90,7 @@ class SentenceBank {
       }
     }
 
-    return SentenceBank(language: language, subjects: subjects, autoShowDelay: autoShowDelay, autoPostTtsDelay: autoPostTtsDelay, autoSourcePause: autoSourcePause, ttsPitchLow: ttsPitchLow, ttsPitchHigh: ttsPitchHigh, ttsRepeatDelay: ttsRepeatDelay, ttsRepeatCount: ttsRepeatCount);
+    return SentenceBank(language: language, subjects: subjects, autoShowDelay: autoShowDelay, autoPostTtsDelay: autoPostTtsDelay, autoSourcePause: autoSourcePause, ttsRepeatDelay: ttsRepeatDelay, ttsRepeatCount: ttsRepeatCount);
   }
 }
 
