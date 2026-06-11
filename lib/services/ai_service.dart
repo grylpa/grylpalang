@@ -78,10 +78,15 @@ class AiService {
       http.post(Uri.parse('$endpoint?key=$apiKey'),
           headers: {'Content-Type': 'application/json'}, body: jsonEncode(body));
 
-  static Future<http.Response> queryModel(String apiKey, body, {int maxRetries = 3}) async {
+  static Future<http.Response> queryModel(String apiKey, body, {int maxRetries = 3, bool allowFallback = true}) async {
     try {
       var resp = await _post(_modelEndpoint, apiKey, body);
       if (resp.statusCode != 429) return resp;
+
+      // Caller wants the primary model only (e.g. manual re-translate, which must
+      // not silently produce a weaker lite translation). Surface the 429 so the
+      // caller can report "try again later" instead of caching worse output.
+      if (!allowFallback) return resp;
 
       // Primary is rate-limited — try the lite model.
       var fb = await _post(_fallbackModelEndpoint, apiKey, body);

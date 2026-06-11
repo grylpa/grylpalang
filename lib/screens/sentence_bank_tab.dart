@@ -120,6 +120,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   Future<void>? _translationPass;
   String? _translationPassSig;
 
+  // Guards the background "upgrade sentences translated by the weaker model"
+  // pass so it never runs two at once.
+  bool _upgradeRunning = false;
+  // How many sentences ahead of the current one the upgrader scans each tick.
+  static const int _kUpgradeLookAhead = 30;
+
 
   // Auto-mode (driven by the native playlist in AutoPlaylistController).
   bool _autoMode = false;
@@ -426,6 +432,71 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
   }
 
+  /// Background quality pass: starting at the current sentence, scans the next
+  /// [_kUpgradeLookAhead] sentences and re-translates — with the primary model
+  /// only — any whose cached translation came from the weaker lite fallback (or
+  /// predates model tracking). Upgrades land in the cache; the on-screen text
+  /// refreshes if the current sentence is among them, and audio picks them up on
+  /// the next playlist build. Best-effort and silent: a rate-limit just ends the
+  /// run early and it retries on the next sentence advance.
+  Future<void> _upgradeAheadInBackground() async {
+    if (_upgradeRunning || _bank == null || !mounted) return;
+    final state = context.read<AppState>();
+    final apiKey = state.settings.aiApiKey;
+    final sourceLang = _bank!.language;
+    final targetLang = state.settings.targetLanguage;
+    if (apiKey.trim().isEmpty || sourceLang.toLowerCase() == targetLang.toLowerCase()) return;
+
+    final sents = _currentSentences();
+    if (sents.isEmpty) return;
+    final order = _shuffledOrder;
+    final span = order?.length ?? sents.length;
+    // The look-ahead window in play order, starting at the *next* sentence — the
+    // current one is already built/playing (its upgrade wouldn't reach the live
+    // audio anyway), and the manual Re-translate button covers it on demand. The
+    // `span - 1` cap keeps the window from wrapping back onto the current one.
+    final window = <String>[];
+    for (var k = 0; k < _kUpgradeLookAhead && k < span - 1; k++) {
+      final pos = _sentenceIndex + 1 + k;
+      final idx = order != null ? order[pos % order.length] : pos % sents.length;
+      if (idx >= 0 && idx < sents.length) window.add(sents[idx]);
+    }
+    if (window.isEmpty) return;
+
+    _upgradeRunning = true;
+    try {
+      final needing = await _service.sentencesNeedingUpgrade(
+        sentences: window,
+        sourceLang: sourceLang,
+        targetLang: targetLang,
+      );
+      for (final s in needing) {
+        if (!mounted) return;
+        try {
+          final t = await _service.translate(
+            sentence: s,
+            sourceLang: sourceLang,
+            targetLang: targetLang,
+            apiKey: apiKey,
+            force: true,
+          );
+          if (!mounted) return;
+          // If we just upgraded the sentence currently on screen, refresh it.
+          if (t.trim() != s.trim() && s == _sourceSentence && _showTranslation) {
+            setState(() => _translatedSentence = t);
+          }
+        } on TranslationException {
+          // Rate-limited / quota — stop now, resume on the next advance.
+          break;
+        } catch (_) {
+          // Skip this one; keep going with the rest of the window.
+        }
+      }
+    } finally {
+      _upgradeRunning = false;
+    }
+  }
+
   void _reshuffleAvoidingCurrent() {
     final order = _shuffledOrder;
     if (order == null || order.length < 2) { _generateShuffledOrder(); return; }
@@ -452,6 +523,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _showTranslation = false;
     });
     _loadCachedTranslationForCurrent();
+    unawaited(_upgradeAheadInBackground());
     final subject = _selectedSubject;
     if (subject != null) {
       final order = _shuffledOrder;
@@ -470,6 +542,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _showTranslation = false;
     });
     _loadCachedTranslationForCurrent();
+    unawaited(_upgradeAheadInBackground());
     final subject = _selectedSubject;
     if (subject != null) {
       final order = _shuffledOrder;
@@ -528,10 +601,56 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   }
 
   Future<void> _onTranslateButton() async {
+    // If the translation is already on screen, the button re-translates *just
+    // this sentence* (repairs a bad cached translation) — no batch, no other
+    // sentences touched.
+    if (_showTranslation && _translatedSentence != null) {
+      await _retranslateCurrent();
+      return;
+    }
     if (!_batchRunning) _startBatchTranslation();
     await _getTranslation();
     if (!mounted) return;
     setState(() => _showTranslation = true);
+  }
+
+  /// Forces a fresh AI translation of the currently-viewed sentence, overwriting
+  /// its cached entry. Only this one sentence is affected.
+  Future<void> _retranslateCurrent() async {
+    final src = _sourceSentence;
+    if (src == null || _bank == null) return;
+    final state = context.read<AppState>();
+    final apiKey = state.settings.aiApiKey;
+    if (apiKey.trim().isEmpty) {
+      lpSnack(context, 'Set your AI API key in Settings first.', 4000);
+      return;
+    }
+    setState(() => _translating = true);
+    try {
+      final t = await _service.translate(
+        sentence: src,
+        sourceLang: _bank!.language,
+        targetLang: state.settings.targetLanguage,
+        apiKey: apiKey,
+        force: true,
+      );
+      if (!mounted) return;
+      // If the model echoed the source back (quota/failure), keep what we had.
+      if (t.trim() == src.trim()) {
+        setState(() => _translating = false);
+        lpSnack(context, 'Could not re-translate right now — try again later.', 4000);
+        return;
+      }
+      setState(() {
+        _translatedSentence = t;
+        _translating = false;
+        _showTranslation = true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _translating = false);
+      lpSnack(context, e.toString().replaceFirst('Exception: ', ''), 5000);
+    }
   }
 
   // ── TTS ───────────────────────────────────────────────────────────────────
@@ -829,6 +948,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _translatedSentence = ord < _autoTranslations.length ? _autoTranslations[ord] : null;
       _showTranslation = true;
     });
+    // As playback advances, upgrade any lite-translated sentences in the window
+    // ahead so they're flash-quality on the next time through the subject.
+    unawaited(_upgradeAheadInBackground());
   }
 
   void _stopAuto() {
@@ -1454,7 +1576,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     : const Icon(Icons.translate),
                 label: Text(_batchRunning && _batchTotal > 0
                     ? 'Translating $_batchDone/$_batchTotal'
-                    : 'Translate'),
+                    : (_showTranslation && _translatedSentence != null ? 'Re-translate' : 'Translate')),
               ),
             ),
             if (ttsOk) ...[
