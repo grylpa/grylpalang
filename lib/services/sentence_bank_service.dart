@@ -55,7 +55,17 @@ TranslationException _translationError(int status, String body) {
 class SentenceBankService {
   static const String _kAssetPath = 'assets/sentence_bank.yaml';
   static const String _kTranslationCacheKey = 'sentenceBankTranslations';
+  // Parallel map (same keys as the translation cache) recording which Gemini
+  // model produced each translation, so we can later upgrade ones done by the
+  // weaker fallback model. Stored separately to avoid changing the translation
+  // cache's flat String→String shape.
+  static const String _kTranslationModelsKey = 'sentenceBankTranslationModels';
   static const String _kCachedYamlKey = 'sentenceBankCachedYaml';
+
+  /// True if [modelVersion] (from a Gemini response's `modelVersion` field) is
+  /// the weaker lite fallback — those translations are the upgrade candidates.
+  static bool isWeakModel(String? modelVersion) =>
+      modelVersion != null && modelVersion.toLowerCase().contains('lite');
 
   final SharedPreferencesAsync _prefs;
 
@@ -121,8 +131,11 @@ class SentenceBankService {
 
   // ── Translation cache ─────────────────────────────────────────────────────
 
-  Future<Map<String, String>> _loadCache() async {
-    final raw = await _prefs.getString(_kTranslationCacheKey);
+  Future<Map<String, String>> _loadCache() => _loadStringMap(_kTranslationCacheKey);
+  Future<Map<String, String>> _loadModels() => _loadStringMap(_kTranslationModelsKey);
+
+  Future<Map<String, String>> _loadStringMap(String prefsKey) async {
+    final raw = await _prefs.getString(prefsKey);
     if (raw == null || raw.isEmpty) return {};
     final out = <String, String>{};
     try {
@@ -130,7 +143,7 @@ class SentenceBankService {
       if (decoded is Map) {
         // Per-entry filter: a single non-string value would make a blanket
         // `.cast<String, String>()` throw on first access and lose the entire
-        // cache. Keep every well-typed pair, drop only the bad ones.
+        // map. Keep every well-typed pair, drop only the bad ones.
         decoded.forEach((k, v) {
           if (k is String && v is String) out[k] = v;
         });
@@ -163,22 +176,55 @@ class SentenceBankService {
     }
   }
 
-  /// Additively merges [additions] into the persisted cache: under the mutex,
-  /// re-reads the latest on-disk map, layers the new entries on top, and writes
-  /// back. Never removes entries a concurrent writer added.
-  Future<void> _mergeIntoCache(Map<String, String> additions) async {
-    if (additions.isEmpty) return;
+  /// Additively merges [additions] into the persisted cache (and, when given,
+  /// [models] into the parallel model-provenance map): under the mutex, re-reads
+  /// the latest on-disk maps, layers the new entries on top, and writes back.
+  /// Never removes entries a concurrent writer added.
+  Future<void> _mergeIntoCache(Map<String, String> additions, {Map<String, String>? models}) async {
+    final hasModels = models != null && models.isNotEmpty;
+    if (additions.isEmpty && !hasModels) return;
     await _locked(() async {
-      final current = await _loadCache();
-      current.addAll(additions);
-      await _prefs.setString(_kTranslationCacheKey, jsonEncode(current));
+      if (additions.isNotEmpty) {
+        final current = await _loadCache();
+        current.addAll(additions);
+        await _prefs.setString(_kTranslationCacheKey, jsonEncode(current));
+      }
+      if (hasModels) {
+        final current = await _loadModels();
+        current.addAll(models);
+        await _prefs.setString(_kTranslationModelsKey, jsonEncode(current));
+      }
     });
   }
 
   Future<void> clearTranslationCache() async {
     await _locked(() async {
       await _prefs.remove(_kTranslationCacheKey);
+      await _prefs.remove(_kTranslationModelsKey);
     });
+  }
+
+  /// Among [sentences], returns those whose cached translation should be
+  /// upgraded with the primary model — i.e. it was produced by the weaker lite
+  /// fallback, or predates model tracking (no recorded model). Sentences not yet
+  /// translated are skipped (the normal translate flow handles those).
+  Future<List<String>> sentencesNeedingUpgrade({
+    required List<String> sentences,
+    required String sourceLang,
+    required String targetLang,
+  }) async {
+    if (sourceLang.toLowerCase() == targetLang.toLowerCase()) return const [];
+    final cache = await _loadCache();
+    final models = await _loadModels();
+    final out = <String>[];
+    final seen = <String>{};
+    for (final s in sentences) {
+      final key = _cacheKey(sourceLang, targetLang, s);
+      if (!cache.containsKey(key) || !seen.add(key)) continue;
+      final m = models[key];
+      if (m == null || isWeakModel(m)) out.add(s);
+    }
+    return out;
   }
 
   static String _cacheKey(String sourceLang, String targetLang, String sentence) =>
@@ -265,33 +311,44 @@ class SentenceBankService {
 
   /// Translate [sentence] from [sourceLang] to [targetLang].
   /// Returns the cached translation if available; otherwise calls the AI and
-  /// caches the result.
+  /// caches the result. When [force] is true the cache is bypassed and the fresh
+  /// result overwrites any existing entry — used by the manual "re-translate
+  /// this sentence" button to repair a bad cached translation.
   Future<String> translate({
     required String sentence,
     required String sourceLang,
     required String targetLang,
     required String apiKey,
+    bool force = false,
   }) async {
     if (sourceLang.toLowerCase() == targetLang.toLowerCase()) return sentence;
 
-    final cache = await _loadCache();
     final key = _cacheKey(sourceLang, targetLang, sentence);
-    if (cache.containsKey(key)) return cache[key]!;
+    if (!force) {
+      final cache = await _loadCache();
+      if (cache.containsKey(key)) return cache[key]!;
+    }
 
-    final translation = await _translateViaAi(
+    final result = await _translateViaAi(
       sentence: sentence,
       sourceLang: sourceLang,
       targetLang: targetLang,
       apiKey: apiKey,
+      // A forced (manual) re-translate must come from the primary model — never
+      // the weaker lite fallback, whose output is what poisoned the cache to
+      // begin with. If the primary is rate-limited the call throws and the UI
+      // says "try later" rather than caching a worse translation.
+      allowFallback: !force,
     );
 
     // Only cache a real translation — a result equal to the source means the AI
     // failed/echoed; caching it would poison the cache (and get spoken by the
-    // target-language TTS). Leave it uncached so it retries next time.
-    if (translation.trim() != sentence.trim()) {
-      await _mergeIntoCache({key: translation});
+    // target-language TTS). Leave it uncached so it retries next time. Record
+    // the model alongside it so the upgrader can later spot lite ones.
+    if (result.text.trim() != sentence.trim()) {
+      await _mergeIntoCache({key: result.text}, models: {key: result.model ?? ''});
     }
-    return translation;
+    return result.text;
   }
 
   /// Fetches AI translations for [unique] sentences (already de-duplicated and
@@ -317,13 +374,16 @@ class SentenceBankService {
       final end = (start + chunkSize).clamp(0, unique.length);
       final chunk = unique.sublist(start, end);
       List<String> fetched;
+      String? model;
       try {
-        fetched = await _translateBatchViaAi(
+        final res = await _translateBatchViaAi(
           sentences: chunk,
           sourceLang: sourceLang,
           targetLang: targetLang,
           apiKey: apiKey,
         );
+        fetched = res.translations;
+        model = res.model;
       } catch (e) {
         // A daily-quota failure means every remaining chunk will fail too, so
         // the manual run stops and reports it. Any other error (transient 5xx,
@@ -334,15 +394,18 @@ class SentenceBankService {
         fetched = [...chunk];
       }
       final additions = <String, String>{};
+      final modelAdditions = <String, String>{};
       for (var c = 0; c < chunk.length; c++) {
         final tr = c < fetched.length ? fetched[c] : chunk[c];
         out[start + c] = tr;
         // Don't cache failures (translation == source); leave them to retry.
         if (tr.trim() != chunk[c].trim()) {
-          additions[_cacheKey(sourceLang, targetLang, chunk[c])] = tr;
+          final key = _cacheKey(sourceLang, targetLang, chunk[c]);
+          additions[key] = tr;
+          modelAdditions[key] = model ?? '';
         }
       }
-      await _mergeIntoCache(additions);
+      await _mergeIntoCache(additions, models: modelAdditions);
       done += chunk.length;
       onProgress?.call(done, unique.length);
     }
@@ -460,11 +523,12 @@ class SentenceBankService {
 
   // ── AI translation ────────────────────────────────────────────────────────
 
-  Future<String> _translateViaAi({
+  Future<({String text, String? model})> _translateViaAi({
     required String sentence,
     required String sourceLang,
     required String targetLang,
     required String apiKey,
+    bool allowFallback = true,
   }) async {
     if (apiKey.trim().isEmpty) throw Exception('AI API key is empty (set it in Settings).');
 
@@ -486,7 +550,7 @@ Sentence: $sentence
       'generationConfig': {'temperature': 0.1},
     };
 
-    final resp = await AiService.queryModel(apiKey, body);
+    final resp = await AiService.queryModel(apiKey, body, allowFallback: allowFallback);
     if (resp.statusCode != 200) throw _translationError(resp.statusCode, resp.body);
 
     final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -495,10 +559,11 @@ Sentence: $sentence
     final content = candidates.first['content'] as Map<String, dynamic>?;
     final parts = content?['parts'] as List?;
     if (parts == null || parts.isEmpty) throw Exception('AI returned no content.');
-    return (parts.first['text'] as String? ?? sentence).trim();
+    final model = decoded['modelVersion'] as String?;
+    return (text: (parts.first['text'] as String? ?? sentence).trim(), model: model);
   }
 
-  Future<List<String>> _translateBatchViaAi({
+  Future<({List<String> translations, String? model})> _translateBatchViaAi({
     required List<String> sentences,
     required String sourceLang,
     required String targetLang,
@@ -510,7 +575,8 @@ Sentence: $sentence
 
     final prompt = '''
 Translate the following numbered sentences from $sourceLang to $targetLang.
-Return ONLY a JSON array of translated strings in the same order.
+Return ONLY a JSON array of objects, one per sentence, each {"n": <the sentence number>, "t": <its translation>}.
+Keep the same "n" the sentence was given. Do not merge, drop, or reorder sentences.
 No extra keys, no explanation, no markdown.
 
 Sentences:
@@ -529,7 +595,14 @@ $numberedList
         'responseMimeType': 'application/json',
         'responseSchema': {
           'type': 'array',
-          'items': {'type': 'string'},
+          'items': {
+            'type': 'object',
+            'properties': {
+              'n': {'type': 'integer'},
+              't': {'type': 'string'},
+            },
+            'required': ['n', 't'],
+          },
         },
         'temperature': 0.1,
       },
@@ -541,16 +614,35 @@ $numberedList
 
     try {
       final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
+      final model = decoded['modelVersion'] as String?;
       final candidates = decoded['candidates'] as List?;
-      if (candidates == null || candidates.isEmpty) return sentences;
+      if (candidates == null || candidates.isEmpty) return (translations: sentences, model: model);
       final content = candidates.first['content'] as Map<String, dynamic>?;
       final parts = content?['parts'] as List?;
-      if (parts == null || parts.isEmpty) return sentences;
+      if (parts == null || parts.isEmpty) return (translations: sentences, model: model);
       final text = (parts.first['text'] as String? ?? '').trim();
       final list = jsonDecode(text) as List;
-      return list.map((e) => e.toString().trim()).toList();
+      // Realign by the model's own "n" rather than by position. The old code
+      // paired result[i] with sentence[i]; if the model dropped, merged, or
+      // reordered even one item, every sentence after it got its neighbour's
+      // translation cached against it ("still Greek, but wrong"). Slots the
+      // model omits stay empty → returned as source → treated as a failure
+      // (not cached) so they retry instead of poisoning the cache.
+      final out = List<String>.filled(sentences.length, '');
+      for (final item in list) {
+        if (item is! Map) continue;
+        final n = (item['n'] as num?)?.toInt();
+        final t = item['t']?.toString().trim();
+        if (n != null && t != null && t.isNotEmpty && n >= 1 && n <= sentences.length) {
+          out[n - 1] = t;
+        }
+      }
+      return (
+        translations: [for (var i = 0; i < sentences.length; i++) out[i].isEmpty ? sentences[i] : out[i]],
+        model: model,
+      );
     } catch (_) {
-      return sentences;
+      return (translations: sentences, model: null);
     }
   }
 }
