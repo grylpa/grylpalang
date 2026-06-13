@@ -646,11 +646,35 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         _translating = false;
         _showTranslation = true;
       });
+      // Invalidate the auto-mode caches so returning to Play rebuilds with the
+      // new translation + audio instead of resuming the stale playlist. The
+      // synth cache is keyed by translation text, so only this one new clip is
+      // missing — the rebuild is otherwise all cache hits and quick.
+      _preparedSig = null;
+      _translationsSig = null;
+      // Keep the in-memory ordered list consistent too, in case it's reused
+      // before a full rebuild.
+      final ordIdx = _orderedIndexOf(src);
+      if (ordIdx != null && ordIdx < _autoTranslations.length) {
+        _autoTranslations[ordIdx] = t;
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _translating = false);
       lpSnack(context, e.toString().replaceFirst('Exception: ', ''), 5000);
     }
+  }
+
+  /// Index of [sentence] within the current play-ordered sentence list (the same
+  /// ordering `_autoTranslations` follows), or null if not found.
+  int? _orderedIndexOf(String sentence) {
+    final sents = _currentSentences();
+    final order = _shuffledOrder;
+    for (var o = 0; o < sents.length; o++) {
+      final idx = order != null ? order[o % order.length] : o;
+      if (idx >= 0 && idx < sents.length && sents[idx] == sentence) return o;
+    }
+    return null;
   }
 
   // ── TTS ───────────────────────────────────────────────────────────────────
