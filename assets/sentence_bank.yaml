@@ -192,6 +192,7 @@ subjects:
       - At the fishmonger
       - At the butcher
       - At the gym
+      - My misc
 
   At the fishmonger:
     sentences:
@@ -234,8 +235,14 @@ subjects:
       - Did you want this?
       - Are you using this?
 
+  My misc:
+    Sentences:
+      - Do you need help with that?
+      - I remember it now
+
   At my places:
     includes:
       - At the fishmonger
       - At the butcher
       - At the gym
+      - My Misc
