@@ -28,6 +28,10 @@ auto_post_tts_delay: 3   # seconds to wait after TTS finishes before advancing t
 auto_source_pause: 2     # (only when "speak source" is on) seconds to pause after speaking the source sentence before revealing the translation
 tts_repeat_delay: 3      # seconds between TTS repetitions of the translation (when repeat count > 1)
 tts_repeat_count: 3      # how many times to play the translation TTS (1 = once)
+override_local:   0      # read from the CLOUD file when a sentence-bank URL is set:
+                         #   0 = append the cloud bank onto this local one (subjects/sentences merged)
+                         #   1 = the cloud bank completely replaces this local one
+                         # If the cloud file omits this key, this local value is used.
 
 subjects:
 

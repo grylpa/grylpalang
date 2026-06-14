@@ -1,15 +1,16 @@
 # Katalaveno
 
-A Flutter vocabulary trainer that uses **spaced repetition via local notifications** and **AI-generated example sentences** (Google Gemini) to help you learn vocabulary in a target language. A separate **Sentence Bank** mode lets you study curated sentences with cached AI translations and TTS playback.
+A Flutter vocabulary trainer that uses **spaced repetition via local notifications** and **AI-generated example sentences** (Google Gemini) to help you learn vocabulary in a target language. A separate **Sentence Bank** mode lets you study curated sentences with cached AI translations and TTS playback, and a **Books** mode reads/plays public-domain books.
 
 ## Features
 
 - Add words in either your **known** or **target** language; the app generates simple + conjugated example sentences via Gemini.
 - Scheduled local notifications surface a few sentences at a time, progressively, over many days.
 - **Prediction tab** — guess the target-language sentence from a prompt; AI scores your answer for meaning, not just exact match.
-- **Sentence Bank** — study a curated YAML bank of sentences (bundled asset or remote URL) with auto-advance, optional shuffle, per-subject resume, and a per-locale source-voice picker.
-- **Background audio that survives a screen lock** — auto mode pre-builds the whole subject into one native playlist so playback keeps advancing with the screen off. The source line is rendered on-device in your chosen voice; the target line uses Google Translate's audio (better question intonation than the offline voice). All clips are cached on disk.
-- All user data (settings, words, history, snapshots) is stored locally on device — no server backend.
+- **Sentence Bank** — study a curated YAML bank of sentences (bundled asset and/or remote URL, mergeable via `override_local`) with auto-advance, optional shuffle, per-subject resume, and a per-locale source-voice picker. An auto-generated **Active words** subject mirrors your tapped-notification history into the bank for study.
+- **Books** — browse free public-domain books from Project Gutenberg, or import your own **EPUB / TXT** files, then read by chapter or listen with streaming sentence-by-sentence translation + TTS.
+- **Background audio that survives a screen lock** — auto mode pre-builds the whole subject into one native playlist so playback keeps advancing with the screen off, with Bluetooth / lockscreen controls. The source line is rendered on-device in your chosen voice; the target line uses Google Translate's audio (better question intonation than the offline voice). All clips are cached on disk.
+- All user data (settings, words, history, translations, snapshots) is stored locally on device — no server backend.
 
 ## Gemini API key
 
@@ -29,11 +30,13 @@ The bundled [`assets/sentence_bank.yaml`](assets/sentence_bank.yaml) documents i
 - **Spaced repetition**: an integer "global step" derived from which notification snapshots have already fired; each word has a `startStep` anchor.
 - **AI**: `AiService` calls `gemini-2.5-flash` (falls back to `gemini-2.5-flash-lite` on rate limit) for sentence generation, translation, and prediction scoring.
 - **Notifications**: `flutter_local_notifications`. Reschedules a 10-step window on every state change.
-- **Sentence Bank audio**: `AutoPlaylistController` builds one `just_audio` playlist for the whole subject — *source clip → pause → translation (×repeat) → pause* — and `just_audio_background` hosts it in a media session that keeps advancing when the screen is locked (the main isolate is suspended on lock, so a Dart-timer loop can't drive it). Source clips are synthesized on-device to files via `flutter_tts` (`synthesizeToFile`, with a small leading-silence pad); target clips come from `GoogleTranslateTts`, now a pure fetch/cache service for the Google audio endpoint. The playlist is rebuilt only when subject/voice/settings change, otherwise it resumes instantly. `MainActivity` extends `AudioServiceActivity`, and `JustAudioBackground.init()` runs in `main()`.
+- **Audio (Sentence Bank + Books)**: `AutoPlaylistController` builds one `just_audio` playlist — *source clip → pause → translation (×repeat) → pause* — played through a single shared player owned by `KatalavenoAudioHandler` (an `audio_service` handler) that hosts it in a media session keeping it advancing when the screen is locked and routing Bluetooth / lockscreen controls to app-level actions (the main isolate is suspended on lock, so a Dart-timer loop can't drive it). Source clips are synthesized on-device via `flutter_tts` (`synthesizeToFile`); target clips come from `GoogleTranslateTts`, a pure fetch/cache service for the Google audio endpoint. The playlist is rebuilt only when subject/voice/settings change, otherwise it resumes instantly. `MainActivity` extends `AudioServiceActivity`, and `main()` calls `AudioService.init(KatalavenoAudioHandler())`.
+- **Translation cache**: serialized through a mutex with additive merges (no clobbering), tracks which Gemini model produced each entry, and a background pass upgrades weaker lite-model translations to the primary model.
+- **Books**: `GutenbergService` (Gutendex catalog) + `BookLibraryService` (EPUB/TXT download & parse, position persistence) + `LocalBooksService` (device EPUB/TXT import). Local imports stay on device.
 
 ## Platforms
 
-**Android** is the only platform target included in this repository (runtime notification permission on 13+; a `just_audio_background` media-session service keeps Sentence Bank auto mode playing when the screen is locked).
+**Android** is the only platform target included in this repository (runtime notification permission on 13+; an `audio_service` media-session keeps Sentence Bank and Books auto mode playing when the screen is locked).
 
 Other Flutter targets (iOS, web, desktop) are not included. To add one, run `flutter create --platforms=<platform> .` from the project root.
 

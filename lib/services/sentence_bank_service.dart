@@ -73,20 +73,97 @@ class SentenceBankService {
 
   // ── Loading ──────────────────────────────────────────────────────────────
 
-  /// Load the sentence bank. If [url] is non-empty, tries to fetch from that
-  /// URL and caches the result locally. Falls back to the bundled asset.
+  /// Load the sentence bank. With no [url] the bundled local asset is used.
+  /// With a [url], the cloud file is fetched (and cached) and combined with the
+  /// local asset according to the cloud's `override_local` flag:
+  ///   • `override_local: 1` → the cloud file completely replaces the local one.
+  ///   • `override_local: 0` (or absent → falls back to the local value) → the
+  ///     cloud file is appended onto the local one (subjects merged, sentences
+  ///     unioned).
+  /// For every scalar setting (language, timings, …): the cloud value wins when
+  /// present, otherwise the local value is kept. (The Settings screen still
+  /// overrides everything at the tab level via its override fields.)
   Future<SentenceBank> loadBank({String url = ''}) async {
-    String yaml;
+    final localYaml = await rootBundle.loadString(_kAssetPath);
+    final localParsed = loadYaml(localYaml);
+    final localMap = (localParsed is Map) ? _toPlainMap(localParsed) : <String, dynamic>{};
 
-    if (url.trim().isNotEmpty) {
-      yaml = await _fetchFromUrl(url.trim());
-    } else {
-      yaml = await rootBundle.loadString(_kAssetPath);
+    if (url.trim().isEmpty) {
+      return SentenceBank.fromYaml(localMap);
     }
 
-    final parsed = loadYaml(yaml);
-    if (parsed is! Map) throw Exception('Invalid sentence bank format.');
-    return SentenceBank.fromYaml(parsed);
+    final cloudYaml = await _fetchFromUrl(url.trim());
+    // If the fetch failed and _fetchFromUrl fell back to the bundled asset,
+    // there's nothing to merge — using it as "cloud" would duplicate everything.
+    if (cloudYaml == localYaml) return SentenceBank.fromYaml(localMap);
+    final cloudParsed = loadYaml(cloudYaml);
+    if (cloudParsed is! Map) return SentenceBank.fromYaml(localMap);
+    final cloudMap = _toPlainMap(cloudParsed);
+
+    // override_local: cloud value if present, else local value (default 0).
+    final overrideRaw = cloudMap.containsKey('override_local')
+        ? cloudMap['override_local']
+        : localMap['override_local'];
+    if (_truthy(overrideRaw)) {
+      return SentenceBank.fromYaml(cloudMap);
+    }
+    return SentenceBank.fromYaml(_mergeBankMaps(localMap, cloudMap));
+  }
+
+  static bool _truthy(dynamic v) =>
+      v == 1 || v == true || (v is String && (v.trim() == '1' || v.trim().toLowerCase() == 'true'));
+
+  /// Recursively converts a (possibly immutable Yaml*) structure into plain,
+  /// mutable Dart maps/lists with String keys.
+  static Map<String, dynamic> _toPlainMap(Map src) =>
+      {for (final e in src.entries) e.key.toString(): _toPlainValue(e.value)};
+
+  static dynamic _toPlainValue(dynamic v) {
+    if (v is Map) return _toPlainMap(v);
+    if (v is List) return [for (final e in v) _toPlainValue(e)];
+    return v;
+  }
+
+  /// Combines [local] and [cloud] bank maps: scalar keys take the cloud value
+  /// when present (else local); `subjects` are merged name-by-name (same-named
+  /// leaf subjects union their sentences, meta subjects union their includes).
+  static Map<String, dynamic> _mergeBankMaps(Map<String, dynamic> local, Map<String, dynamic> cloud) {
+    final out = <String, dynamic>{};
+    final scalarKeys = {...local.keys, ...cloud.keys}..remove('subjects');
+    for (final k in scalarKeys) {
+      out[k] = cloud.containsKey(k) ? cloud[k] : local[k];
+    }
+    final localSubs = (local['subjects'] is Map) ? (local['subjects'] as Map).cast<String, dynamic>() : const {};
+    final cloudSubs = (cloud['subjects'] is Map) ? (cloud['subjects'] as Map).cast<String, dynamic>() : const {};
+    final mergedSubs = <String, dynamic>{...localSubs};
+    for (final e in cloudSubs.entries) {
+      mergedSubs[e.key] = mergedSubs.containsKey(e.key) ? _mergeSubject(mergedSubs[e.key], e.value) : e.value;
+    }
+    out['subjects'] = mergedSubs;
+    return out;
+  }
+
+  static dynamic _mergeSubject(dynamic local, dynamic cloud) {
+    if (local is! Map || cloud is! Map) return cloud;
+    List unionLists(String key) {
+      final seen = <String>{};
+      final merged = <dynamic>[];
+      for (final s in [...((local[key] as List?) ?? const []), ...((cloud[key] as List?) ?? const [])]) {
+        final asKey = s?.toString() ?? '';
+        if (asKey.trim().isEmpty || !seen.add(asKey)) continue;
+        merged.add(s);
+      }
+      return merged;
+    }
+
+    if (local.containsKey('sentences') && cloud.containsKey('sentences')) {
+      return {'sentences': unionLists('sentences')};
+    }
+    if (local.containsKey('includes') && cloud.containsKey('includes')) {
+      return {'includes': unionLists('includes')};
+    }
+    // Mismatched shapes (leaf vs meta) — the cloud definition wins.
+    return cloud;
   }
 
   /// Non-null if the last [_fetchFromUrl] call fell back to cache or asset.
@@ -227,8 +304,121 @@ class SentenceBankService {
     return out;
   }
 
+  /// Tag recorded for translations we already know (not produced by the AI),
+  /// e.g. Active Words sentences that carry both languages. Non-weak, so the
+  /// background upgrader leaves them alone.
+  static const String _seededModelTag = 'seeded';
+
+  /// Seeds the translation cache with known source→target [pairs] that don't
+  /// need the AI. Overwrites any existing entry (the seeded value is
+  /// authoritative) and records a non-weak model so the upgrader skips them.
+  Future<void> seedTranslations({
+    required Map<String, String> pairs,
+    required String sourceLang,
+    required String targetLang,
+  }) async {
+    if (pairs.isEmpty || sourceLang.toLowerCase() == targetLang.toLowerCase()) return;
+    final additions = <String, String>{};
+    final models = <String, String>{};
+    pairs.forEach((src, tgt) {
+      if (src.trim().isEmpty || tgt.trim().isEmpty) return;
+      final key = _cacheKey(sourceLang, targetLang, src);
+      additions[key] = tgt;
+      models[key] = _seededModelTag;
+    });
+    await _mergeIntoCache(additions, models: models);
+  }
+
   static String _cacheKey(String sourceLang, String targetLang, String sentence) =>
       '$sourceLang|$targetLang|$sentence';
+
+  // ── Active Words store ─────────────────────────────────────────────────────
+  //
+  // The "Active words" subject accumulates sentences pulled from notification
+  // history over time, independent of history's own small rolling cap. Persisted
+  // per target language (its `tgt` text is language-specific), newest-first,
+  // capped — oldest evicted first.
+
+  static String _activeWordsKey(String targetLang) => 'sentenceBankActiveWords_$targetLang';
+
+  // The active-words sentences carry `[[word]]` cloze markers and inline
+  // "(singular)"/"(plural)" grammar hints (used by the notification/prediction
+  // UI). For the Sentence Bank we always drop the cloze markers, but only strip
+  // the number hints from the SOURCE — the ready translation keeps its hint,
+  // since for some sentences the target form's plurality is conveyed by it.
+  // None of this touches the original word/history data.
+  static final RegExp _clozeMarkerRe = RegExp(r'\[\[([^\[\]]+)\]\]');
+  static final RegExp _numberHintRe = RegExp(r'\s*\((?:singular|plural)\)', caseSensitive: false);
+
+  static String _cleanForBank(String s, {required bool stripNumberHints}) {
+    var out = s.replaceAllMapped(_clozeMarkerRe, (m) => m.group(1)!);
+    if (stripNumberHints) out = out.replaceAll(_numberHintRe, '');
+    return out.replaceAll(RegExp(r'\s{2,}'), ' ').trim();
+  }
+
+  static bool _samePairs(List<({String src, String tgt})> a, List<({String src, String tgt})> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].src != b[i].src || a[i].tgt != b[i].tgt) return false;
+    }
+    return true;
+  }
+
+  /// The stored Active Words for [targetLang], newest-first (`src` = known-language
+  /// sentence, `tgt` = its target-language translation).
+  Future<List<({String src, String tgt})>> loadActiveWords(String targetLang) async {
+    final raw = await _prefs.getString(_activeWordsKey(targetLang));
+    if (raw == null || raw.isEmpty) return [];
+    try {
+      final list = jsonDecode(raw) as List;
+      return [
+        for (final e in list)
+          if (e is Map && e['s'] is String && e['t'] is String) (src: e['s'] as String, tgt: e['t'] as String),
+      ];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Merges [incoming] (newest-first) into the Active Words store: entries whose
+  /// `src` isn't already stored are prepended, the list is capped at [cap]
+  /// (oldest dropped from the tail), and the result is persisted and returned.
+  /// Existing entries are never removed just because they aged out of history.
+  Future<List<({String src, String tgt})>> addActiveWords({
+    required List<({String src, String tgt})> incoming,
+    required String targetLang,
+    int cap = 200,
+  }) async {
+    return _locked(() async {
+      // Strip cloze markers from anything already stored (migrates entries saved
+      // before stripping existed) and track whether that changed the store.
+      final rawCurrent = await loadActiveWords(targetLang);
+      final current = [
+        for (final e in rawCurrent)
+          (src: _cleanForBank(e.src, stripNumberHints: true), tgt: _cleanForBank(e.tgt, stripNumberHints: false))
+      ];
+      var changed = !_samePairs(rawCurrent, current);
+
+      final existing = {for (final e in current) e.src};
+      final seen = <String>{};
+      final newOnes = <({String src, String tgt})>[];
+      for (final e in incoming) {
+        final s = _cleanForBank(e.src, stripNumberHints: true);
+        final t = _cleanForBank(e.tgt, stripNumberHints: false);
+        if (s.isEmpty || t.isEmpty || existing.contains(s) || !seen.add(s)) continue;
+        newOnes.add((src: s, tgt: t));
+      }
+      if (newOnes.isNotEmpty) changed = true;
+
+      final merged = [...newOnes, ...current];
+      final capped = merged.length > cap ? merged.sublist(0, cap) : merged;
+      if (changed) {
+        await _prefs.setString(
+            _activeWordsKey(targetLang), jsonEncode([for (final e in capped) {'s': e.src, 't': e.tgt}]));
+      }
+      return capped;
+    });
+  }
 
   // ── Subject history ───────────────────────────────────────────────────────
 

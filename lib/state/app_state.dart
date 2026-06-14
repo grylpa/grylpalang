@@ -39,6 +39,11 @@ class AppState extends ChangeNotifier {
 
   List<HistoryEntry> get history => List.unmodifiable(_history);
 
+  // Bumped whenever the *content* of history changes (a new tapped sentence is
+  // added, or history is cleared). The Sentence Bank tab watches this to refresh
+  // its auto-generated "Active words" subject incrementally.
+  int historyRevision = 0;
+
   // Limit: maximum sentences kept in history (across all entries).
   static const int kMaxHistorySentences = 20;
 
@@ -286,6 +291,7 @@ class AppState extends ChangeNotifier {
       atIndex = min(_history.length, atIndex);
       _history.insert(atIndex, entry); // Newest at top
       _trimHistorySentences();
+      historyRevision++;
     }
   }
 
@@ -831,6 +837,7 @@ class AppState extends ChangeNotifier {
     resetHistoryHighlight(silent: true);
     await _storage.saveHistory(_history);
     _notificationTapToken++;
+    historyRevision++;
     notifyListeners();
   }
 
