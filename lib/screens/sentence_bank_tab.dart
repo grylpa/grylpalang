@@ -32,6 +32,10 @@ import '../widgets.dart';
 /// when this value changes.
 const double kSourceSpeechRate = 0.5;
 
+/// Name of the auto-generated subject that mirrors the active-words notification
+/// history into the Sentence Bank.
+const String kActiveWordsSubject = 'Active words';
+
 /// Maps a canonical English language name to a BCP-47 locale code for TTS.
 String? _localeForLanguage(String languageName) {
   const map = <String, String>{
@@ -133,6 +137,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   late SentenceBankService _service;
   int _lastReloadToken = -1;
+  int _lastHistoryRevision = -1;
   bool _lastShuffle = false;
   // Signature of the playback-affecting settings; when it changes while auto
   // mode is running we rebuild the playlist so the change takes effect live.
@@ -195,7 +200,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     super.didChangeDependencies();
     if (!_initialized) {
       _initialized = true;
-      _lastReloadToken = context.read<AppState>().sentenceBankReloadToken;
+      final appState = context.read<AppState>();
+      _lastReloadToken = appState.sentenceBankReloadToken;
+      _lastHistoryRevision = appState.historyRevision;
       _initService();
     }
   }
@@ -213,6 +220,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       final url = appState.settings.sentenceBankUrl;
       final shuffle = appState.settings.sentenceBankShuffle;
       final bank = await _service.loadBank(url: url);
+      if (!mounted) return;
+
+      // Inject the "Active words" subject from notification history (and seed its
+      // known translations) before computing the subject list, so it shows in the
+      // picker and is translated/cache-hit without any AI call.
+      await _injectActiveWords(bank, appState);
       if (!mounted) return;
 
       context.read<AppState>().updateSentenceBankYamlSourcePause(bank.autoSourcePause);
@@ -280,6 +293,127 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     } catch (e) {
       if (!mounted) return;
       setState(() { _loadError = e.toString(); _loading = false; });
+    }
+  }
+
+  /// New candidate active-words pairs taken from the current notification
+  /// history: source = known-language text (l1), translation = target-language
+  /// text (l2). De-duplicated by source, newest-first. These are fed into the
+  /// persistent Active Words store (which accumulates beyond history's own cap).
+  List<({String src, String tgt})> _historyActiveWordCandidates(AppState appState) {
+    final seen = <String>{};
+    final out = <({String src, String tgt})>[];
+    for (final entry in appState.history) {
+      for (final s in entry.sentences) {
+        final l1 = s.l1.trim();
+        final l2 = s.l2.trim();
+        if (l1.isEmpty || l2.isEmpty || !seen.add(l1)) continue;
+        out.add((src: l1, tgt: l2));
+      }
+    }
+    return out;
+  }
+
+  /// Builds the "Active words" subject from the persistent store (merging in any
+  /// new history sentences first) and seeds its known translations into the
+  /// cache, so it shows in the picker and is cache-hit without any AI call.
+  Future<void> _injectActiveWords(SentenceBank bank, AppState appState) async {
+    final sourceLang = bank.language;
+    final targetLang = appState.settings.targetLanguage;
+    if (sourceLang.toLowerCase() == targetLang.toLowerCase()) return;
+
+    final stored = await _service.addActiveWords(
+      incoming: _historyActiveWordCandidates(appState),
+      targetLang: targetLang,
+    );
+    if (stored.isEmpty) {
+      bank.subjects.remove(kActiveWordsSubject);
+      return;
+    }
+    bank.subjects[kActiveWordsSubject] =
+        LeafSubject(name: kActiveWordsSubject, sentences: [for (final e in stored) e.src]);
+    await _service.seedTranslations(
+      pairs: {for (final e in stored) e.src: e.tgt},
+      sourceLang: sourceLang,
+      targetLang: targetLang,
+    );
+  }
+
+  /// On a history change, adds the new history sentences to the persistent
+  /// Active Words store (capped, oldest evicted) and refreshes only that
+  /// subject. Existing active words are kept even after they leave history.
+  Future<void> _refreshActiveWords() async {
+    final bank = _bank;
+    if (bank == null || !mounted) return;
+    final appState = context.read<AppState>();
+    final sourceLang = bank.language;
+    final targetLang = appState.settings.targetLanguage;
+    if (sourceLang.toLowerCase() == targetLang.toLowerCase()) return;
+
+    final stored = await _service.addActiveWords(
+      incoming: _historyActiveWordCandidates(appState),
+      targetLang: targetLang,
+    );
+    if (!mounted) return;
+
+    final existing = bank.subjects[kActiveWordsSubject];
+    final oldSentences = existing is LeafSubject ? existing.sentences : const <String>[];
+    final newSentences = [for (final e in stored) e.src];
+    if (listEquals(oldSentences, newSentences)) return; // nothing actually changed
+
+    // Seed only the entries that are new since last time.
+    final oldSet = oldSentences.toSet();
+    final newPairs = <String, String>{
+      for (final e in stored)
+        if (!oldSet.contains(e.src)) e.src: e.tgt,
+    };
+    if (newPairs.isNotEmpty) {
+      await _service.seedTranslations(pairs: newPairs, sourceLang: sourceLang, targetLang: targetLang);
+    }
+    if (!mounted) return;
+
+    final wasSelected = _selectedSubject == kActiveWordsSubject;
+    // Capture the sentence currently in view so we can stay on it even though
+    // newer entries are prepended (which shifts indices).
+    final preservedSrc = wasSelected ? _currentSource() : null;
+
+    setState(() {
+      if (newSentences.isEmpty) {
+        bank.subjects.remove(kActiveWordsSubject);
+        if (wasSelected) {
+          _selectedSubject = bank.subjectNames.isNotEmpty ? bank.subjectNames.first : null;
+          _sentenceIndex = 0;
+          _translatedSentence = null;
+          _showTranslation = false;
+          _shuffledOrder = null;
+        }
+      } else {
+        bank.subjects[kActiveWordsSubject] = LeafSubject(name: kActiveWordsSubject, sentences: newSentences);
+        if (wasSelected) {
+          // Rebuild any shuffle order for the new length, then land back on the
+          // sentence the user was viewing (by text), or the first if it's gone.
+          if (_shuffledOrder != null) _generateShuffledOrder();
+          final raw = preservedSrc == null ? -1 : newSentences.indexOf(preservedSrc);
+          if (_shuffledOrder != null) {
+            final pos = raw >= 0 ? _shuffledOrder!.indexOf(raw) : -1;
+            _sentenceIndex = pos >= 0 ? pos : 0;
+          } else {
+            _sentenceIndex = raw >= 0 ? raw : 0;
+          }
+        }
+      }
+      _sourceSentence = _currentSource();
+    });
+
+    final sorted = await _service.sortedSubjects(bank.subjectNames);
+    if (mounted) setState(() => _sortedSubjectNames = sorted);
+
+    // If Active words is selected but not actively auto-playing, drop the cached
+    // playlist so the next manual Play rebuilds with the new sentences. We avoid
+    // touching a live auto session — it'll pick the changes up on its next start.
+    if (wasSelected && !_autoMode) {
+      _preparedSig = null;
+      _translationsSig = null;
     }
   }
 
@@ -1174,6 +1308,14 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (reloadToken != _lastReloadToken && !_loading) {
       _lastReloadToken = reloadToken;
       WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _loadBank(); });
+    }
+
+    // History changed (e.g. a new active word's notification was tapped) →
+    // refresh just the "Active words" subject, incrementally.
+    final historyRevision = context.select<AppState, int>((s) => s.historyRevision);
+    if (historyRevision != _lastHistoryRevision && !_loading) {
+      _lastHistoryRevision = historyRevision;
+      WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _refreshActiveWords(); });
     }
 
     final shuffle = context.select<AppState, bool>((s) => s.settings.sentenceBankShuffle);
