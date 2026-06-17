@@ -146,6 +146,160 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// Vocabulary inputs (sentence count + connector words), merged into the
+  /// Languages & Schedule card so a single in-card "Save & reschedule" button
+  /// covers every deferred text field on the screen.
+  List<Widget> _vocabularySettings(AppState state) {
+    final s = state.settings;
+    final titleStyle = Theme.of(context).textTheme.titleMedium;
+    return [
+      Row(
+        children: [
+          Expanded(child: Text('Sentences to create:', style: titleStyle)),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 80,
+            child: TextField(
+              decoration: tfDecor(context),
+              controller: _numSentencesCtrl,
+              keyboardType: TextInputType.number,
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 12),
+      Text('Preferred connector words', style: titleStyle),
+      const SizedBox(height: 4),
+      Wrap(
+        spacing: 6,
+        children: s.connectorWords
+            .map((w) => Chip(
+                  label: Text(w),
+                  onDeleted: () => context.read<AppState>().removeConnectorWord(w),
+                ))
+            .toList(),
+      ),
+      const SizedBox(height: 4),
+      Row(
+        children: [
+          Expanded(
+            child: filledTF(
+              context,
+              controller: _connectorCtrl,
+              suffixIcon: _addingConnector ? tinySpinner() : null,
+              style: Theme.of(context).textTheme.labelSmall,
+              hintText: 'Phonetic, comma/space separated',
+            ),
+          ),
+          const SizedBox(width: 4),
+          IconButton.filled(
+            icon: const Icon(Icons.add),
+            onPressed: _addingConnector
+                ? null
+                : () async {
+                    final raw = _connectorCtrl.text.trim();
+                    if (raw.isEmpty) return;
+                    final appState = context.read<AppState>();
+                    final apiKey = appState.settings.aiApiKey.trim();
+                    if (apiKey.isEmpty) {
+                      lpSnack(context, 'Set your Gemini API key first in AI settings.', 4000);
+                      return;
+                    }
+                    FocusScope.of(context).unfocus();
+                    final parts = raw
+                        .split(RegExp(r'[, \t\n]+'))
+                        .map((w) => w.trim())
+                        .where((w) => w.isNotEmpty)
+                        .toList();
+                    if (parts.isEmpty) return;
+                    setState(() => _addingConnector = true);
+                    final added = <String, String>{};
+                    try {
+                      for (final p in parts) {
+                        final normalized = await AiService.normalizeWordToTargetScript(
+                          apiKey: apiKey,
+                          word: p,
+                          targetLanguage: appState.settings.targetLanguage,
+                        );
+                        await appState.addConnectorWord(normalized);
+                        added[p] = normalized;
+                      }
+                      _connectorCtrl.clear();
+                      if (mounted) {
+                        final msg = added.entries.map((e) => '${e.key} → ${e.value}').join(', ');
+                        lpSnack(context, msg, 4000);
+                      }
+                    } catch (e) {
+                      if (mounted) lpSnack(context, 'AI error (connector): $e', 8000);
+                    } finally {
+                      if (mounted) setState(() => _addingConnector = false);
+                    }
+                  },
+          ),
+        ],
+      ),
+    ];
+  }
+
+  /// The single explicit-commit button. It applies the deferred text fields in
+  /// the Languages & Schedule card (languages, interval, sentence count) and
+  /// reschedules notifications. Everything else on the screen saves immediately.
+  Widget _applyAndRescheduleButton(AppState state) {
+    final s = state.settings;
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+          foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 24),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          elevation: 1,
+        ),
+        icon: _savingSettings ? tinyCenteredSpinner(scale: 0.8) : const Icon(Icons.save),
+        label: const Text('Save & reschedule'),
+        onPressed: _savingSettings
+            ? null
+            : () async {
+                FocusScope.of(context).unfocus();
+                setState(() => _savingSettings = true);
+                try {
+                  String newKnown = _knownCtrl.text.trim();
+                  String newTarget = _targetCtrl.text.trim();
+                  final langCache = Map<String, String>.from(s.languageNameCache);
+                  // The API key field auto-saves on change; read the controller so a
+                  // just-typed key is used for normalization without this button
+                  // having to re-commit a field from another card.
+                  final apiKey = _apiKeyCtrl.text.trim();
+                  try {
+                    if (newKnown.isNotEmpty) {
+                      newKnown = await AiService.normalizeLanguageName(apiKey: apiKey, userInput: newKnown, cache: langCache);
+                    }
+                    if (newTarget.isNotEmpty) {
+                      newTarget = await AiService.normalizeLanguageName(apiKey: apiKey, userInput: newTarget, cache: langCache);
+                    }
+                  } catch (_) {}
+                  _knownCtrl.text = newKnown;
+                  _targetCtrl.text = newTarget;
+                  final total = max(3, int.tryParse(_numSentencesCtrl.text.trim()) ?? s.conjugatedCount + s.simpleCount);
+                  final newSettings = s.copyWith(
+                    knownLanguage: newKnown.isEmpty ? s.knownLanguage : newKnown,
+                    targetLanguage: newTarget.isEmpty ? s.targetLanguage : newTarget,
+                    interval: _intervalFromFields(),
+                    simpleCount: 3,
+                    conjugatedCount: total - 3,
+                    languageNameCache: langCache,
+                  );
+                  await state.updateSettings(newSettings);
+                  if (mounted) lpSnack(context, 'Settings saved and notifications rescheduled', 4000);
+                } finally {
+                  if (mounted) setState(() => _savingSettings = false);
+                }
+              },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
@@ -154,18 +308,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final titleStyle = Theme.of(context).textTheme.titleMedium;
 
     return SafeArea(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(8, 12, 8, 0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(8, 12, 8, 0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
 
-                  // ── Languages & Schedule ────────────────────────────────────
-                  _section('Languages & Schedule', [
+                  // ── Languages, Schedule & Vocabulary ────────────────────────
+                  // _section('Languages, Schedule & Vocabulary', [
+                  _section('Active words', [
                     Row(
                       children: [
                         Expanded(
@@ -225,6 +376,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       value: s.showTranslation,
                       onChanged: (v) => state.updateSettings(s.copyWith(showTranslation: v)),
                     ),
+                    const Divider(height: 24),
+                    ..._vocabularySettings(state),
+                    const SizedBox(height: 16),
+                    _applyAndRescheduleButton(state),
                   ]),
 
                   // ── Notification style ──────────────────────────────────────
@@ -264,95 +419,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         }
                         state.updateSettings(s.copyWith(modeReverse: v));
                       },
-                    ),
-                  ]),
-
-                  // ── Vocabulary ──────────────────────────────────────────────
-                  _section('Vocabulary', [
-                    Row(
-                      children: [
-                        Expanded(child: Text('Sentences to create:', style: titleStyle)),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 80,
-                          child: TextField(
-                            decoration: tfDecor(context),
-                            controller: _numSentencesCtrl,
-                            keyboardType: TextInputType.number,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Text('Preferred connector words', style: titleStyle),
-                    const SizedBox(height: 4),
-                    Wrap(
-                      spacing: 6,
-                      children: s.connectorWords
-                          .map((w) => Chip(
-                                label: Text(w),
-                                onDeleted: () => context.read<AppState>().removeConnectorWord(w),
-                              ))
-                          .toList(),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: filledTF(
-                            context,
-                            controller: _connectorCtrl,
-                            suffixIcon: _addingConnector ? tinySpinner() : null,
-                            style: Theme.of(context).textTheme.labelSmall,
-                            hintText: 'Phonetic, comma/space separated',
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        IconButton.filled(
-                          icon: const Icon(Icons.add),
-                          onPressed: _addingConnector
-                              ? null
-                              : () async {
-                                  final raw = _connectorCtrl.text.trim();
-                                  if (raw.isEmpty) return;
-                                  final appState = context.read<AppState>();
-                                  final apiKey = appState.settings.aiApiKey.trim();
-                                  if (apiKey.isEmpty) {
-                                    lpSnack(context, 'Set your Gemini API key first in AI settings.', 4000);
-                                    return;
-                                  }
-                                  FocusScope.of(context).unfocus();
-                                  final parts = raw
-                                      .split(RegExp(r'[, \t\n]+'))
-                                      .map((w) => w.trim())
-                                      .where((w) => w.isNotEmpty)
-                                      .toList();
-                                  if (parts.isEmpty) return;
-                                  setState(() => _addingConnector = true);
-                                  final added = <String, String>{};
-                                  try {
-                                    for (final p in parts) {
-                                      final normalized = await AiService.normalizeWordToTargetScript(
-                                        apiKey: apiKey,
-                                        word: p,
-                                        targetLanguage: appState.settings.targetLanguage,
-                                      );
-                                      await appState.addConnectorWord(normalized);
-                                      added[p] = normalized;
-                                    }
-                                    _connectorCtrl.clear();
-                                    if (context.mounted) {
-                                      final msg = added.entries.map((e) => '${e.key} → ${e.value}').join(', ');
-                                      lpSnack(context, msg, 4000);
-                                    }
-                                  } catch (e) {
-                                    if (context.mounted) lpSnack(context, 'AI error (connector): $e', 8000);
-                                  } finally {
-                                    if (mounted) setState(() => _addingConnector = false);
-                                  }
-                                },
-                        ),
-                      ],
                     ),
                   ]),
 
@@ -793,64 +859,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
 
                   const SizedBox(height: 8),
-                ],
-              ),
-            ),
-          ),
-
-          // ── Save button (fixed at bottom) ───────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.fromLTRB(0, 0, 0, 16),
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
-                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 24),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                elevation: 1,
-              ),
-              icon: _savingSettings ? tinyCenteredSpinner(scale: 0.8) : const Icon(Icons.save),
-              label: const Text('Save & reschedule'),
-              onPressed: _savingSettings
-                  ? null
-                  : () async {
-                      FocusScope.of(context).unfocus();
-                      setState(() => _savingSettings = true);
-                      try {
-                        String newKnown = _knownCtrl.text.trim();
-                        String newTarget = _targetCtrl.text.trim();
-                        final langCache = Map<String, String>.from(s.languageNameCache);
-                        final apiKey = _apiKeyCtrl.text.trim();
-                        try {
-                          if (newKnown.isNotEmpty) {
-                            newKnown = await AiService.normalizeLanguageName(apiKey: apiKey, userInput: newKnown, cache: langCache);
-                          }
-                          if (newTarget.isNotEmpty) {
-                            newTarget = await AiService.normalizeLanguageName(apiKey: apiKey, userInput: newTarget, cache: langCache);
-                          }
-                        } catch (_) {}
-                        _knownCtrl.text = newKnown;
-                        _targetCtrl.text = newTarget;
-                        final total = max(3, int.tryParse(_numSentencesCtrl.text.trim()) ?? s.conjugatedCount + s.simpleCount);
-                        final newSettings = s.copyWith(
-                          knownLanguage: newKnown.isEmpty ? s.knownLanguage : newKnown,
-                          targetLanguage: newTarget.isEmpty ? s.targetLanguage : newTarget,
-                          interval: _intervalFromFields(),
-                          simpleCount: 3,
-                          conjugatedCount: total - 3,
-                          aiApiKey: apiKey,
-                          languageNameCache: langCache,
-                          sentenceBankUrl: _sbUrlCtrl.text.trim(),
-                        );
-                        await state.updateSettings(newSettings);
-                        if (context.mounted) lpSnack(context, 'Settings saved and notifications rescheduled', 4000);
-                      } finally {
-                        if (mounted) setState(() => _savingSettings = false);
-                      }
-                    },
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
