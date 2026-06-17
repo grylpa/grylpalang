@@ -96,19 +96,35 @@ class SentenceBankService {
     // If the fetch failed and _fetchFromUrl fell back to the bundled asset,
     // there's nothing to merge — using it as "cloud" would duplicate everything.
     if (cloudYaml == localYaml) return SentenceBank.fromYaml(localMap);
-    final cloudParsed = loadYaml(cloudYaml);
-    if (cloudParsed is! Map) return SentenceBank.fromYaml(localMap);
-    final cloudMap = _toPlainMap(cloudParsed);
 
-    // override_local: cloud value if present, else local value (default 0).
-    final overrideRaw = cloudMap.containsKey('override_local')
-        ? cloudMap['override_local']
-        : localMap['override_local'];
-    if (_truthy(overrideRaw)) {
-      return SentenceBank.fromYaml(cloudMap);
+    // A bad cloud file must never brick the Sentence Bank — fall back to the
+    // bundled bank and surface a warning (shown as a snackbar by the tab)
+    // instead of throwing a fatal load error.
+    try {
+      final cloudParsed = loadYaml(cloudYaml);
+      if (cloudParsed is! Map) {
+        lastFetchWarning = 'Sentence bank file is not valid YAML — using built-in bank.';
+        return SentenceBank.fromYaml(localMap);
+      }
+      final cloudMap = _toPlainMap(cloudParsed);
+
+      // override_local: cloud value if present, else local value (default 0).
+      final overrideRaw = cloudMap.containsKey('override_local')
+          ? cloudMap['override_local']
+          : localMap['override_local'];
+      if (_truthy(overrideRaw)) {
+        return SentenceBank.fromYaml(cloudMap);
+      }
+      return SentenceBank.fromYaml(_mergeBankMaps(localMap, cloudMap));
+    } catch (e) {
+      lastFetchWarning = 'Sentence bank error (${_shortError(e)}) — using built-in bank.';
+      return SentenceBank.fromYaml(localMap);
     }
-    return SentenceBank.fromYaml(_mergeBankMaps(localMap, cloudMap));
   }
+
+  /// Trims a YamlException to its first line (e.g. the "line N, column M …"
+  /// message) so the snackbar stays readable.
+  static String _shortError(Object e) => e.toString().split('\n').first.trim();
 
   static bool _truthy(dynamic v) =>
       v == 1 || v == true || (v is String && (v.trim() == '1' || v.trim().toLowerCase() == 'true'));
@@ -169,12 +185,35 @@ class SentenceBankService {
   /// Non-null if the last [_fetchFromUrl] call fell back to cache or asset.
   String? lastFetchWarning;
 
-  /// Strips the commit hash from GitHub Gist raw URLs so we always fetch the latest revision.
-  /// e.g. `.../raw/abc123.../file.yaml` → `.../raw/file.yaml`
-  static String _normalizeUrl(String url) => url.replaceFirstMapped(
-        RegExp(r'(gist\.githubusercontent\.com/.+/raw/)[0-9a-f]{40}/'),
-        (m) => m.group(1)!,
-      );
+  /// Normalizes common GitHub URLs into a fetchable *raw* URL:
+  ///  - A Gist **page** URL (`gist.github.com/USER/ID`) → its raw endpoint
+  ///    (`gist.githubusercontent.com/USER/ID/raw`). Fetching the page URL would
+  ///    download HTML, not the file.
+  ///  - A `github.com/.../blob/...` page URL → `raw.githubusercontent.com/...`.
+  ///  - Strips the commit hash from raw Gist URLs so we always get the latest.
+  static String _normalizeUrl(String url) {
+    final u = url.trim();
+
+    // Gist page → raw. Captures an optional "user/" then the hex gist id.
+    final gistPage = RegExp(r'^https?://gist\.github\.com/((?:[^/?#]+/)?[0-9a-fA-F]+)/?(?:[?#].*)?$');
+    final gm = gistPage.firstMatch(u);
+    if (gm != null) {
+      return 'https://gist.githubusercontent.com/${gm.group(1)}/raw';
+    }
+
+    // github.com blob page → raw.githubusercontent.com
+    final blob = RegExp(r'^https?://github\.com/([^/]+/[^/]+)/blob/(.+)$');
+    final bm = blob.firstMatch(u);
+    if (bm != null) {
+      return 'https://raw.githubusercontent.com/${bm.group(1)}/${bm.group(2)}';
+    }
+
+    // Already a raw Gist URL with a pinned commit hash → drop it for the latest.
+    return u.replaceFirstMapped(
+      RegExp(r'(gist\.githubusercontent\.com/.+/raw/)[0-9a-f]{40}/'),
+      (m) => m.group(1)!,
+    );
+  }
 
   Future<String> _fetchFromUrl(String url) async {
     lastFetchWarning = null;
@@ -188,22 +227,45 @@ class SentenceBankService {
     }).toString();
 
     try {
-      final resp = await http.get(Uri.parse(bustUrl)).timeout(const Duration(seconds: 15));
+      final resp = await http.get(Uri.parse(bustUrl), headers: const {
+        // Some hosts/CDNs block or stale-serve a request with no browser UA, and
+        // we want the freshest copy — mirror what a browser sends.
+        'User-Agent': 'Mozilla/5.0 (Android; Flutter) Katalaveno/1.0',
+        'Accept': 'text/yaml, text/plain, */*',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+      }).timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
         final body = resp.body;
-        await _prefs.setString(_kCachedYamlKey, body);
-        return body;
+        // Only cache (and use) the fetched file if it actually parses. Caching a
+        // broken file would poison every later load — and re-fetching a fixed
+        // file later would otherwise keep failing back onto the bad cache.
+        if (_isValidBankYaml(body)) {
+          await _prefs.setString(_kCachedYamlKey, body);
+          return body;
+        }
+        lastFetchWarning = 'Sentence bank file has a YAML error — using the previous version.';
+      } else {
+        lastFetchWarning = 'HTTP ${resp.statusCode} — showing cached version.';
       }
-      lastFetchWarning = 'HTTP ${resp.statusCode} — showing cached version.';
     } catch (e) {
-      lastFetchWarning = 'Fetch failed ($e) — showing cached version.';
+      lastFetchWarning = 'Fetch failed (${_shortError(e)}) — showing cached version.';
     }
 
-    // Fall back to cached YAML or bundled asset.
+    // Fall back to the last *valid* cached YAML, else the bundled asset.
     final cached = await _prefs.getString(_kCachedYamlKey);
-    if (cached != null && cached.isNotEmpty) return cached;
-    lastFetchWarning = '${lastFetchWarning ?? 'Fetch failed'} No cache — using built-in bank.';
+    if (cached != null && cached.isNotEmpty && _isValidBankYaml(cached)) return cached;
+    lastFetchWarning = '${lastFetchWarning ?? 'Fetch failed.'} Using built-in bank.';
     return await rootBundle.loadString(_kAssetPath);
+  }
+
+  /// True if [yaml] parses to a YAML mapping (a usable sentence-bank document).
+  bool _isValidBankYaml(String yaml) {
+    try {
+      return loadYaml(yaml) is Map;
+    } catch (_) {
+      return false;
+    }
   }
 
   // ── Translation cache ─────────────────────────────────────────────────────
