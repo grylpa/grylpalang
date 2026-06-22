@@ -1,6 +1,13 @@
 import 'package:flutter/material.dart';
 
 class AppSettings {
+  // Books — Audio mode defaults (single source of truth; used by the
+  // constructor, JSON fallback, and the Settings reset buttons).
+  static const int kBooksRepeatCountDefault = 3;
+  static const int kBooksSourcePauseSecDefault = 2;
+  static const int kBooksRepeatDelaySecDefault = 3;
+  static const int kBooksBetweenChunksPauseSecDefault = 3;
+
   String knownLanguage;
   String targetLanguage;
   Duration interval;
@@ -27,12 +34,15 @@ class AppSettings {
   int? sentenceBankSourcePauseOverride; // overrides auto_source_pause from YAML (null = use YAML value)
   int? sentenceBankTtsRepeatDelayOverride; // overrides tts_repeat_delay from YAML (null = use YAML value)
   bool sentenceBankShuffle;             // randomize sentence order within subject
+  bool sentenceBankRepeatSourceBetween; // also replay the source before every target repeat (off by default)
 
   // Books mode (Phase 3 audio playback). All times in seconds.
   String booksChunkUnit;                // 'sentence' | 'paragraph'
   int booksRepeatCount;                 // times each side (source + target) is repeated
   int booksSourcePauseSec;              // pause between source and target TTS
+  int booksRepeatDelaySec;              // pause between repeats of the same side
   int booksBetweenChunksPauseSec;       // pause after target before the next chunk
+  bool booksForceShortSentences;        // split sentence chunks further on inner punctuation (off by default)
   // Selected TTS voice keyed by BCP-47 locale (e.g. 'en-US', 'el-GR'). The
   // voice value is the flutter_tts voice name as returned by getVoices().
   Map<String, String> booksVoiceByLocale;
@@ -62,10 +72,13 @@ class AppSettings {
     this.sentenceBankSourcePauseOverride,
     this.sentenceBankTtsRepeatDelayOverride,
     required this.sentenceBankShuffle,
+    this.sentenceBankRepeatSourceBetween = false,
     this.booksChunkUnit = 'sentence',
-    this.booksRepeatCount = 2,
-    this.booksSourcePauseSec = 1,
-    this.booksBetweenChunksPauseSec = 2,
+    this.booksRepeatCount = kBooksRepeatCountDefault,
+    this.booksSourcePauseSec = kBooksSourcePauseSecDefault,
+    this.booksRepeatDelaySec = kBooksRepeatDelaySecDefault,
+    this.booksBetweenChunksPauseSec = kBooksBetweenChunksPauseSecDefault,
+    this.booksForceShortSentences = false,
     Map<String, String>? booksVoiceByLocale,
   }) : booksVoiceByLocale = booksVoiceByLocale ?? <String, String>{};
 
@@ -94,10 +107,13 @@ class AppSettings {
     Object? sentenceBankSourcePauseOverride = _keep,
     Object? sentenceBankTtsRepeatDelayOverride = _keep,
     bool? sentenceBankShuffle,
+    bool? sentenceBankRepeatSourceBetween,
     String? booksChunkUnit,
     int? booksRepeatCount,
     int? booksSourcePauseSec,
+    int? booksRepeatDelaySec,
     int? booksBetweenChunksPauseSec,
+    bool? booksForceShortSentences,
     Map<String, String>? booksVoiceByLocale,
   }) {
     return AppSettings(
@@ -131,10 +147,13 @@ class AppSettings {
           ? this.sentenceBankTtsRepeatDelayOverride
           : sentenceBankTtsRepeatDelayOverride as int?,
       sentenceBankShuffle: sentenceBankShuffle ?? this.sentenceBankShuffle,
+      sentenceBankRepeatSourceBetween: sentenceBankRepeatSourceBetween ?? this.sentenceBankRepeatSourceBetween,
       booksChunkUnit: booksChunkUnit ?? this.booksChunkUnit,
       booksRepeatCount: booksRepeatCount ?? this.booksRepeatCount,
       booksSourcePauseSec: booksSourcePauseSec ?? this.booksSourcePauseSec,
+      booksRepeatDelaySec: booksRepeatDelaySec ?? this.booksRepeatDelaySec,
       booksBetweenChunksPauseSec: booksBetweenChunksPauseSec ?? this.booksBetweenChunksPauseSec,
+      booksForceShortSentences: booksForceShortSentences ?? this.booksForceShortSentences,
       booksVoiceByLocale: booksVoiceByLocale ?? Map.of(this.booksVoiceByLocale),
     );
   }
@@ -166,10 +185,13 @@ class AppSettings {
     'sentenceBankSourcePauseOverride': sentenceBankSourcePauseOverride,
     'sentenceBankTtsRepeatDelayOverride': sentenceBankTtsRepeatDelayOverride,
     'sentenceBankShuffle': sentenceBankShuffle,
+    'sentenceBankRepeatSourceBetween': sentenceBankRepeatSourceBetween,
     'booksChunkUnit': booksChunkUnit,
     'booksRepeatCount': booksRepeatCount,
     'booksSourcePauseSec': booksSourcePauseSec,
+    'booksRepeatDelaySec': booksRepeatDelaySec,
     'booksBetweenChunksPauseSec': booksBetweenChunksPauseSec,
+    'booksForceShortSentences': booksForceShortSentences,
     'booksVoiceByLocale': booksVoiceByLocale,
   };
 
@@ -210,10 +232,13 @@ class AppSettings {
       sentenceBankSourcePauseOverride: json['sentenceBankSourcePauseOverride'] as int?,
       sentenceBankTtsRepeatDelayOverride: json['sentenceBankTtsRepeatDelayOverride'] as int?,
       sentenceBankShuffle: json['sentenceBankShuffle'] as bool? ?? true,
+      sentenceBankRepeatSourceBetween: json['sentenceBankRepeatSourceBetween'] as bool? ?? false,
       booksChunkUnit: json['booksChunkUnit'] as String? ?? 'sentence',
-      booksRepeatCount: (json['booksRepeatCount'] as int?) ?? 2,
-      booksSourcePauseSec: (json['booksSourcePauseSec'] as int?) ?? 1,
-      booksBetweenChunksPauseSec: (json['booksBetweenChunksPauseSec'] as int?) ?? 2,
+      booksRepeatCount: (json['booksRepeatCount'] as int?) ?? kBooksRepeatCountDefault,
+      booksSourcePauseSec: (json['booksSourcePauseSec'] as int?) ?? kBooksSourcePauseSecDefault,
+      booksRepeatDelaySec: (json['booksRepeatDelaySec'] as int?) ?? kBooksRepeatDelaySecDefault,
+      booksBetweenChunksPauseSec: (json['booksBetweenChunksPauseSec'] as int?) ?? kBooksBetweenChunksPauseSecDefault,
+      booksForceShortSentences: json['booksForceShortSentences'] as bool? ?? false,
       booksVoiceByLocale: (json['booksVoiceByLocale'] as Map?)
               ?.map((k, v) => MapEntry(k.toString(), v.toString())) ??
           <String, String>{},

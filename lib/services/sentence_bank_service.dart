@@ -720,7 +720,7 @@ class SentenceBankService {
     required String targetLang,
     required String apiKey,
     int chunkSize = 30,
-    void Function(int done, int total)? onProgress,
+    void Function(int done, int total, int attempt)? onProgress,
   }) async {
     if (sourceLang.toLowerCase() == targetLang.toLowerCase()) return 0;
 
@@ -728,7 +728,8 @@ class SentenceBankService {
     // couple more times before asking the user to tap again — transient 5xx /
     // "busy" errors usually clear. Successes are cached, so each pass only
     // targets the leftovers. A daily-quota failure throws straight out (no point
-    // retrying today).
+    // retrying today). [attempt] (0-based) is passed to onProgress so the UI can
+    // label retries differently.
     const maxAttempts = 3;
     var failed = 0;
     for (var attempt = 0; attempt < maxAttempts; attempt++) {
@@ -745,13 +746,13 @@ class SentenceBankService {
       }
 
       if (unique.isEmpty) {
-        onProgress?.call(0, 0);
+        onProgress?.call(0, 0, attempt);
         return 0;
       }
 
       // Report the total up front so the UI shows "0/N" during the first chunk
       // instead of nothing until the first chunk finishes.
-      onProgress?.call(0, unique.length);
+      onProgress?.call(0, unique.length, attempt);
 
       final fetched = await _fetchUnique(
         unique: unique,
@@ -760,7 +761,7 @@ class SentenceBankService {
         apiKey: apiKey,
         graceful: false,
         chunkSize: chunkSize,
-        onProgress: onProgress,
+        onProgress: onProgress == null ? null : (done, total) => onProgress(done, total, attempt),
       );
 
       failed = 0;

@@ -6,6 +6,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../models/app_settings.dart';
 import '../services/ai_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
@@ -143,6 +144,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  /// A `−  value  +` stepper row matching the Sentence Bank controls (instead of
+  /// a slider). [suffix] is appended to the value (e.g. 's' or '×'). When
+  /// [defaultValue] is given, a reset button restores it (disabled when already
+  /// at the default), mirroring the Sentence Bank rows.
+  Widget _stepperRow({
+    required String label,
+    required int value,
+    required String suffix,
+    required int min,
+    int? max,
+    int? defaultValue,
+    required ValueChanged<int> onChanged,
+  }) {
+    final textStyle = Theme.of(context).textTheme.bodyMedium;
+    return Row(
+      children: [
+        Expanded(child: Text(label, style: textStyle)),
+        const SizedBox(width: 8),
+        IconButton(
+          icon: const Icon(Icons.remove),
+          onPressed: value <= min ? null : () => onChanged(value - 1),
+        ),
+        SizedBox(
+          width: 36,
+          child: Text(
+            '$value$suffix',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.add),
+          onPressed: (max != null && value >= max) ? null : () => onChanged(value + 1),
+        ),
+        if (defaultValue != null)
+          IconButton(
+            icon: const Icon(Icons.restart_alt),
+            tooltip: 'Reset to default ($defaultValue$suffix)',
+            onPressed: value == defaultValue ? null : () => onChanged(defaultValue),
+          ),
+      ],
     );
   }
 
@@ -693,6 +738,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
+                      title: Text('Repeat source between translations', style: textStyle),
+                      subtitle: Text('Replay the source before every translation repeat', style: Theme.of(context).textTheme.bodySmall),
+                      value: s.sentenceBankRepeatSourceBetween,
+                      onChanged: s.sentenceBankSpeakSource
+                          ? (v) => state.saveSettingsOnly(s.copyWith(sentenceBankRepeatSourceBetween: v))
+                          : null,
+                    ),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
                       title: Text('Shuffle sentence order', style: textStyle),
                       value: s.sentenceBankShuffle,
                       onChanged: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankShuffle: v)),
@@ -726,40 +780,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ],
                     ),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('Repeat each side: ${s.booksRepeatCount}×', style: textStyle),
-                      subtitle: Slider(
-                        value: s.booksRepeatCount.toDouble().clamp(1, 5),
-                        min: 1, max: 5, divisions: 4,
-                        label: '${s.booksRepeatCount}×',
-                        onChanged: (v) =>
-                            state.saveSettingsOnly(s.copyWith(booksRepeatCount: v.round())),
-                      ),
+                    const SizedBox(height: 12),
+                    _stepperRow(
+                      label: 'Repeat each side',
+                      value: s.booksRepeatCount,
+                      suffix: '×',
+                      min: 1,
+                      max: 10,
+                      defaultValue: AppSettings.kBooksRepeatCountDefault,
+                      onChanged: (v) => state.saveSettingsOnly(s.copyWith(booksRepeatCount: v)),
                     ),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('Pause between source and target: ${s.booksSourcePauseSec}s',
-                          style: textStyle),
-                      subtitle: Slider(
-                        value: s.booksSourcePauseSec.toDouble().clamp(0, 10),
-                        min: 0, max: 10, divisions: 10,
-                        label: '${s.booksSourcePauseSec}s',
-                        onChanged: (v) =>
-                            state.saveSettingsOnly(s.copyWith(booksSourcePauseSec: v.round())),
-                      ),
+                    const SizedBox(height: 12),
+                    _stepperRow(
+                      label: 'Pause between source and target',
+                      value: s.booksSourcePauseSec,
+                      suffix: 's',
+                      min: 0,
+                      defaultValue: AppSettings.kBooksSourcePauseSecDefault,
+                      onChanged: (v) => state.saveSettingsOnly(s.copyWith(booksSourcePauseSec: v)),
                     ),
-                    ListTile(
+                    const SizedBox(height: 12),
+                    _stepperRow(
+                      label: 'Delay between repeats',
+                      value: s.booksRepeatDelaySec,
+                      suffix: 's',
+                      min: 0,
+                      defaultValue: AppSettings.kBooksRepeatDelaySecDefault,
+                      onChanged: (v) => state.saveSettingsOnly(s.copyWith(booksRepeatDelaySec: v)),
+                    ),
+                    const SizedBox(height: 12),
+                    _stepperRow(
+                      label: 'Pause between chunks',
+                      value: s.booksBetweenChunksPauseSec,
+                      suffix: 's',
+                      min: 0,
+                      defaultValue: AppSettings.kBooksBetweenChunksPauseSecDefault,
+                      onChanged: (v) => state.saveSettingsOnly(s.copyWith(booksBetweenChunksPauseSec: v)),
+                    ),
+                    SwitchListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: Text('Pause between chunks: ${s.booksBetweenChunksPauseSec}s',
-                          style: textStyle),
-                      subtitle: Slider(
-                        value: s.booksBetweenChunksPauseSec.toDouble().clamp(0, 15),
-                        min: 0, max: 15, divisions: 15,
-                        label: '${s.booksBetweenChunksPauseSec}s',
-                        onChanged: (v) => state
-                            .saveSettingsOnly(s.copyWith(booksBetweenChunksPauseSec: v.round())),
-                      ),
+                      title: Text('Force short sentences', style: textStyle),
+                      subtitle: Text('Split on commas/clauses so each chunk is as short as possible',
+                          style: Theme.of(context).textTheme.bodySmall),
+                      value: s.booksForceShortSentences,
+                      onChanged: s.booksChunkUnit == 'sentence'
+                          ? (v) => state.saveSettingsOnly(s.copyWith(booksForceShortSentences: v))
+                          : null,
                     ),
                   ]),
 

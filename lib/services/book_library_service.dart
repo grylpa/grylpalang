@@ -156,7 +156,12 @@ class BookLibraryService {
   /// parser preserves; sentence chunks are a best-effort regex split. Empty
   /// chunks are dropped, and overly long fragments are kept whole (the TTS
   /// engine can read them — the user just won't get fine-grained pauses there).
-  static List<String> chunkText(String text, String unit) {
+  ///
+  /// When [forceShort] is true (and [unit] is 'sentence'), each sentence is
+  /// further split on inner punctuation (`,` `;` `:` `—` `–` and the like) so
+  /// each chunk holds as few words as possible — easier to follow when listening
+  /// with per-chunk translation.
+  static List<String> chunkText(String text, String unit, {bool forceShort = false}) {
     if (unit == 'paragraph') {
       return [
         for (final p in text.split(RegExp(r'\n\s*\n')))
@@ -169,13 +174,45 @@ class BookLibraryService {
     for (final p in text.split(RegExp(r'\n\s*\n'))) {
       final paragraph = p.trim();
       if (paragraph.isEmpty) continue;
-      final pieces = paragraph
+      final sentences = paragraph
           .split(RegExp(r'(?<=[.!?…])\s+(?=[A-Z0-9"“‘])'))
           .map((s) => s.trim())
           .where((s) => s.isNotEmpty);
-      out.addAll(pieces);
+      for (final sentence in sentences) {
+        if (forceShort) {
+          out.addAll(_splitOnInnerPunctuation(sentence));
+        } else {
+          out.add(sentence);
+        }
+      }
     }
     return out;
+  }
+
+  /// Splits a single sentence at inner punctuation (comma, semicolon, colon,
+  /// dashes, ellipsis) into the smallest readable fragments, re-attaching the
+  /// punctuation to the fragment it follows. Fragments with no letters/digits
+  /// (e.g. stray dashes) are merged into the previous fragment so we never emit
+  /// punctuation-only chunks.
+  static List<String> _splitOnInnerPunctuation(String sentence) {
+    // Keep the delimiter with the preceding text by splitting on the whitespace
+    // that follows an inner punctuation mark.
+    final raw = sentence
+        .split(RegExp(r'(?<=[,;:…—–])\s+'))
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (raw.length <= 1) return [sentence];
+    final merged = <String>[];
+    for (final piece in raw) {
+      final hasWord = RegExp(r'[\p{L}\p{N}]', unicode: true).hasMatch(piece);
+      if (!hasWord && merged.isNotEmpty) {
+        merged[merged.length - 1] = '${merged.last} $piece';
+      } else {
+        merged.add(piece);
+      }
+    }
+    return merged;
   }
 
   // ── EPUB parsing ──────────────────────────────────────────────────────────
