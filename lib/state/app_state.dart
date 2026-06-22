@@ -358,7 +358,11 @@ class AppState extends ChangeNotifier {
   // ---------------------------------------------------------
 
   Future<void> _persist() async {
-    await _storage.clearSharedPrefs();
+    // NOTE: do NOT clear the whole SharedPreferences store here. Each save below
+    // overwrites its own key, and the store is shared with other features
+    // (sentence-bank translation cache, active-words store, positions, …). A
+    // blanket clear wiped all of those on every settings change, forcing the
+    // entire sentence bank to re-translate (and burn API quota) repeatedly.
     await _storage.saveSettings(_settings);
     await _storage.saveWords(_words);
     await _storage.saveSnapshots(_snapshots);

@@ -219,6 +219,7 @@ class _BookReaderState extends State<BookReader> {
     final chunks = BookLibraryService.chunkText(
       chapters[_chapterIndex].text,
       settings.booksChunkUnit,
+      forceShort: settings.booksForceShortSentences,
     );
     if (chunks.isEmpty) {
       setState(() => _audioError = 'Nothing to read in this chapter.');
@@ -247,7 +248,7 @@ class _BookReaderState extends State<BookReader> {
         ordinalCount: chunks.length,
         repeatCount: settings.booksRepeatCount,
         sourcePauseSec: settings.booksSourcePauseSec,
-        repeatDelaySec: settings.booksSourcePauseSec,
+        repeatDelaySec: settings.booksRepeatDelaySec,
         postDelaySec: settings.booksBetweenChunksPauseSec,
         alternate: true,
       );
@@ -988,8 +989,12 @@ class _BookReaderState extends State<BookReader> {
     // Split the chapter into the same chunks audio mode uses, so each one can
     // be tapped to "play from here". Lets the user jump audio to any
     // sentence/paragraph without having to navigate by chunk number.
-    final unit = context.watch<AppState>().settings.booksChunkUnit;
-    final chunks = BookLibraryService.chunkText(ch.text, unit);
+    final bookSettings = context.watch<AppState>().settings;
+    final chunks = BookLibraryService.chunkText(
+      ch.text,
+      bookSettings.booksChunkUnit,
+      forceShort: bookSettings.booksForceShortSentences,
+    );
     final headerCount = (_audioError != null) ? 2 : 1;
 
     return ListView.builder(

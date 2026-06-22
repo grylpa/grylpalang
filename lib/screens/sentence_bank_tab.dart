@@ -114,6 +114,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   // Batch translation progress for the current subject.
   int _batchDone = 0;
   int _batchTotal = 0;
+  int _batchAttempt = 0; // 0 = first pass; >0 = auto-retry of rate-limited leftovers
   bool _batchRunning = false;
 
   // The single in-flight full-subject translation pass and its (order-
@@ -228,9 +229,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       await _injectActiveWords(bank, appState);
       if (!mounted) return;
 
-      context.read<AppState>().updateSentenceBankYamlSourcePause(bank.autoSourcePause);
-      context.read<AppState>().updateSentenceBankYamlTtsRepeatDelay(bank.ttsRepeatDelay);
-      context.read<AppState>().updateSentenceBankYamlTtsRepeatCount(bank.ttsRepeatCount);
+      appState.updateSentenceBankYamlSourcePause(bank.autoSourcePause);
+      appState.updateSentenceBankYamlTtsRepeatDelay(bank.ttsRepeatDelay);
+      appState.updateSentenceBankYamlTtsRepeatCount(bank.ttsRepeatCount);
       final sorted = await _service.sortedSubjects(bank.subjectNames);
       // Keep the in-memory subject if still valid; otherwise restore from the
       // dedicated last-subject key, then fall back to recency-sorted first.
@@ -453,6 +454,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _showTranslation = false;
       _batchDone = 0;
       _batchTotal = 0;
+      _batchAttempt = 0;
     });
     // Record selection and refresh sorted list.
     _service.recordSubjectSelected(name).then((_) async {
@@ -535,7 +537,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final apiKey = state.settings.aiApiKey;
     if (apiKey.trim().isEmpty) return;
 
-    setState(() { _batchRunning = true; _batchDone = 0; _batchTotal = 0; });
+    setState(() { _batchRunning = true; _batchDone = 0; _batchTotal = 0; _batchAttempt = 0; });
 
     try {
       // If the playlist build is already translating this subject, this awaits
@@ -546,9 +548,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           sourceLang: sourceLang,
           targetLang: targetLang,
           apiKey: apiKey,
-          onProgress: (done, total) {
+          onProgress: (done, total, attempt) {
             if (!mounted) return;
-            setState(() { _batchDone = done; _batchTotal = total; });
+            setState(() { _batchDone = done; _batchTotal = total; _batchAttempt = attempt; });
             _loadCachedTranslationForCurrent();
           },
         );
@@ -560,7 +562,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       if (mounted) lpSnack(context, e.toString().replaceFirst('Exception: ', ''), 5000);
     } finally {
       if (mounted) {
-        setState(() { _batchRunning = false; _batchDone = 0; _batchTotal = 0; });
+        setState(() { _batchRunning = false; _batchDone = 0; _batchTotal = 0; _batchAttempt = 0; });
         _loadCachedTranslationForCurrent();
       }
     }
@@ -959,6 +961,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       settings.sentenceBankSourcePauseOverride ?? _bank?.autoSourcePause,
       settings.sentenceBankTtsRepeatDelayOverride ?? _bank?.ttsRepeatDelay,
       _bank?.autoPostTtsDelay,
+      settings.sentenceBankRepeatSourceBetween,
     ].join('¦');
 
     if (sig == _preparedSig && _autoPlaylist.isLoaded) {
@@ -1085,6 +1088,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         postDelaySec: _bank?.autoPostTtsDelay ?? 2,
         startOrdinal: _sentenceIndex,
         autoPlay: play && _autoMode,
+        // When on, replay the source before every target repeat (source between
+        // targets) instead of speaking the source once up front.
+        alternate: settings.sentenceBankSpeakSource && settings.sentenceBankRepeatSourceBetween,
       );
       _preparedSig = sig;
       if (mounted) setState(() => _autoPreparing = false);
@@ -1348,6 +1354,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           s.sentenceBankResolvedTtsRepeatCount,
           s.settings.sentenceBankSourcePauseOverride,
           s.settings.sentenceBankTtsRepeatDelayOverride,
+          s.settings.sentenceBankRepeatSourceBetween,
         ].join('¦'));
     if (autoCfg != _lastAutoCfg) {
       _lastAutoCfg = autoCfg;
@@ -1600,7 +1607,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             if (_batchRunning && _batchTotal > 0)
-              Text('Translating $_batchDone/$_batchTotal…', style: Theme.of(context).textTheme.labelSmall)
+              Text('${_batchAttempt > 0 ? 'Retrying' : 'Translating'} $_batchDone/$_batchTotal…',
+                  style: Theme.of(context).textTheme.labelSmall)
             else if (_batchRunning)
               Text('Preparing translations…', style: Theme.of(context).textTheme.labelSmall)
             else
@@ -1741,7 +1749,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.translate),
                 label: Text(_batchRunning && _batchTotal > 0
-                    ? 'Translating $_batchDone/$_batchTotal'
+                    ? '${_batchAttempt > 0 ? 'Retrying' : 'Translating'} $_batchDone/$_batchTotal'
                     : (_showTranslation && _translatedSentence != null ? 'Re-translate' : 'Translate')),
               ),
             ),
