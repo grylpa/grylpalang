@@ -102,7 +102,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   String? _loadError;
   bool _loading = true;
 
-  String? _selectedSubject;
+  // Multi-selection of subjects (checkbox picker). Sentences played are the
+  // de-duplicated union of all selected subjects (leaf + meta).
+  final Set<String> _selectedSubjects = {};
   int _sentenceIndex = 0;
   List<String> _sortedSubjectNames = [];
 
@@ -233,59 +235,47 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       appState.updateSentenceBankYamlTtsRepeatDelay(bank.ttsRepeatDelay);
       appState.updateSentenceBankYamlTtsRepeatCount(bank.ttsRepeatCount);
       final sorted = await _service.sortedSubjects(bank.subjectNames);
-      // Keep the in-memory subject if still valid; otherwise restore from the
-      // dedicated last-subject key, then fall back to recency-sorted first.
-      final currentSubject = _selectedSubject;
-      final lastSubject = currentSubject == null
-          ? await _service.loadLastSubject(bank.subjectNames)
-          : null;
-      final subject = (currentSubject != null && bank.subjectNames.contains(currentSubject))
-          ? currentSubject
-          : lastSubject ?? sorted.firstOrNull;
-      final preservingSubject = subject == currentSubject;
+      // Restore the selection: keep the in-memory set (validated against the new
+      // bank) if any, else the persisted set, else default to the first subject.
+      final available = bank.subjectNames.toSet();
+      Set<String> selection;
+      if (_selectedSubjects.isNotEmpty) {
+        selection = _selectedSubjects.where(available.contains).toSet();
+      } else {
+        final saved = await _service.loadSelectedSubjects();
+        selection = {...?saved}.where(available.contains).toSet();
+      }
+      if (selection.isEmpty && sorted.isNotEmpty) selection = {sorted.first};
+      if (!mounted) return;
+      final preserving = setEquals(selection, _selectedSubjects);
 
       setState(() {
         _bank = bank;
         _sortedSubjectNames = sorted;
         _loading = false;
-        if (subject != null) {
-          _selectedSubject = subject;
-          if (!preservingSubject) {
-            _sentenceIndex = 0;
-            _sourceSentence = _currentSentences().firstOrNull;
-            _translatedSentence = null;
-            _showTranslation = false;
-          }
-          if (shuffle) _generateShuffledOrder(); else _shuffledOrder = null;
+        _selectedSubjects
+          ..clear()
+          ..addAll(selection);
+        if (!preserving) {
+          _sentenceIndex = 0;
+          _translatedSentence = null;
+          _showTranslation = false;
         }
+        if (shuffle) _generateShuffledOrder(); else _shuffledOrder = null;
+        _sourceSentence = _currentSource();
       });
 
-      // Persist the auto-selected subject so the next cold start restores it.
-      if (subject != null && currentSubject == null) {
-        _service.recordSubjectSelected(subject);
-      }
-
-      // Restore saved position only when switching to a different subject.
-      if (subject != null && !preservingSubject) {
-        final pos = await _service.loadPosition(subject);
+      // Restore the resume sentence (by text) only when the selection changed.
+      if (!preserving) {
+        await _service.saveSelectedSubjects(selection.toList());
+        final resume = await _service.loadResumeSentence(_selectionSig());
         if (!mounted) return;
-        final sents = bank.sentencesFor(subject);
-        if (sents.isNotEmpty && pos > 0) {
-          setState(() {
-            final order = _shuffledOrder;
-            if (order != null) {
-              final p = order.indexOf(pos % sents.length);
-              _sentenceIndex = p >= 0 ? p : 0;
-            } else {
-              _sentenceIndex = pos % sents.length;
-            }
-            _sourceSentence = _currentSource();
-          });
-        }
-        _loadCachedTranslationForCurrent();
-      } else if (subject != null) {
-        _loadCachedTranslationForCurrent();
+        setState(() {
+          _seekToSentence(resume);
+          _sourceSentence = _currentSource();
+        });
       }
+      _loadCachedTranslationForCurrent();
 
       _startBatchTranslation();
 
@@ -373,7 +363,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
     if (!mounted) return;
 
-    final wasSelected = _selectedSubject == kActiveWordsSubject;
+    final wasSelected = _selectedSubjects.contains(kActiveWordsSubject);
     // Capture the sentence currently in view so we can stay on it even though
     // newer entries are prepended (which shifts indices).
     final preservedSrc = wasSelected ? _currentSource() : null;
@@ -382,7 +372,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       if (newSentences.isEmpty) {
         bank.subjects.remove(kActiveWordsSubject);
         if (wasSelected) {
-          _selectedSubject = bank.subjectNames.isNotEmpty ? bank.subjectNames.first : null;
+          _selectedSubjects.remove(kActiveWordsSubject);
           _sentenceIndex = 0;
           _translatedSentence = null;
           _showTranslation = false;
@@ -418,10 +408,59 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
   }
 
+  /// The de-duplicated union of every selected subject's sentences, in stable
+  /// bank order (so positions/shuffle stay consistent regardless of selection
+  /// order). A sentence shared by a leaf and a meta that includes it appears once.
   List<String> _currentSentences() {
-    final subj = _selectedSubject;
-    if (subj == null || _bank == null) return [];
-    return _bank!.sentencesFor(subj);
+    final bank = _bank;
+    if (bank == null || _selectedSubjects.isEmpty) return [];
+    final seen = <String>{};
+    final out = <String>[];
+    for (final name in bank.subjectNames) {
+      if (!_selectedSubjects.contains(name)) continue;
+      for (final s in bank.sentencesFor(name)) {
+        if (seen.add(s)) out.add(s);
+      }
+    }
+    return out;
+  }
+
+  /// Order-independent signature of the current selection — used as the key for
+  /// position persistence and the translation-pass coalescer.
+  String _selectionSig() => (_selectedSubjects.toList()..sort()).join('§');
+
+  /// Persists the currently-viewed sentence (by text) as the resume point for
+  /// this selection. Resume is remembered by sentence, never by index.
+  void _saveResume() {
+    final src = _currentSource();
+    if (src != null && _selectedSubjects.isNotEmpty) {
+      _service.saveResumeSentence(_selectionSig(), src);
+    }
+  }
+
+  /// Moves the playhead to [sentence] (matched by text) if it's in the current
+  /// list, honouring any active shuffle order. No-op if not found.
+  void _seekToSentence(String? sentence) {
+    if (sentence == null) return;
+    final sents = _currentSentences();
+    final raw = sents.indexOf(sentence);
+    if (raw < 0) return;
+    final order = _shuffledOrder;
+    if (order != null) {
+      final p = order.indexOf(raw);
+      _sentenceIndex = p >= 0 ? p : 0;
+    } else {
+      _sentenceIndex = raw;
+    }
+  }
+
+  /// Short summary of the selection for the picker button.
+  String _selectionSummary() {
+    final bank = _bank;
+    if (bank == null || _selectedSubjects.isEmpty) return 'none';
+    if (_selectedSubjects.length >= bank.subjectNames.length) return 'All';
+    if (_selectedSubjects.length == 1) return _selectedSubjects.first;
+    return '${_selectedSubjects.length} selected';
   }
 
   String? _currentSource() {
@@ -441,12 +480,15 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     _shuffledOrder = indices;
   }
 
-  void _selectSubject(String? name) {
-    if (name == null) return;
+  /// Applies a new subject selection: resets position/shuffle, persists the set,
+  /// restores any saved position for that combination, and (re)translates.
+  Future<void> _applySelection(Set<String> sel) async {
     _stopAuto();
     final shuffle = context.read<AppState>().settings.sentenceBankShuffle;
     setState(() {
-      _selectedSubject = name;
+      _selectedSubjects
+        ..clear()
+        ..addAll(sel);
       _sentenceIndex = 0;
       if (shuffle) _generateShuffledOrder(); else _shuffledOrder = null;
       _sourceSentence = _currentSource();
@@ -456,31 +498,124 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _batchTotal = 0;
       _batchAttempt = 0;
     });
-    // Record selection and refresh sorted list.
-    _service.recordSubjectSelected(name).then((_) async {
-      if (!mounted || _bank == null) return;
+    await _service.saveSelectedSubjects(sel.toList());
+    // Record each selected subject (by name) in the recency list so the picker
+    // shows recently-used subjects first.
+    for (final name in sel) {
+      await _service.recordSubjectSelected(name);
+    }
+    if (!mounted) return;
+    if (_bank != null) {
       final sorted = await _service.sortedSubjects(_bank!.subjectNames);
       if (mounted) setState(() => _sortedSubjectNames = sorted);
+    }
+    // Restore the resume sentence (by text) for this exact selection.
+    final resume = await _service.loadResumeSentence(_selectionSig());
+    if (!mounted) return;
+    setState(() {
+      _seekToSentence(resume);
+      _sourceSentence = _currentSource();
     });
-    // Restore saved position for this subject.
-    _service.loadPosition(name).then((pos) {
-      if (!mounted) return;
-      final sents = _currentSentences();
-      if (sents.isNotEmpty && pos > 0) {
-        setState(() {
-          final order = _shuffledOrder;
-          if (order != null) {
-            final p = order.indexOf(pos % sents.length);
-            _sentenceIndex = p >= 0 ? p : 0;
-          } else {
-            _sentenceIndex = pos % sents.length;
-          }
-          _sourceSentence = _currentSource();
-        });
-      }
-      _loadCachedTranslationForCurrent();
-    });
+    _loadCachedTranslationForCurrent();
     _startBatchTranslation();
+  }
+
+  /// Opens the multi-select subject picker (bottom sheet with a "Check all" row
+  /// and a checkbox per subject). Applies the new selection on close if changed.
+  Future<void> _openSubjectPicker() async {
+    final bank = _bank;
+    if (bank == null) return;
+    final all = _sortedSubjectNames;
+    final working = {..._selectedSubjects};
+
+    final result = await showModalBottomSheet<Set<String>>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheet) {
+            final allChecked = working.length >= all.length && all.isNotEmpty;
+            return SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                    child: Row(
+                      children: [
+                        Text('Select subjects', style: Theme.of(ctx).textTheme.titleMedium),
+                        const Spacer(),
+                        Text('${working.length}/${all.length}',
+                            style: Theme.of(ctx).textTheme.labelMedium),
+                      ],
+                    ),
+                  ),
+                  CheckboxListTile(
+                    dense: true,
+                    title: const Text('Check all'),
+                    // true = all, false = none, null = some (indeterminate dash).
+                    value: allChecked ? true : (working.isEmpty ? false : null),
+                    tristate: true,
+                    onChanged: (_) => setSheet(() {
+                      if (allChecked) {
+                        working.clear();
+                      } else {
+                        working
+                          ..clear()
+                          ..addAll(all);
+                      }
+                    }),
+                  ),
+                  const Divider(height: 1),
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: all.length,
+                      itemBuilder: (_, i) {
+                        final name = all[i];
+                        final isMeta = bank.subjects[name] is MetaSubject;
+                        return CheckboxListTile(
+                          dense: true,
+                          value: working.contains(name),
+                          onChanged: (v) => setSheet(() {
+                            if (v == true) {
+                              working.add(name);
+                            } else {
+                              working.remove(name);
+                            }
+                          }),
+                          secondary: Icon(
+                            isMeta ? Icons.folder_outlined : Icons.list_alt_outlined,
+                            color: Theme.of(ctx).colorScheme.primary,
+                          ),
+                          title: Text(name, overflow: TextOverflow.ellipsis),
+                        );
+                      },
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                        onPressed: () => Navigator.of(ctx).pop(working),
+                        child: const Text('Done'),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null || !mounted) return;
+    if (!setEquals(result, _selectedSubjects)) {
+      await _applySelection(result);
+    }
   }
 
   Future<void> _loadCachedTranslationForCurrent() async {
@@ -500,7 +635,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   /// background prefetch translates the subject unordered; the playlist build
   /// translates the same set in play order — both share this sig so they
   /// recognise they'd be doing the same work.
-  String _subjectTransSig(String targetLang) => '$_selectedSubject|$_lastReloadToken|$targetLang';
+  String _subjectTransSig(String targetLang) => '${_selectionSig()}|$_lastReloadToken|$targetLang';
 
   /// Registers [body] as the single in-flight translation pass for [sig]. If a
   /// pass for the same sig is already running, awaits it and skips [body]
@@ -660,11 +795,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     });
     _loadCachedTranslationForCurrent();
     unawaited(_upgradeAheadInBackground());
-    final subject = _selectedSubject;
-    if (subject != null) {
-      final order = _shuffledOrder;
-      _service.savePosition(subject, order != null ? order[newIndex % order.length] : newIndex);
-    }
+    _saveResume();
   }
 
   void _previousSentence() {
@@ -679,11 +810,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     });
     _loadCachedTranslationForCurrent();
     unawaited(_upgradeAheadInBackground());
-    final subject = _selectedSubject;
-    if (subject != null) {
-      final order = _shuffledOrder;
-      _service.savePosition(subject, order != null ? order[newIndex % order.length] : newIndex);
-    }
+    _saveResume();
   }
 
   void _autoPrevious() {
@@ -949,7 +1076,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final ordered = [for (var o = 0; o < sents.length; o++) sents[order != null ? order[o % order.length] : o]];
 
     final sig = [
-      _selectedSubject,
+      _selectionSig(),
       _lastReloadToken,
       order?.join(','),
       settings.targetLanguage,
@@ -976,7 +1103,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       // voice — so reuse the in-memory set across voice changes instead of
       // re-hitting the translator.
       final translationsSig =
-          [_selectedSubject, _lastReloadToken, order?.join(','), settings.targetLanguage].join('¦');
+          [_selectionSig(), _lastReloadToken, order?.join(','), settings.targetLanguage].join('¦');
       List<String> translations;
       if (translationsSig == _translationsSig && _autoTranslations.length == ordered.length) {
         translations = _autoTranslations;
@@ -1112,6 +1239,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _translatedSentence = ord < _autoTranslations.length ? _autoTranslations[ord] : null;
       _showTranslation = true;
     });
+    // Remember the resume sentence as auto mode advances (in-pocket sessions).
+    _saveResume();
     // As playback advances, upgrade any lite-translated sentences in the window
     // ahead so they're flash-quality on the next time through the subject.
     unawaited(_upgradeAheadInBackground());
@@ -1134,13 +1263,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   }
 
   void _saveAutoPosition() {
-    final subject = _selectedSubject;
-    if (subject == null) return;
-    final sents = _currentSentences();
-    if (sents.isEmpty) return;
-    final order = _shuffledOrder;
-    final actual = order != null ? order[_sentenceIndex % order.length] : _sentenceIndex % sents.length;
-    _service.savePosition(subject, actual);
+    _saveResume();
   }
 
   String _ttsLangCode(String languageName) {
@@ -1424,35 +1547,29 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   Widget _buildSubjectPicker(SentenceBank bank) {
     return InputDecorator(
       decoration: const InputDecoration(
-        labelText: 'Subject',
+        labelText: 'Subjects',
         border: OutlineInputBorder(),
         contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: _selectedSubject,
-          isExpanded: true,
-          isDense: true,
-          focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-          items: _sortedSubjectNames.map((name) {
-            final isMeta = bank.subjects[name] is MetaSubject;
-            return DropdownMenuItem(
-              value: name,
-              child: Row(
-                children: [
-                  Icon(
-                    isMeta ? Icons.folder_outlined : Icons.list_alt_outlined,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.primary,
+      child: InkWell(
+        onTap: _autoMode ? null : _openSubjectPicker,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _selectionSummary(),
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _autoMode ? Theme.of(context).disabledColor : null,
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
-                ],
+                ),
               ),
-            );
-          }).toList(),
-          onChanged: _autoMode ? null : _selectSubject,
+              Icon(Icons.arrow_drop_down,
+                  color: _autoMode ? Theme.of(context).disabledColor : null),
+            ],
+          ),
         ),
       ),
     );
