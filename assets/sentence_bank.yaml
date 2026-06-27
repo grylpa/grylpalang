@@ -182,24 +182,6 @@ subjects:
       - Shopping
       - Directions
 
-  Full Mix:
-    includes:
-      - Greetings
-      - Introductions
-      - Numbers and Time
-      - Food and Drink
-      - Shopping
-      - Directions
-      - Health
-      - Travel
-      - Work and Daily Life
-      - Weather
-      - At the fishmonger
-      - At the butcher
-      - At the gym
-      - My misc
-      - Active words
-
   At the fishmonger:
     sentences:
       - the octopus i took last week was wonderful

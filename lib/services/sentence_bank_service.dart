@@ -486,6 +486,23 @@ class SentenceBankService {
 
   static const String _kSubjectHistoryKey = 'sentenceBankSubjectHistory';
   static const String _kLastSubjectKey = 'sentenceBankLastSubject';
+  static const String _kSelectedSubjectsKey = 'sentenceBankSelectedSubjects';
+
+  /// Persists the multi-selection of subjects (checkbox picker).
+  Future<void> saveSelectedSubjects(List<String> subjects) async {
+    await _prefs.setString(_kSelectedSubjectsKey, jsonEncode(subjects));
+  }
+
+  /// Loads the saved multi-selection, or null if none was ever saved.
+  Future<List<String>?> loadSelectedSubjects() async {
+    final raw = await _prefs.getString(_kSelectedSubjectsKey);
+    if (raw == null) return null;
+    try {
+      return (jsonDecode(raw) as List).cast<String>();
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Returns subjects sorted by recency: most recently selected first,
   /// then any subjects not yet in history in their original order.
@@ -525,30 +542,34 @@ class SentenceBankService {
   }
 
   // ── Position persistence ──────────────────────────────────────────────────
+  //
+  // The resume point is remembered by the *sentence text itself*, keyed by the
+  // selection (a name-based key), not by a numeric index — so it survives the
+  // sentence list changing (e.g. Active Words growing, a subject edited).
 
-  static const String _kPositionsKey = 'sentenceBankPositions';
+  static const String _kResumeKey = 'sentenceBankResumeSentence';
 
-  Future<int> loadPosition(String subject) async {
-    final raw = await _prefs.getString(_kPositionsKey);
-    if (raw == null) return 0;
+  /// The sentence the user was last on for [selectionKey], or null.
+  Future<String?> loadResumeSentence(String selectionKey) async {
+    final raw = await _prefs.getString(_kResumeKey);
+    if (raw == null) return null;
     try {
-      final map = jsonDecode(raw) as Map;
-      return (map[subject] as int?) ?? 0;
+      return (jsonDecode(raw) as Map).cast<String, dynamic>()[selectionKey] as String?;
     } catch (_) {
-      return 0;
+      return null;
     }
   }
 
-  Future<void> savePosition(String subject, int index) async {
-    final raw = await _prefs.getString(_kPositionsKey);
-    final map = <String, int>{};
+  Future<void> saveResumeSentence(String selectionKey, String sentence) async {
+    final raw = await _prefs.getString(_kResumeKey);
+    final map = <String, String>{};
     if (raw != null) {
       try {
-        map.addAll((jsonDecode(raw) as Map).cast<String, int>());
+        map.addAll((jsonDecode(raw) as Map).map((k, v) => MapEntry(k.toString(), v.toString())));
       } catch (_) {}
     }
-    map[subject] = index;
-    await _prefs.setString(_kPositionsKey, jsonEncode(map));
+    map[selectionKey] = sentence;
+    await _prefs.setString(_kResumeKey, jsonEncode(map));
   }
 
   /// Returns a cached translation without making any network calls. Returns null if not cached.
