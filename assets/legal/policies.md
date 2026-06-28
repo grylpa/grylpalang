@@ -8,13 +8,15 @@ This app respects your privacy.
 The app does **not** collect, store, or sell personal data such as names, email addresses, phone numbers, or precise location.
 
 ## App data
-The app stores limited data **locally on your device** — for example: app settings, your API key, learning progress, added words, cached translations, and cached audio.  
+The app stores limited data **locally on your device** — for example: app settings, learning progress, added words, cached translations, and cached audio.  
 This data stays on your device and is not uploaded to us.
 
-## Network & third-party services
-To provide its features the app contacts the following third-party services. None of these requests include personal data that identifies you, and each happens only when the relevant feature is used:
+The **AI API key** you enter is a credential you obtain from Google. It is sensitive; the app keeps it only on your device and transmits it solely to Google (see below) to authenticate your own requests. It is never sent to us (the app has no server) or to any other party.
 
-- **Google Gemini** (`generativelanguage.googleapis.com`) — when you add words or use the prediction and translation features, the **text you provide** (and curated sentences) is sent to Google's Gemini API, using the API key you supply, to generate or evaluate content. Your API key is stored locally and sent only to Google.
+## Network & third-party services
+To provide its features the app contacts the following third-party services, each only when the relevant feature is used. **Aside from the AI API key described above — which is sent only to Google — these requests do not include information that personally identifies you:**
+
+- **Google Gemini** (`generativelanguage.googleapis.com`) — when you add words or use the prediction and translation features, the **text you provide** (and curated sentences) is sent to Google's Gemini API, **authenticated with the API key you supply**, to generate or evaluate content. The key is sent only to Google.
 - **Google Translate audio** (`translate.google.com`) — for some languages the app fetches spoken audio for a sentence by sending that **sentence text** to Google's translate-audio endpoint.
 - **Project Gutenberg / Gutendex** (`gutendex.com` and gutenberg.org) — the Books feature browses the public Project Gutenberg catalog and, when you open a book, downloads its EPUB and cover image. These are ordinary public downloads and send no information about you.
 - **Custom sentence-bank URL** — if you enter a sentence-bank URL in settings, the app fetches that file from the address you provided.

@@ -54,6 +54,10 @@ Translations, generated sentences, explanations, and text-to-speech output may c
 
 MIT. See [LICENSE](LICENSE).
 
+## Privacy
+
+See [PRIVACY.md](PRIVACY.md). The in-app copy lives at [`assets/legal/policies.md`](assets/legal/policies.md) (Settings → Policies).
+
 ## Attribution
 
 Created by grylpa.
