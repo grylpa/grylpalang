@@ -43,7 +43,9 @@ If you have questions about this policy, contact:
 
 By using this app, you agree to the following:
 
-- The app is provided **“as is”**, without warranties of any kind.
-- The content is for educational and informational purposes only.
+- This app is a **personal software experiment**, in its alpha stages and not intended for production use.
+- It is **not** medical advice, cognitive training, therapy, diagnosis, or a proven method for preventing or treating any condition. Any references to memory, attention, learning, brain challenge, or similar ideas describe the **design goals and personal motivation** behind the project, **not scientifically validated claims**.
+- The app is provided **“as is”**, with **no warranty or guarantee** of correctness, reliability, safety, availability, or fitness for any particular purpose. You use it **at your own risk and discretion**.
+- The content is for **educational and informational purposes only**.
+- Translations, generated sentences, explanations, and text-to-speech output may contain mistakes. Treat them as **learning aids, not authoritative language instruction**.
 - Book content is provided by Project Gutenberg and is subject to its own terms and licensing.
-- You use the app at your own risk.
