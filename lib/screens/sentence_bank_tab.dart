@@ -419,7 +419,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     for (final name in bank.subjectNames) {
       if (!_selectedSubjects.contains(name)) continue;
       for (final s in bank.sentencesFor(name)) {
-        if (seen.add(s)) out.add(s);
+        // Dedup accidental leaf/meta overlap on the raw entry, then honour an
+        // author's `N,` repeat directive by emitting the sentence N times.
+        if (seen.add(s)) {
+          final reps = SbSentence.repeatCount(s);
+          for (var i = 0; i < reps; i++) out.add(s);
+        }
       }
     }
     return out;
@@ -623,7 +628,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (src == null || _bank == null) return;
     final state = context.read<AppState>();
     final cached = await _service.getCached(
-      sentence: src,
+      sentence: SbSentence.spoken(src),
       sourceLang: _bank!.language,
       targetLang: state.settings.targetLanguage,
     );
@@ -679,7 +684,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       // it and skips — no second concurrent pass.
       await _withTranslationPass(_subjectTransSig(targetLang), () async {
         final failed = await _service.translateAllUncached(
-          sentences: sentences,
+          sentences: [for (final s in sentences) SbSentence.spoken(s)],
           sourceLang: sourceLang,
           targetLang: targetLang,
           apiKey: apiKey,
@@ -730,7 +735,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     for (var k = 0; k < _kUpgradeLookAhead && k < span - 1; k++) {
       final pos = _sentenceIndex + 1 + k;
       final idx = order != null ? order[pos % order.length] : pos % sents.length;
-      if (idx >= 0 && idx < sents.length) window.add(sents[idx]);
+      if (idx >= 0 && idx < sents.length) window.add(SbSentence.spoken(sents[idx]));
     }
     if (window.isEmpty) return;
 
@@ -753,7 +758,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           );
           if (!mounted) return;
           // If we just upgraded the sentence currently on screen, refresh it.
-          if (t.trim() != s.trim() && s == _sourceSentence && _showTranslation) {
+          final curSpoken = _sourceSentence == null ? null : SbSentence.spoken(_sourceSentence!);
+          if (t.trim() != s.trim() && s == curSpoken && _showTranslation) {
             setState(() => _translatedSentence = t);
           }
         } on TranslationException {
@@ -847,7 +853,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     setState(() => _translating = true);
     try {
       final t = await _service.translate(
-        sentence: src,
+        sentence: SbSentence.spoken(src),
         sourceLang: sourceLang,
         targetLang: targetLang,
         apiKey: apiKey,
@@ -889,9 +895,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       return;
     }
     setState(() => _translating = true);
+    final spokenSrc = SbSentence.spoken(src);
     try {
       final t = await _service.translate(
-        sentence: src,
+        sentence: spokenSrc,
         sourceLang: _bank!.language,
         targetLang: state.settings.targetLanguage,
         apiKey: apiKey,
@@ -899,7 +906,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       );
       if (!mounted) return;
       // If the model echoed the source back (quota/failure), keep what we had.
-      if (t.trim() == src.trim()) {
+      if (t.trim() == spokenSrc.trim()) {
         setState(() => _translating = false);
         lpSnack(context, 'Could not re-translate right now — try again later.', 4000);
         return;
@@ -1074,6 +1081,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final settings = state.settings;
     final order = _shuffledOrder;
     final ordered = [for (var o = 0; o < sents.length; o++) sents[order != null ? order[o % order.length] : o]];
+    // What actually gets spoken/translated (hints dropped, options collapsed,
+    // `N,` prefix removed). `ordered` keeps the raw text for display/identity.
+    final orderedSpoken = [for (final r in ordered) SbSentence.spoken(r)];
 
     final sig = [
       _selectionSig(),
@@ -1109,7 +1119,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         translations = _autoTranslations;
       } else {
         Future<List<String>> doBatch() => _service.translateBatch(
-              sentences: ordered,
+              sentences: orderedSpoken,
               sourceLang: _bank!.language,
               targetLang: settings.targetLanguage,
               apiKey: settings.aiApiKey,
@@ -1129,7 +1139,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         // Only mark this set reusable if every sentence actually translated;
         // otherwise leave it unset so the failed ones retry on the next build.
         final anyFailed = [
-          for (var i = 0; i < ordered.length; i++) translations[i].trim() == ordered[i].trim()
+          for (var i = 0; i < ordered.length; i++) translations[i].trim() == orderedSpoken[i].trim()
         ].any((f) => f);
         _translationsSig = anyFailed ? null : translationsSig;
       }
@@ -1148,7 +1158,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       await Future.wait([
         for (var o = 0; o < translations.length; o++)
           () async {
-            final failed = translations[o].trim() == ordered[o].trim();
+            final failed = translations[o].trim() == orderedSpoken[o].trim();
             final clipLang = failed ? _bank!.language : settings.targetLanguage;
             final cached = await _cachedClipFile(
                 translations[o], clipLang, gender, preferVoice: failed ? sourceVoice : '');
@@ -1159,7 +1169,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             }
             if (speakSource) {
               sourcePaths[o] =
-                  await _cachedClipFile(ordered[o], _bank!.language, gender, preferVoice: sourceVoice);
+                  await _cachedClipFile(orderedSpoken[o], _bank!.language, gender, preferVoice: sourceVoice);
             }
           }(),
       ]);
@@ -1177,7 +1187,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
       for (final o in needsWork) {
         if (!mounted) return;
-        final failed = translations[o].trim() == ordered[o].trim();
+        final failed = translations[o].trim() == orderedSpoken[o].trim();
         final clipLang = failed ? _bank!.language : settings.targetLanguage;
         try {
           translationPaths[o] = await _ensureClipFile(
@@ -1194,7 +1204,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       for (final o in sourceMissing) {
         if (!mounted) return;
         sourcePaths[o] = await _ensureClipFileOrNull(
-            ordered[o], _bank!.language, gender, preferVoice: sourceVoice);
+            orderedSpoken[o], _bank!.language, gender, preferVoice: sourceVoice);
         if (mounted) setState(() => _prepDone = _prepDone + 1);
       }
       if (!mounted) return;
@@ -1204,6 +1214,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
       _autoOrdinalSub?.cancel();
       _autoOrdinalSub = _autoPlaylist.currentOrdinalStream.listen(_onAutoOrdinal);
+
+      // Synthesizing source clips drives the flutter_tts engine, which holds
+      // Android audio focus. If it isn't released before the playlist player
+      // starts (e.g. prep finished while the screen was locked), playback
+      // begins silently — the symptom that "stop then play" used to clear.
+      // Release it explicitly so the player wins focus on the first try.
+      try { await _tts.stop(); } catch (_) {}
 
       await _autoPlaylist.start(
         translations: translations,
@@ -1747,7 +1764,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                   style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.primary),
                 ),
                 const SizedBox(height: 8),
-                Text(src, style: Theme.of(context).textTheme.titleMedium),
+                Text(SbSentence.display(src), style: Theme.of(context).textTheme.titleMedium),
               ],
             ),
           ),
