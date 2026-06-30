@@ -33,6 +33,15 @@ class _MainScaffoldState extends State<MainScaffold> {//with WidgetsBindingObser
 
   static const _kTabKey = 'lastTabIndex';
 
+  /// Switches to [idx], persisting it as the last active tab. No-op if [idx] is
+  /// out of range or already current (keeps swipes non-cyclic — swiping past the
+  /// first/last tab does nothing).
+  void _changeTab(int idx) {
+    if (idx < 0 || idx >= _pages.length || idx == _index) return;
+    setState(() => _index = idx);
+    SharedPreferencesAsync().setInt(_kTabKey, idx);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -97,9 +106,24 @@ class _MainScaffoldState extends State<MainScaffold> {//with WidgetsBindingObser
           }
         }
 
-        Widget body = IndexedStack(
-          index: _index,
-          children: _pages,
+        // Horizontal swipes step one tab at a time (non-cyclic). The IndexedStack
+        // is kept so every tab stays alive (audio tabs, keep-alive state); the
+        // gesture detector just moves the index. Inner horizontal scrollables win
+        // the gesture arena, so swiping on them scrolls instead of changing tabs.
+        Widget body = GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragEnd: (details) {
+            final v = details.primaryVelocity ?? 0;
+            if (v <= -250) {
+              _changeTab(_index + 1); // swipe left → next tab
+            } else if (v >= 250) {
+              _changeTab(_index - 1); // swipe right → previous tab
+            }
+          },
+          child: IndexedStack(
+            index: _index,
+            children: _pages,
+          ),
         );
 
         return !appState.initialized ?
@@ -118,10 +142,7 @@ class _MainScaffoldState extends State<MainScaffold> {//with WidgetsBindingObser
           body: body,
           bottomNavigationBar: BottomNavigationBar(
             currentIndex: _index,
-            onTap: (idx) {
-              setState(() => _index = idx);
-              SharedPreferencesAsync().setInt(_kTabKey, idx);
-            },
+            onTap: _changeTab,
             type: BottomNavigationBarType.fixed,
             selectedItemColor: Theme.of(context).colorScheme.primary,
             unselectedItemColor: Theme.of(context).colorScheme.onSurfaceVariant,
