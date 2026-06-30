@@ -102,6 +102,47 @@ class SentenceBank {
   }
 }
 
+/// Parses the inline directives an author may put in a Sentence Bank *source*
+/// sentence:
+///   * a leading `N,` repeat directive — include this sentence N times in the
+///     play order (emphasis). e.g. `3, I am tired`
+///   * `( … )` hints — kept on screen but never spoken or translated.
+///   * `a/b` options — alternatives; only the first side is spoken/translated,
+///     while both stay visible on screen.
+///
+/// [display] is what the learner sees; [spoken] is what gets synthesized to
+/// audio and sent to the translator. For a plain sentence (no directives) both
+/// equal the original, so existing banks and their translation cache are
+/// unaffected.
+class SbSentence {
+  static final RegExp _repeatRe = RegExp(r'^\s*(\d+)\s*,\s*');
+  static final RegExp _hintRe = RegExp(r'\s*\([^()]*\)');
+  static final RegExp _optionRe = RegExp(r'[^\s/]+(?:/[^\s/]+)+');
+  static final RegExp _wsRe = RegExp(r'\s{2,}');
+
+  /// How many times this sentence should appear in the play order (1–99).
+  static int repeatCount(String raw) {
+    final m = _repeatRe.firstMatch(raw);
+    if (m == null) return 1;
+    final n = int.tryParse(m.group(1)!) ?? 1;
+    if (n < 1) return 1;
+    return n > 99 ? 99 : n;
+  }
+
+  /// Text to show on screen: drops the `N,` directive but keeps hints and the
+  /// option slashes so the learner sees them.
+  static String display(String raw) => raw.replaceFirst(_repeatRe, '').replaceAll(_wsRe, ' ').trim();
+
+  /// Text to speak / translate: drops the `N,` directive and `( … )` hints, and
+  /// collapses each `a/b` option to its first alternative.
+  static String spoken(String raw) {
+    var s = raw.replaceFirst(_repeatRe, '');
+    s = s.replaceAll(_hintRe, '');
+    s = s.replaceAllMapped(_optionRe, (m) => m.group(0)!.split('/').first);
+    return s.replaceAll(_wsRe, ' ').trim();
+  }
+}
+
 abstract class BankSubject {
   String get name;
 }

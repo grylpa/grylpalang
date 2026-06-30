@@ -19,6 +19,20 @@
 #  - All subjects (including meta) appear in the subject picker.
 #  - Meta subjects stream sentences from all included leaf subjects.
 #  - Translations are fetched via AI once and cached locally.
+#
+# Sentence directives (apply to the source sentences below):
+#  - Hints in parentheses are shown on screen but never spoken or translated:
+#        - I am ready (said to a friend).
+#    -> the audio/translation use "I am ready", the screen shows the hint.
+#  - A slash marks alternatives; only the first option is spoken/translated,
+#    while both stay visible on screen:
+#        - He/She is here.
+#    -> the audio/translation use "He is here", the screen shows "He/She is here".
+#  - Prefix a sentence with "N," to include it N times in the play order, to
+#    emphasize sentences you want to drill more often:
+#        - 3, I am on a deadline today.
+#    -> this sentence appears three times in the shuffled/sequential play order.
+#    The "N," prefix itself is never shown, spoken, or translated.
 
 language: English
 

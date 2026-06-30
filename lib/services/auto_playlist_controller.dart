@@ -141,6 +141,14 @@ class AutoPlaylistController {
     _ordinalCount = translations.length;
     final startClip = clipToOrdinal.indexOf(startOrdinal.clamp(0, _ordinalCount - 1));
 
+    // Reset the player before loading the new playlist. The player may be left
+    // in a completed/idle state from a previous single-clip ("Speak") playback
+    // or a prep that finished in the background; loading sources and calling
+    // play() from that state can begin silently. An explicit stop() first
+    // mirrors the manual "stop then play" recovery and makes the first play()
+    // reliably produce sound.
+    await _player.stop();
+
     await _player.setAudioSources(
       sources,
       initialIndex: startClip < 0 ? 0 : startClip,
