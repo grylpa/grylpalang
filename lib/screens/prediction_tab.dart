@@ -63,8 +63,10 @@ class _PredictionTabState extends State<PredictionTab> {
 
     if (!mounted) return;
     setState(() {
-      _feedback = result;
-      _submitted = true;
+      _feedback = result.text;
+      // Only lock the Check button when the AI actually evaluated. On a failure
+      // (busy/quota/network) leave it enabled so the user can retry.
+      _submitted = result.ok;
       _loading = false;
     });
   }
