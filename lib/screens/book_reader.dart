@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/book_chapter.dart';
 import '../models/book_entry.dart';
+import '../widgets.dart';
 import '../services/auto_playlist_controller.dart';
 import '../services/book_library_service.dart';
 import '../services/katalaveno_audio_handler.dart';
@@ -925,7 +926,8 @@ class _BookReaderState extends State<BookReader> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    IconButton.outlined(
+                    IconButton(
+                      style: blueIconButtonStyle(context),
                       onPressed: _audioPrep ? null : _skipBack,
                       tooltip: 'Previous chunk',
                       icon: const Icon(Icons.skip_previous),
@@ -937,7 +939,8 @@ class _BookReaderState extends State<BookReader> {
                       label: Text(_audioPaused ? 'Resume' : 'Pause'),
                     ),
                     const SizedBox(width: 12),
-                    IconButton.outlined(
+                    IconButton(
+                      style: blueIconButtonStyle(context),
                       onPressed: _audioPrep ? null : _skipForward,
                       tooltip: 'Next chunk',
                       icon: const Icon(Icons.skip_next),

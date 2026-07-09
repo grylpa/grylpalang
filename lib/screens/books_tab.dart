@@ -401,6 +401,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
               ),
             ],
           ),
+          const SizedBox(height: 8),
           _filterRows(),
           _gutenbergButton(),
           const SizedBox(height: 8),
@@ -468,7 +469,6 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
         prefixIcon: Icon(Icons.search),
         hintText: 'Search title or author',
         isDense: true,
-        border: OutlineInputBorder(),
       ),
       onChanged: (v) => setState(() => _query = v),
     );
@@ -489,6 +489,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
             ),
           ],
         ),
+        const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
@@ -507,36 +508,53 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     );
   }
 
+  /// Wraps a classic [DropdownButton] so it reads as a filled, borderless M3
+  /// field (no underline) matching the app's text inputs.
+  Widget _filledDropdownBox({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: DropdownButtonHideUnderline(child: child),
+    );
+  }
+
   Widget _genreDropdown() {
     final genres = _allGenres();
     // Stale selection (e.g. genre dropped out after a filter change) is included
     // as a "(no match)" item so the widget doesn't assert.
     final stale = _genre != null && !genres.contains(_genre);
-    return DropdownButton<String?>(
-      focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-      dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-      value: _genre,
-      isExpanded: true,
-      hint: const Text('Genre: any'),
-      onChanged: (v) => setState(() => _genre = v),
-      items: [
-        const DropdownMenuItem<String?>(value: null, child: Text('Genre: any')),
-        if (stale) DropdownMenuItem<String?>(value: _genre, child: Text('${_genre!} (no match)')),
-        for (final g in genres) DropdownMenuItem<String?>(value: g, child: Text(g)),
-      ],
+    return _filledDropdownBox(
+      child: DropdownButton<String?>(
+        focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        value: _genre,
+        isExpanded: true,
+        hint: const Text('Genre: any'),
+        onChanged: (v) => setState(() => _genre = v),
+        items: [
+          const DropdownMenuItem<String?>(value: null, child: Text('Genre: any')),
+          if (stale) DropdownMenuItem<String?>(value: _genre, child: Text('${_genre!} (no match)')),
+          for (final g in genres) DropdownMenuItem<String?>(value: g, child: Text(g)),
+        ],
+      ),
     );
   }
 
   Widget _enumDropdown(String label, String value, List<String> options, ValueChanged<String> onPick) {
-    return DropdownButton<String>(
-      focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-      dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-      value: value,
-      isExpanded: true,
-      onChanged: (v) {
-        if (v != null) onPick(v);
-      },
-      items: [for (final o in options) DropdownMenuItem(value: o, child: Text('$label: $o'))],
+    return _filledDropdownBox(
+      child: DropdownButton<String>(
+        focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        value: value,
+        isExpanded: true,
+        onChanged: (v) {
+          if (v != null) onPick(v);
+        },
+        items: [for (final o in options) DropdownMenuItem(value: o, child: Text('$label: $o'))],
+      ),
     );
   }
 
@@ -551,7 +569,6 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
           hintText: 'From year',
           isDense: true,
           contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-          border: OutlineInputBorder(),
         ),
         keyboardType: TextInputType.number,
         textInputAction: TextInputAction.done,

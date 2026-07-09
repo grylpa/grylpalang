@@ -281,14 +281,16 @@ class _SnapPageScrollPhysics extends PageScrollPhysics {
   @override
   _SnapPageScrollPhysics applyTo(ScrollPhysics? ancestor) => _SnapPageScrollPhysics(parent: buildParent(ancestor));
 
+  // Stiff + slightly overdamped: settles quickly (roughly matching the nav-bar
+  // tap's 250ms animateTo) without the default spring's overshoot bounce.
   @override
-  SpringDescription get spring => SpringDescription.withDampingRatio(mass: 0.5, stiffness: 100, ratio: 1.3);
+  SpringDescription get spring => SpringDescription.withDampingRatio(mass: 0.5, stiffness: 320, ratio: 1.2);
 
   @override
   Simulation? createBallisticSimulation(ScrollMetrics position, double velocity) {
     // Keep the flick direction (which picks the target page) but cap the speed
-    // so the settle spring can't shoot past the page and bounce back.
-    return super.createBallisticSimulation(position, velocity.clamp(-1600.0, 1600.0));
+    // so the settle can't shoot past the page and bounce back.
+    return super.createBallisticSimulation(position, velocity.clamp(-3500.0, 3500.0));
   }
 }
 
