@@ -121,6 +121,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           IconButton.filledTonal(
+                            style: IconButton.styleFrom(
+                              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                              foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
+                            ),
                             onPressed: isLoading ? null : () => _onAddSentencesForWord(context, w),
                             icon: isLoading ? const SizedBox(width: 18, height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2),

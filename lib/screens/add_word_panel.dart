@@ -82,16 +82,25 @@ class _AddWordPanelState extends State<AddWordPanel> {
                   children: [
                     Text('Add new', style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(width: 16),
-                    DropdownButton<WordType>(
-                      focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                      dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                      value: _type,
-                      onChanged: (val) => setState(() => _type = val ?? WordType.verb),
-                      items: const [
-                        DropdownMenuItem(value: WordType.verb, child: Text('Verb')),
-                        DropdownMenuItem(value: WordType.noun, child: Text('Noun')),
-                        DropdownMenuItem(value: WordType.other, child: Text('Other')),
-                      ],
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<WordType>(
+                          focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                          value: _type,
+                          onChanged: (val) => setState(() => _type = val ?? WordType.verb),
+                          items: const [
+                            DropdownMenuItem(value: WordType.verb, child: Text('Verb')),
+                            DropdownMenuItem(value: WordType.noun, child: Text('Noun')),
+                            DropdownMenuItem(value: WordType.other, child: Text('Other')),
+                          ],
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -116,6 +125,7 @@ class _AddWordPanelState extends State<AddWordPanel> {
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(0, 0, 0, 0),
                         child: IconButton.filled(
+                          style: blueIconButtonStyle(context),
                           icon: _loading
                               ? SizedBox(width: 60, height: 60, child: tinyCenteredSpinner(scale: 0.8))
                               : const Icon(Icons.add, size: 60),

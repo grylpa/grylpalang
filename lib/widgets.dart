@@ -1,6 +1,15 @@
 import 'package:flutter/material.dart';
 import 'models/word_sentence.dart';
 
+/// Shared "tonal blue" style for *filled* icon-buttons (audio controls, add
+/// buttons) so they match the app's FilledButtons: primaryContainer fill,
+/// onPrimaryContainer icon. Plain icon-buttons (e.g. delete) intentionally keep
+/// their transparent default and don't use this.
+ButtonStyle blueIconButtonStyle(BuildContext context) {
+  final s = Theme.of(context).colorScheme;
+  return IconButton.styleFrom(backgroundColor: s.primaryContainer, foregroundColor: s.onPrimaryContainer);
+}
+
 Widget tinySpinner({double scale = 0.4}) {
   return SizedBox(
     width: 16,

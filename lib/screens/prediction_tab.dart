@@ -134,6 +134,7 @@ class _PredictionTabState extends State<PredictionTab> {
               if (ttsOk) ...[
                 const SizedBox(width: 10),
                 IconButton(
+                  style: blueIconButtonStyle(context),
                   tooltip: 'Hear the answer in $targetLang',
                   onPressed: (sent == null || !ttsOk) ? null : _speakAnswer,
                   icon: const Icon(Icons.volume_up),
@@ -198,7 +199,6 @@ class _PredictionTabState extends State<PredictionTab> {
                       textInputAction: TextInputAction.done,
                       decoration: InputDecoration(
                         labelText: 'Your answer',
-                        border: const OutlineInputBorder(),
                         suffixIcon: IconButton(
                           tooltip: 'Clear',
                           onPressed: () => _answerCtl.clear(),
@@ -225,7 +225,14 @@ class _PredictionTabState extends State<PredictionTab> {
                         ),
                         const SizedBox(width: 10),
                         Expanded(
-                          child: OutlinedButton(
+                          // Distinctive from the blue action buttons: solid, but
+                          // a different (tertiary) hue since it's the "give up /
+                          // show me the answer" escape hatch.
+                          child: FilledButton(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
+                              foregroundColor: Theme.of(context).colorScheme.onTertiaryContainer,
+                            ),
                             onPressed: () {
                               // Reveal solution (but still keep your “prediction-first” feel)
                               setState(() {

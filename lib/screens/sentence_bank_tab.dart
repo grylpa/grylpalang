@@ -1889,7 +1889,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             ),
             if (ttsOk) ...[
               const SizedBox(width: 8),
-              IconButton.outlined(
+              IconButton(
+                style: blueIconButtonStyle(context),
                 tooltip: 'Speak translation',
                 onPressed: _ttsPlaying ? null : _speakTranslation,
                 icon: _ttsPlaying

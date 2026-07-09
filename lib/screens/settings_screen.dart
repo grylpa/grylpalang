@@ -191,6 +191,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// Wraps a classic [DropdownButton] so it reads as a filled, borderless M3
+  /// field (no underline), matching the app's text inputs.
+  Widget _filledDropdown({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: DropdownButtonHideUnderline(child: child),
+    );
+  }
+
   /// Vocabulary inputs (sentence count + connector words), merged into the
   /// Languages & Schedule card so a single in-card "Save & reschedule" button
   /// covers every deferred text field on the screen.
@@ -238,6 +251,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(width: 4),
           IconButton.filled(
+            style: blueIconButtonStyle(context),
             icon: const Icon(Icons.add),
             onPressed: _addingConnector
                 ? null
@@ -399,19 +413,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                         ),
                         const SizedBox(width: 20),
-                        DropdownButton<String>(
-                          focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                          value: _intervalUnit,
-                          onChanged: (val) {
-                            if (val == null) return;
-                            setState(() => _intervalUnit = val);
-                          },
-                          items: const [
-                            DropdownMenuItem(value: 'minutes', child: Text('minutes')),
-                            DropdownMenuItem(value: 'hours', child: Text('hours')),
-                            DropdownMenuItem(value: 'days', child: Text('days')),
-                          ],
+                        _filledDropdown(
+                          child: DropdownButton<String>(
+                            focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            value: _intervalUnit,
+                            onChanged: (val) {
+                              if (val == null) return;
+                              setState(() => _intervalUnit = val);
+                            },
+                            items: const [
+                              DropdownMenuItem(value: 'minutes', child: Text('minutes')),
+                              DropdownMenuItem(value: 'hours', child: Text('hours')),
+                              DropdownMenuItem(value: 'days', child: Text('days')),
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -766,17 +782,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       children: [
                         Text('Chunk by', style: textStyle),
                         const SizedBox(width: 12),
-                        DropdownButton<String>(
-                          focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                          value: s.booksChunkUnit,
-                          items: const [
-                            DropdownMenuItem(value: 'sentence', child: Text('Sentence')),
-                            DropdownMenuItem(value: 'paragraph', child: Text('Paragraph')),
-                          ],
-                          onChanged: (v) {
-                            if (v != null) state.saveSettingsOnly(s.copyWith(booksChunkUnit: v));
-                          },
+                        _filledDropdown(
+                          child: DropdownButton<String>(
+                            focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            value: s.booksChunkUnit,
+                            items: const [
+                              DropdownMenuItem(value: 'sentence', child: Text('Sentence')),
+                              DropdownMenuItem(value: 'paragraph', child: Text('Paragraph')),
+                            ],
+                            onChanged: (v) {
+                              if (v != null) state.saveSettingsOnly(s.copyWith(booksChunkUnit: v));
+                            },
+                          ),
                         ),
                       ],
                     ),
