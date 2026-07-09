@@ -756,7 +756,11 @@ class AppState extends ChangeNotifier {
     return all[idx];
   }
 
-  Future<String> evaluatePrediction({
+  /// Evaluates the user's prediction. Returns the text to show plus [ok]: true
+  /// only when the AI actually produced a verdict. On any failure (empty input,
+  /// AI busy/quota, no key, network) [ok] is false so the caller can leave the
+  /// Check button enabled for a retry instead of locking it.
+  Future<({String text, bool ok})> evaluatePrediction({
     required WordSentence sentence,
     required String userAnswer,
   }) async {
@@ -768,7 +772,7 @@ class AppState extends ChangeNotifier {
     final targetLang = _settings.targetLanguage;
 
     if (user.isEmpty) {
-      return 'Type something first 🙂\n\nExpected $targetLang:\n$expectedL2';
+      return (text: 'Type something first 🙂\n\nExpected $targetLang:\n$expectedL2', ok: false);
     }
 
     // AI-based evaluation (preferred).
@@ -816,15 +820,15 @@ class AppState extends ChangeNotifier {
       }
       lines.add('');
       lines.add('Expected $targetLang:\n$expectedL2');
-      return lines.join('\n');
+      return (text: lines.join('\n'), ok: true);
     } on AiException catch (e) {
-      return 'Could not evaluate with AI: ${e.message}';
+      return (text: 'Could not evaluate with AI: ${e.message}', ok: false);
     } catch (e) {
       // If AI fails (no key / network), fail softly with an actionable message.
       if ((_settings.aiApiKey).trim().isEmpty) {
-        return '⚠️ AI evaluation needs an API key.\nGo to Settings → AI API Key.\n\nExpected $targetLang:\n$expectedL2';
+        return (text: '⚠️ AI evaluation needs an API key.\nGo to Settings → AI API Key.\n\nExpected $targetLang:\n$expectedL2', ok: false);
       }
-      return '⚠️ Could not evaluate with AI (${e.toString()}).\n\nExpected $targetLang:\n$expectedL2';
+      return (text: '⚠️ Could not evaluate with AI (${e.toString()}).\n\nExpected $targetLang:\n$expectedL2', ok: false);
     }
   }
 
