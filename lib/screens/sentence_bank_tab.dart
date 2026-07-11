@@ -1900,7 +1900,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             children: [
               Text(
                 'Host your own sentence_bank.yaml (GitHub Gist, Dropbox, …) and paste '
-                'its raw URL. Leave empty to use the built-in bank.',
+                'its raw URL.',
                 style: Theme.of(ctx).textTheme.bodySmall,
               ),
               const SizedBox(height: 12),
