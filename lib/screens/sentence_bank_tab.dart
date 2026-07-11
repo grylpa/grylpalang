@@ -1641,6 +1641,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           Row(
             children: [
               Expanded(child: _buildSubjectPicker(bank)),
+              // Gap so the ⋮ reads as a right-anchored action, not part of the
+              // subject field's own trailing ▼.
+              const SizedBox(width: 12),
               _buildVoiceButton(),
             ],
           ),
@@ -1866,8 +1869,14 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         // Near-full-width so the URL field has room and the actions sit on one row.
         insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
         // Sit on the scaffold surface (not a dialog's elevated surface) so the
-        // filled field has the same contrast as every other entry box in the app.
+        // filled field has the same contrast as every other entry box in the
+        // app; a gentle outline keeps the panel discernible from the dark scrim
+        // behind it (surface ≈ the backdrop in dark mode).
         backgroundColor: Theme.of(ctx).colorScheme.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: Theme.of(ctx).colorScheme.outline),
+        ),
         title: const Text('Sentence bank URL'),
         content: SizedBox(
           width: double.maxFinite,
