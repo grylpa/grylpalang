@@ -63,7 +63,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _numSentencesCtrl;
   late TextEditingController _connectorCtrl;
   late TextEditingController _apiKeyCtrl;
-  late TextEditingController _sbUrlCtrl;
 
   bool _addingConnector = false;
   bool _savingSettings = false;
@@ -90,8 +89,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _numSentencesCtrl = TextEditingController(text: (s.simpleCount + s.conjugatedCount).toString());
     _connectorCtrl = TextEditingController();
     _apiKeyCtrl = TextEditingController(text: s.aiApiKey);
-    _sbUrlCtrl = TextEditingController(text: s.sentenceBankUrl);
-    _sbUrlCtrl.addListener(() { if (mounted) setState(() {}); });
   }
 
   @override
@@ -102,7 +99,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _numSentencesCtrl.dispose();
     _connectorCtrl.dispose();
     _apiKeyCtrl.dispose();
-    _sbUrlCtrl.dispose();
     super.dispose();
   }
 
@@ -546,226 +542,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                         ),
                       ],
-                    ),
-                  ]),
-
-                  // ── Sentence Bank ───────────────────────────────────────────
-                  _section('Sentence Bank', [
-                    Text(
-                      'Optionally host your own sentence_bank.yaml online (GitHub Gist, '
-                      'Dropbox public link, etc.) and paste the raw URL below. '
-                      'Leave empty to use the built-in sentence bank.',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 8),
-                    filledTF(
-                      context,
-                      controller: _sbUrlCtrl,
-                      labelText: 'Sentence bank URL (optional)',
-                      style: textStyle,
-                      suffixIcon: _sbUrlCtrl.text.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.clear, size: 18),
-                              tooltip: 'Clear URL (use built-in bank)',
-                              onPressed: () {
-                                _sbUrlCtrl.clear();
-                                final appState = context.read<AppState>();
-                                appState.saveSettingsOnly(appState.settings.copyWith(sentenceBankUrl: ''));
-                                appState.triggerSentenceBankReload();
-                              },
-                            )
-                          : null,
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: [
-                        OutlinedButton.icon(
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('Reload sentence bank'),
-                          onPressed: () {
-                            state.saveSettingsOnly(s.copyWith(sentenceBankUrl: _sbUrlCtrl.text.trim()));
-                            state.triggerSentenceBankReload();
-                            lpSnack(context, 'Sentence bank reloading…', 3000);
-                          },
-                        ),
-                        OutlinedButton.icon(
-                          icon: const Icon(Icons.translate_outlined),
-                          label: const Text('Clear translations'),
-                          onPressed: () async {
-                            await state.clearSentenceBankTranslationCache();
-                            state.triggerSentenceBankReload();
-                            if (context.mounted) lpSnack(context, 'Translation cache cleared — re-translating…', 3000);
-                          },
-                        ),
-                        OutlinedButton.icon(
-                          icon: const Icon(Icons.volume_off_outlined),
-                          label: const Text('Clear audio cache'),
-                          onPressed: () async {
-                            await state.clearGoogleTtsAudioCache();
-                            if (context.mounted) lpSnack(context, 'Audio cache cleared.', 3000);
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    // Text(
-                    //   'Auto-mode timing (seconds before/after translation) is set in the sentence_bank.yaml file itself.',
-                    //   style: Theme.of(context).textTheme.bodySmall,
-                    // ),
-                    const SizedBox(height: 12),
-                    Builder(builder: (context) {
-                      final yamlValue = context.select<AppState, int>((a) => a.sentenceBankYamlSourcePause);
-                      final current = s.sentenceBankSourcePauseOverride ?? yamlValue;
-                      return Row(
-                        children: [
-                          Expanded(child: Text('Pause after source', style: textStyle)),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            icon: const Icon(Icons.remove),
-                            onPressed: current <= 0
-                                ? null
-                                : () => state.saveSettingsOnly(
-                                      s.copyWith(sentenceBankSourcePauseOverride: current - 1),
-                                    ),
-                          ),
-                          SizedBox(
-                            width: 32,
-                            child: Text(
-                              '${current}s',
-                              textAlign: TextAlign.center,
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.add),
-                            onPressed: () => state.saveSettingsOnly(
-                              s.copyWith(sentenceBankSourcePauseOverride: current + 1),
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.restart_alt),
-                            tooltip: 'Reset to YAML value ($yamlValue s)',
-                            onPressed: current == yamlValue
-                                ? null
-                                : () => state.saveSettingsOnly(
-                                      s.copyWith(sentenceBankSourcePauseOverride: null),
-                                    ),
-                          ),
-                        ],
-                      );
-                    }),
-                    // Text(
-                    //   'Time between speaking the source sentence and showing the translation. Reset restores the YAML value.',
-                    //   style: Theme.of(context).textTheme.bodySmall,
-                    // ),
-                    const SizedBox(height: 12),
-                    Builder(builder: (context) {
-                      final yamlValue = context.select<AppState, int>((a) => a.sentenceBankYamlTtsRepeatCount);
-                      final current = s.sentenceBankTtsRepeatCountOverride ?? yamlValue;
-                      return Row(
-                        children: [
-                          Expanded(child: Text('Repeat translation TTS', style: textStyle)),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            icon: const Icon(Icons.remove),
-                            onPressed: current <= 1
-                                ? null
-                                : () => state.saveSettingsOnly(
-                                      s.copyWith(sentenceBankTtsRepeatCountOverride: current - 1),
-                                    ),
-                          ),
-                          SizedBox(
-                            width: 32,
-                            child: Text(
-                              '${current}×',
-                              textAlign: TextAlign.center,
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.add),
-                            onPressed: current >= 10
-                                ? null
-                                : () => state.saveSettingsOnly(
-                                      s.copyWith(sentenceBankTtsRepeatCountOverride: current + 1),
-                                    ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.restart_alt),
-                            tooltip: 'Reset to YAML value ($yamlValue×)',
-                            onPressed: current == yamlValue
-                                ? null
-                                : () => state.saveSettingsOnly(
-                                      s.copyWith(sentenceBankTtsRepeatCountOverride: null),
-                                    ),
-                          ),
-                        ],
-                      );
-                    }),
-                    const SizedBox(height: 12),
-                    Builder(builder: (context) {
-                      final yamlValue = context.select<AppState, int>((a) => a.sentenceBankYamlTtsRepeatDelay);
-                      final current = s.sentenceBankTtsRepeatDelayOverride ?? yamlValue;
-                      return Row(
-                        children: [
-                          Expanded(child: Text('Delay between repeats', style: textStyle)),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            icon: const Icon(Icons.remove),
-                            onPressed: current <= 0
-                                ? null
-                                : () => state.saveSettingsOnly(
-                                      s.copyWith(sentenceBankTtsRepeatDelayOverride: current - 1),
-                                    ),
-                          ),
-                          SizedBox(
-                            width: 32,
-                            child: Text(
-                              '${current}s',
-                              textAlign: TextAlign.center,
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.add),
-                            onPressed: () => state.saveSettingsOnly(
-                              s.copyWith(sentenceBankTtsRepeatDelayOverride: current + 1),
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.restart_alt),
-                            tooltip: 'Reset to YAML value ($yamlValue s)',
-                            onPressed: current == yamlValue
-                                ? null
-                                : () => state.saveSettingsOnly(
-                                      s.copyWith(sentenceBankTtsRepeatDelayOverride: null),
-                                    ),
-                          ),
-                        ],
-                      );
-                    }),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('Speak source sentence in auto mode', style: textStyle),
-                      value: s.sentenceBankSpeakSource,
-                      onChanged: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankSpeakSource: v)),
-                    ),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('Repeat source between translations', style: textStyle),
-                      subtitle: Text('Replay the source before every translation repeat', style: Theme.of(context).textTheme.bodySmall),
-                      value: s.sentenceBankRepeatSourceBetween,
-                      onChanged: s.sentenceBankSpeakSource
-                          ? (v) => state.saveSettingsOnly(s.copyWith(sentenceBankRepeatSourceBetween: v))
-                          : null,
-                    ),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('Shuffle sentence order', style: textStyle),
-                      value: s.sentenceBankShuffle,
-                      onChanged: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankShuffle: v)),
                     ),
                   ]),
 
