@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show FilteringTextInputFormatter;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:yaml/yaml.dart';
 import 'package:just_audio/just_audio.dart';
@@ -1877,47 +1878,66 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   Future<void> _showUrlDialog() async {
     final state = context.read<AppState>();
     final ctrl = TextEditingController(text: state.settings.sentenceBankUrl);
-    final save = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        // Near-full-width so the URL field has room and the actions sit on one row.
-        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-        // Sit on the scaffold surface (not a dialog's elevated surface) so the
-        // filled field has the same contrast as every other entry box in the
-        // app; a gentle outline keeps the panel discernible from the dark scrim
-        // behind it (surface ≈ the backdrop in dark mode).
-        backgroundColor: Theme.of(ctx).colorScheme.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: Theme.of(ctx).colorScheme.outline),
-        ),
-        title: const Text('Sentence bank URL'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Host your own sentence_bank.yaml (GitHub Gist, Dropbox, …) and paste '
-                'its raw URL.',
-                style: Theme.of(ctx).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: ctrl,
-                autofocus: true,
-                keyboardType: TextInputType.url,
-                decoration: tfDecor(context).copyWith(hintText: 'https://…'),
+    // A full-screen dialog (not an AlertDialog) so the field has the whole width
+    // and the Scaffold resizes cleanly for the keyboard — a small centered dialog
+    // gets cramped once the keyboard covers half the screen, especially on short
+    // devices.
+    final save = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        fullscreenDialog: true,
+        builder: (ctx) => Scaffold(
+          appBar: AppBar(
+            leading: IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Cancel',
+              onPressed: () => Navigator.pop(ctx, false),
+            ),
+            title: const Text('Sentence bank URL'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Save & reload'),
               ),
             ],
           ),
+          body: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Host your own sentence_bank.yaml (GitHub Gist, Dropbox, …) and paste '
+                    'its raw URL.',
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 12),
+                  // Wraps the URL across lines so the whole value is visible
+                  // without horizontal scrolling; newlines are stripped so it
+                  // stays logically a single URL.
+                  TextField(
+                    controller: ctrl,
+                    autofocus: true,
+                    keyboardType: TextInputType.url,
+                    minLines: 1,
+                    maxLines: 6,
+                    inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'[\n\r]'))],
+                    decoration: tfDecor(context).copyWith(hintText: 'https://…'),
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () => ctrl.clear(),
+                      icon: const Icon(Icons.clear),
+                      label: const Text('Clear'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
-        actions: [
-          TextButton(onPressed: () { ctrl.clear(); Navigator.pop(ctx, true); }, child: const Text('Clear')),
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save & reload')),
-        ],
       ),
     );
     if (save == true && mounted) {
