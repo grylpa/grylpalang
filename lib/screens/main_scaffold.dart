@@ -221,9 +221,9 @@ class _MainScaffoldState extends State<MainScaffold> {
             // or false if you prefer
             items: const [
               BottomNavigationBarItem(
-                icon: Icon(Icons.dashboard_outlined),
-                activeIcon: Icon(Icons.dashboard), // filled when active
-                label: 'Words',
+                icon: Icon(Icons.spellcheck_outlined),
+                activeIcon: Icon(Icons.spellcheck),
+                label: 'Active',
               ),
               BottomNavigationBarItem(
                 icon: Icon(Icons.history_outlined),
