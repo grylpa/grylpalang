@@ -88,38 +88,42 @@ class SentenceBankService {
     final localParsed = loadYaml(localYaml);
     final localMap = (localParsed is Map) ? _toPlainMap(localParsed) : <String, dynamic>{};
 
-    if (url.trim().isEmpty) {
-      return SentenceBank.fromYaml(localMap);
+    // Base = bundled asset, optionally merged with (or replaced by) a cloud file.
+    Map<String, dynamic> baseMap = localMap;
+
+    if (url.trim().isNotEmpty) {
+      final cloudYaml = await _fetchFromUrl(url.trim());
+      // If the fetch failed and _fetchFromUrl fell back to the bundled asset,
+      // there's nothing to merge — using it as "cloud" would duplicate everything.
+      if (cloudYaml != localYaml) {
+        // A bad cloud file must never brick the Sentence Bank — fall back to the
+        // bundled bank and surface a warning (shown as a snackbar by the tab)
+        // instead of throwing a fatal load error.
+        try {
+          final cloudParsed = loadYaml(cloudYaml);
+          if (cloudParsed is! Map) {
+            lastFetchWarning = 'Sentence bank file is not valid YAML — using built-in bank.';
+          } else {
+            final cloudMap = _toPlainMap(cloudParsed);
+            // override_local: cloud value if present, else local value (default 0).
+            final overrideRaw = cloudMap.containsKey('override_local')
+                ? cloudMap['override_local']
+                : localMap['override_local'];
+            baseMap = _truthy(overrideRaw) ? cloudMap : _mergeBankMaps(localMap, cloudMap);
+          }
+        } catch (e) {
+          lastFetchWarning = 'Sentence bank error (${_shortError(e)}) — using built-in bank.';
+        }
+      }
     }
 
-    final cloudYaml = await _fetchFromUrl(url.trim());
-    // If the fetch failed and _fetchFromUrl fell back to the bundled asset,
-    // there's nothing to merge — using it as "cloud" would duplicate everything.
-    if (cloudYaml == localYaml) return SentenceBank.fromYaml(localMap);
-
-    // A bad cloud file must never brick the Sentence Bank — fall back to the
-    // bundled bank and surface a warning (shown as a snackbar by the tab)
-    // instead of throwing a fatal load error.
-    try {
-      final cloudParsed = loadYaml(cloudYaml);
-      if (cloudParsed is! Map) {
-        lastFetchWarning = 'Sentence bank file is not valid YAML — using built-in bank.';
-        return SentenceBank.fromYaml(localMap);
-      }
-      final cloudMap = _toPlainMap(cloudParsed);
-
-      // override_local: cloud value if present, else local value (default 0).
-      final overrideRaw = cloudMap.containsKey('override_local')
-          ? cloudMap['override_local']
-          : localMap['override_local'];
-      if (_truthy(overrideRaw)) {
-        return SentenceBank.fromYaml(cloudMap);
-      }
-      return SentenceBank.fromYaml(_mergeBankMaps(localMap, cloudMap));
-    } catch (e) {
-      lastFetchWarning = 'Sentence bank error (${_shortError(e)}) — using built-in bank.';
-      return SentenceBank.fromYaml(localMap);
+    // Merge any files the user loaded from their device on top of the base bank
+    // (their subjects appear in the picker; same-named subjects union sentences).
+    for (final d in await loadDeviceFiles()) {
+      baseMap = _mergeBankMaps(baseMap, d.map);
     }
+
+    return SentenceBank.fromYaml(baseMap);
   }
 
   /// Trims a YamlException to its first line (e.g. the "line N, column M …"
@@ -539,6 +543,94 @@ class SentenceBankService {
     history.remove(subject);
     history.insert(0, subject);
     await _prefs.setString(_kSubjectHistoryKey, jsonEncode(history));
+  }
+
+  // ── Device files (user-loaded .yml / .txt) ────────────────────────────────
+  //
+  // Files the user picks from their device, kept only on-device (never uploaded).
+  // Each is a bank map ({subjects: {…}}) keyed by the original file name so
+  // re-loading the same file replaces its entry rather than duplicating it.
+
+  static const String _kDeviceFilesKey = 'sentenceBankDeviceFiles';
+
+  Future<List<({String file, Map<String, dynamic> map})>> loadDeviceFiles() async {
+    final raw = await _prefs.getString(_kDeviceFilesKey);
+    if (raw == null || raw.isEmpty) return [];
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return [];
+      final out = <({String file, Map<String, dynamic> map})>[];
+      for (final e in list) {
+        if (e is Map && e['file'] is String && e['map'] is Map) {
+          out.add((file: e['file'] as String, map: (e['map'] as Map).cast<String, dynamic>()));
+        }
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _saveDeviceFiles(List<({String file, Map<String, dynamic> map})> files) async {
+    await _prefs.setString(
+      _kDeviceFilesKey,
+      jsonEncode([for (final f in files) {'file': f.file, 'map': f.map}]),
+    );
+  }
+
+  /// Adds (or replaces, by [file] name) a loaded device file. [map] is a bank
+  /// map with a top-level `subjects` key.
+  Future<void> addDeviceFile(String file, Map<String, dynamic> map) async {
+    final files = await loadDeviceFiles();
+    files.removeWhere((f) => f.file == file);
+    files.add((file: file, map: map));
+    await _saveDeviceFiles(files);
+  }
+
+  Future<void> removeDeviceFile(String file) async {
+    final files = await loadDeviceFiles();
+    files.removeWhere((f) => f.file == file);
+    await _saveDeviceFiles(files);
+  }
+
+  Future<void> clearDeviceFiles() async {
+    await _prefs.remove(_kDeviceFilesKey);
+  }
+
+  // ── Subject importance ────────────────────────────────────────────────────
+  //
+  // Per-subject repeat multiplier set via long-press in the picker. A subject
+  // with importance N has each of its sentences emitted N× more into the play
+  // order (multiplied with any per-sentence `N,` prefix). 1 = normal (no entry).
+
+  static const String _kSubjectImportanceKey = 'sentenceBankSubjectImportance';
+
+  Future<Map<String, int>> loadSubjectImportance() async {
+    final raw = await _prefs.getString(_kSubjectImportanceKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final m = jsonDecode(raw);
+      if (m is! Map) return {};
+      final out = <String, int>{};
+      m.forEach((k, v) {
+        final n = (v is num) ? v.toInt() : int.tryParse('$v');
+        if (k is String && n != null && n > 1) out[k] = n.clamp(2, 5);
+      });
+      return out;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// Sets [name]'s importance (2–5). [value] <= 1 removes the entry (normal).
+  Future<void> setSubjectImportance(String name, int value) async {
+    final map = await loadSubjectImportance();
+    if (value <= 1) {
+      map.remove(name);
+    } else {
+      map[name] = value.clamp(2, 5);
+    }
+    await _prefs.setString(_kSubjectImportanceKey, jsonEncode(map));
   }
 
   // ── Position persistence ──────────────────────────────────────────────────

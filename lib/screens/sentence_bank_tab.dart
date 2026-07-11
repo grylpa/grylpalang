@@ -4,9 +4,11 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:yaml/yaml.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -107,6 +109,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   final Set<String> _selectedSubjects = {};
   int _sentenceIndex = 0;
   List<String> _sortedSubjectNames = [];
+  // Per-subject repeat multiplier (long-press a subject to set 2–5). Absent = 1.
+  Map<String, int> _importance = {};
 
   String? _sourceSentence;
   String? _translatedSentence;
@@ -234,6 +238,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       appState.updateSentenceBankYamlSourcePause(bank.autoSourcePause);
       appState.updateSentenceBankYamlTtsRepeatDelay(bank.ttsRepeatDelay);
       appState.updateSentenceBankYamlTtsRepeatCount(bank.ttsRepeatCount);
+      _importance = await _service.loadSubjectImportance();
       final sorted = await _service.sortedSubjects(bank.subjectNames);
       // Restore the selection: keep the in-memory set (validated against the new
       // bank) if any, else the persisted set, else default to the first subject.
@@ -418,11 +423,15 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final out = <String>[];
     for (final name in bank.subjectNames) {
       if (!_selectedSubjects.contains(name)) continue;
+      // A favored subject drills its sentences more often. Importance and a
+      // sentence's own `N,` prefix don't compound — the larger of the two wins.
+      final importance = _importance[name] ?? 1;
       for (final s in bank.sentencesFor(name)) {
-        // Dedup accidental leaf/meta overlap on the raw entry, then honour an
-        // author's `N,` repeat directive by emitting the sentence N times.
+        // Dedup accidental leaf/meta overlap on the raw entry (first selected
+        // owner wins), then emit max(sentence `N,`, subject importance) copies.
         if (seen.add(s)) {
-          final reps = SbSentence.repeatCount(s);
+          final n = SbSentence.repeatCount(s);
+          final reps = importance > n ? importance : n;
           for (var i = 0; i < reps; i++) out.add(s);
         }
       }
@@ -532,6 +541,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (bank == null) return;
     final all = _sortedSubjectNames;
     final working = {..._selectedSubjects};
+    // Long-pressing a row edits importance (mutates `_importance` directly); if
+    // any changed we rebuild on Done even when the checkbox selection didn't.
+    var importanceChanged = false;
 
     final result = await showModalBottomSheet<Set<String>>(
       context: context,
@@ -580,21 +592,45 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                       itemBuilder: (_, i) {
                         final name = all[i];
                         final isMeta = bank.subjects[name] is MetaSubject;
-                        return CheckboxListTile(
-                          dense: true,
-                          value: working.contains(name),
-                          onChanged: (v) => setSheet(() {
-                            if (v == true) {
-                              working.add(name);
-                            } else {
-                              working.remove(name);
+                        final imp = _importance[name] ?? 1;
+                        return GestureDetector(
+                          // Long-press to weight this subject (drill it more often).
+                          onLongPress: () async {
+                            final changed = await _pickImportance(name);
+                            if (changed) {
+                              importanceChanged = true;
+                              setSheet(() {});
                             }
-                          }),
-                          secondary: Icon(
-                            isMeta ? Icons.folder_outlined : Icons.list_alt_outlined,
-                            color: Theme.of(ctx).colorScheme.primary,
+                          },
+                          child: CheckboxListTile(
+                            dense: true,
+                            value: working.contains(name),
+                            onChanged: (v) => setSheet(() {
+                              if (v == true) {
+                                working.add(name);
+                              } else {
+                                working.remove(name);
+                              }
+                            }),
+                            secondary: Icon(
+                              isMeta ? Icons.folder_outlined : Icons.list_alt_outlined,
+                              color: Theme.of(ctx).colorScheme.primary,
+                            ),
+                            title: Row(
+                              children: [
+                                Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
+                                if (imp > 1)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 8),
+                                    child: Text('×$imp',
+                                        style: TextStyle(
+                                          color: Theme.of(ctx).colorScheme.primary,
+                                          fontWeight: FontWeight.w700,
+                                        )),
+                                  ),
+                              ],
+                            ),
                           ),
-                          title: Text(name, overflow: TextOverflow.ellipsis),
                         );
                       },
                     ),
@@ -618,9 +654,72 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     );
 
     if (result == null || !mounted) return;
-    if (!setEquals(result, _selectedSubjects)) {
+    final selectionChanged = !setEquals(result, _selectedSubjects);
+    if (selectionChanged || importanceChanged) {
+      // Importance affects the sentence list length but not the selection
+      // signature, so drop the cached playlist/translations to force a rebuild.
+      if (importanceChanged) {
+        _preparedSig = null;
+        _translationsSig = null;
+      }
       await _applySelection(result);
     }
+  }
+
+  /// Long-press importance editor (1–5). Persists and updates [_importance];
+  /// returns true if the value actually changed.
+  Future<bool> _pickImportance(String name) async {
+    final result = await showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        var value = _importance[name] ?? 1;
+        return StatefulBuilder(
+          builder: (ctx, setD) => AlertDialog(
+            title: Text('Importance — $name', maxLines: 2, overflow: TextOverflow.ellipsis),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'How often should this subject’s sentences appear in the mix? '
+                  '1 = regular, 5 = most important.',
+                  style: Theme.of(ctx).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 16),
+                Center(
+                  child: SegmentedButton<int>(
+                    segments: const [
+                      ButtonSegment(value: 1, label: Text('1')),
+                      ButtonSegment(value: 2, label: Text('2')),
+                      ButtonSegment(value: 3, label: Text('3')),
+                      ButtonSegment(value: 4, label: Text('4')),
+                      ButtonSegment(value: 5, label: Text('5')),
+                    ],
+                    selected: {value},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (sel) => setD(() => value = sel.first),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, value), child: const Text('Set')),
+            ],
+          ),
+        );
+      },
+    );
+    if (result == null) return false;
+    final old = _importance[name] ?? 1;
+    if (result == old) return false;
+    await _service.setSubjectImportance(name, result);
+    if (result <= 1) {
+      _importance.remove(name);
+    } else {
+      _importance[name] = result;
+    }
+    return true;
   }
 
   Future<void> _loadCachedTranslationForCurrent() async {
@@ -1531,18 +1630,18 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     );
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 60),
+      // Tight right padding so the ⋮ overflow hugs the right edge like an app-bar
+      // action (the subject field takes the rest of the width).
+      padding: const EdgeInsets.fromLTRB(12, 12, 4, 60),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Top row: subject picker + source-voice picker.
+          // Top row: subject picker + the ⋮ options menu (always available; the
+          // menu's own "Voice" item is what depends on TTS support).
           Row(
             children: [
               Expanded(child: _buildSubjectPicker(bank)),
-              if (_ttsSupported()) ...[
-                const SizedBox(width: 8),
-                _buildVoiceButton(),
-              ],
+              _buildVoiceButton(),
             ],
           ),
           SizedBox(height: 20,),
@@ -1592,14 +1691,355 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     );
   }
 
-  /// Opens a picker of the device's installed voices for the source language
-  /// (e.g. English US/UK/AU, male/female). The chosen voice is used to
-  /// pre-render the source clips; changing it re-synthesizes them.
+  /// The ⋮ overflow menu (anchored dropdown below the button) gathering every
+  /// Sentence Bank option: voice, settings, cloud URL, on-device file loading,
+  /// and file management. Uses the app-wide themed (bordered) popup surface.
   Widget _buildVoiceButton() {
-    return IconButton.outlined(
-      tooltip: 'Source voice',
-      icon: const Icon(Icons.record_voice_over_outlined),
-      onPressed: _autoMode ? null : _showVoicePicker,
+    PopupMenuItem<String> item(String v, IconData icon, String label) => PopupMenuItem<String>(
+          value: v,
+          child: Row(children: [Icon(icon), const SizedBox(width: 12), Text(label)]),
+        );
+    return PopupMenuButton<String>(
+      enabled: !_autoMode,
+      tooltip: 'Sentence bank options',
+      position: PopupMenuPosition.under,
+      // `child` (not `icon`) so the glyph isn't centered inside a 48px tap box —
+      // it sits flush against the right edge.
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+        child: Icon(Icons.more_vert, color: _autoMode ? Theme.of(context).disabledColor : null),
+      ),
+      onSelected: (v) {
+        switch (v) {
+          case 'voice': _showVoicePicker();
+          case 'settings': _showSbSettingsSheet();
+          case 'url': _showUrlDialog();
+          case 'load': _importDeviceFile();
+          case 'manage': _showManageFilesSheet();
+        }
+      },
+      itemBuilder: (ctx) => [
+        if (_ttsSupported()) item('voice', Icons.record_voice_over_outlined, 'Voice'),
+        item('settings', Icons.tune, 'Settings'),
+        item('url', Icons.link, 'Sentence bank URL'),
+        item('load', Icons.upload_file, 'Load file from device'),
+        item('manage', Icons.folder_open, 'Manage loaded files'),
+      ],
+    );
+  }
+
+  /// Sentence Bank settings (moved out of the main Settings screen): auto-mode
+  /// timing overrides, speak-source options, shuffle, and cache maintenance.
+  Future<void> _showSbSettingsSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Consumer<AppState>(
+          builder: (ctx, state, _) {
+            final s = state.settings;
+            final textStyle = Theme.of(ctx).textTheme.bodyMedium;
+            return SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Sentence Bank settings', style: Theme.of(ctx).textTheme.titleMedium),
+                  const SizedBox(height: 4),
+                  _sbStepper(ctx,
+                    label: 'Pause after source', suffix: 's', min: 0,
+                    current: s.sentenceBankSourcePauseOverride ?? state.sentenceBankYamlSourcePause,
+                    yamlValue: state.sentenceBankYamlSourcePause,
+                    onSet: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankSourcePauseOverride: v)),
+                    onReset: () => state.saveSettingsOnly(s.copyWith(sentenceBankSourcePauseOverride: null)),
+                  ),
+                  _sbStepper(ctx,
+                    label: 'Repeat translation TTS', suffix: '×', min: 1, max: 10,
+                    current: s.sentenceBankTtsRepeatCountOverride ?? state.sentenceBankYamlTtsRepeatCount,
+                    yamlValue: state.sentenceBankYamlTtsRepeatCount,
+                    onSet: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankTtsRepeatCountOverride: v)),
+                    onReset: () => state.saveSettingsOnly(s.copyWith(sentenceBankTtsRepeatCountOverride: null)),
+                  ),
+                  _sbStepper(ctx,
+                    label: 'Delay between repeats', suffix: 's', min: 0,
+                    current: s.sentenceBankTtsRepeatDelayOverride ?? state.sentenceBankYamlTtsRepeatDelay,
+                    yamlValue: state.sentenceBankYamlTtsRepeatDelay,
+                    onSet: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankTtsRepeatDelayOverride: v)),
+                    onReset: () => state.saveSettingsOnly(s.copyWith(sentenceBankTtsRepeatDelayOverride: null)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Speak source', style: textStyle),
+                    value: s.sentenceBankSpeakSource,
+                    onChanged: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankSpeakSource: v)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Repeat source between translations', style: textStyle),
+                    value: s.sentenceBankRepeatSourceBetween,
+                    onChanged: s.sentenceBankSpeakSource
+                        ? (v) => state.saveSettingsOnly(s.copyWith(sentenceBankRepeatSourceBetween: v))
+                        : null,
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Shuffle sentence order', style: textStyle),
+                    value: s.sentenceBankShuffle,
+                    onChanged: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankShuffle: v)),
+                  ),
+                  const Divider(height: 24),
+                  Text('Maintenance', style: Theme.of(ctx).textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.translate_outlined),
+                      label: const Text('Clear translations'),
+                      onPressed: () async {
+                        await state.clearSentenceBankTranslationCache();
+                        state.triggerSentenceBankReload();
+                        if (mounted) lpSnack(context, 'Translation cache cleared — re-translating…', 3000);
+                      },
+                    ),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.volume_off_outlined),
+                      label: const Text('Clear audio cache'),
+                      onPressed: () async {
+                        await state.clearGoogleTtsAudioCache();
+                        if (mounted) lpSnack(context, 'Audio cache cleared.', 3000);
+                      },
+                    ),
+                  ]),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _sbStepper(BuildContext ctx, {
+    required String label,
+    required String suffix,
+    required int current,
+    required int yamlValue,
+    required int min,
+    int? max,
+    required void Function(int) onSet,
+    required VoidCallback onReset,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: Theme.of(ctx).textTheme.bodyMedium)),
+          IconButton(
+            icon: const Icon(Icons.remove),
+            onPressed: current <= min ? null : () => onSet(current - 1),
+          ),
+          SizedBox(
+            width: 40,
+            child: Text('$current$suffix', textAlign: TextAlign.center, style: Theme.of(ctx).textTheme.titleMedium),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: (max != null && current >= max) ? null : () => onSet(current + 1),
+          ),
+          IconButton(
+            icon: const Icon(Icons.restart_alt),
+            tooltip: 'Reset to YAML value ($yamlValue$suffix)',
+            onPressed: current == yamlValue ? null : onReset,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showUrlDialog() async {
+    final state = context.read<AppState>();
+    final ctrl = TextEditingController(text: state.settings.sentenceBankUrl);
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        // Near-full-width so the URL field has room and the actions sit on one row.
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+        // Sit on the scaffold surface (not a dialog's elevated surface) so the
+        // filled field has the same contrast as every other entry box in the app.
+        backgroundColor: Theme.of(ctx).colorScheme.surface,
+        title: const Text('Sentence bank URL'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Host your own sentence_bank.yaml (GitHub Gist, Dropbox, …) and paste '
+                'its raw URL. Leave empty to use the built-in bank.',
+                style: Theme.of(ctx).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                keyboardType: TextInputType.url,
+                decoration: tfDecor(context).copyWith(hintText: 'https://…'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () { ctrl.clear(); Navigator.pop(ctx, true); }, child: const Text('Clear')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save & reload')),
+        ],
+      ),
+    );
+    if (save == true && mounted) {
+      await state.saveSettingsOnly(state.settings.copyWith(sentenceBankUrl: ctrl.text.trim()));
+      state.triggerSentenceBankReload();
+      if (mounted) lpSnack(context, 'Sentence bank reloading…', 3000);
+    }
+    ctrl.dispose();
+  }
+
+  /// Picks a .yml/.yaml/.txt file from device storage and adds it to the bank.
+  /// yml → Katalaveno format; txt → one subject (named after the file) whose
+  /// sentences are the file's non-blank lines. Files stay on-device only.
+  Future<void> _importDeviceFile() async {
+    const group = XTypeGroup(label: 'Sentences', extensions: ['yml', 'yaml', 'txt']);
+    XFile? picked;
+    try {
+      picked = await openFile(acceptedTypeGroups: [group]);
+    } catch (_) {
+      if (mounted) lpSnack(context, 'Could not open the file picker.', 4000);
+      return;
+    }
+    if (picked == null || !mounted) return;
+
+    final name = picked.name; // basename with extension
+    final dot = name.lastIndexOf('.');
+    final ext = dot >= 0 ? name.substring(dot + 1).toLowerCase() : '';
+    final stem = dot >= 0 ? name.substring(0, dot) : name;
+
+    String content;
+    try {
+      content = await picked.readAsString();
+    } catch (_) {
+      if (mounted) lpSnack(context, 'Could not read the file.', 4000);
+      return;
+    }
+
+    Map<String, dynamic> map;
+    if (ext == 'txt') {
+      final lines = [
+        for (final l in content.split('\n')) l.trim(),
+      ].where((l) => l.isNotEmpty).toList();
+      if (lines.isEmpty) {
+        if (mounted) lpSnack(context, 'That text file has no sentences.', 4000);
+        return;
+      }
+      map = {'subjects': {stem: {'sentences': lines}}};
+    } else {
+      try {
+        final parsed = loadYaml(content);
+        if (parsed is! Map || parsed['subjects'] is! Map) {
+          if (mounted) lpSnack(context, 'Not a valid Katalaveno YAML (missing "subjects").', 5000);
+          return;
+        }
+        // Round-trip through JSON to turn immutable Yaml* nodes into plain maps.
+        final subjects = (jsonDecode(jsonEncode(parsed['subjects'])) as Map).cast<String, dynamic>();
+        if (subjects.isEmpty) {
+          if (mounted) lpSnack(context, 'That YAML has no subjects.', 4000);
+          return;
+        }
+        map = {'subjects': subjects};
+      } catch (e) {
+        if (mounted) lpSnack(context, 'YAML error: ${e.toString().split('\n').first}', 5000);
+        return;
+      }
+    }
+
+    await _service.addDeviceFile(name, map);
+    await _loadBank();
+    if (mounted) lpSnack(context, 'Loaded "$name".', 3000);
+  }
+
+  String _deviceFileSummary(Map<String, dynamic> map) {
+    final subs = (map['subjects'] as Map?) ?? const {};
+    var sentences = 0;
+    for (final v in subs.values) {
+      if (v is Map && v['sentences'] is List) sentences += (v['sentences'] as List).length;
+    }
+    return '${subs.length} subject${subs.length == 1 ? '' : 's'}, '
+        '$sentences sentence${sentences == 1 ? '' : 's'}';
+  }
+
+  Future<void> _showManageFilesSheet() async {
+    var files = await _service.loadDeviceFiles();
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                child: Row(
+                  children: [
+                    Text('Loaded files', style: Theme.of(ctx).textTheme.titleMedium),
+                    const Spacer(),
+                    if (files.isNotEmpty)
+                      TextButton(
+                        onPressed: () async {
+                          await _service.clearDeviceFiles();
+                          await _loadBank();
+                          setSheet(() => files = []);
+                        },
+                        child: const Text('Clear all'),
+                      ),
+                  ],
+                ),
+              ),
+              if (files.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text('No files loaded from this device.'),
+                )
+              else
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final f in files)
+                        ListTile(
+                          leading: const Icon(Icons.description_outlined),
+                          title: Text(f.file, overflow: TextOverflow.ellipsis),
+                          subtitle: Text(_deviceFileSummary(f.map)),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete_outline),
+                            tooltip: 'Remove',
+                            onPressed: () async {
+                              await _service.removeDeviceFile(f.file);
+                              await _loadBank();
+                              final updated = await _service.loadDeviceFiles();
+                              setSheet(() => files = updated);
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

@@ -72,9 +72,11 @@ class MyApp extends StatelessWidget {
           borderRadius: BorderRadius.circular(radius),
           borderSide: BorderSide.none,
         ),
+        // No focus ring — fields stay flat filled with no border in any state
+        // (a focus outline read as an unwanted "border").
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(radius),
-          borderSide: BorderSide(color: scheme.primary, width: 2),
+          borderSide: BorderSide.none,
         ),
       );
 
