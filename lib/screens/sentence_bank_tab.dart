@@ -1800,6 +1800,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                       icon: const Icon(Icons.translate_outlined),
                       label: const Text('Clear translations'),
                       onPressed: () async {
+                        final ok = await showYesNoDialog(
+                          ctx,
+                          title: 'Clear translations?',
+                          message: 'Discards every cached translation. They\'ll be re-generated on demand, '
+                              'which uses the AI service again.',
+                        );
+                        if (ok != true) return;
                         await state.clearSentenceBankTranslationCache();
                         state.triggerSentenceBankReload();
                         if (mounted) lpSnack(context, 'Translation cache cleared — re-translating…', 3000);
@@ -1809,6 +1816,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                       icon: const Icon(Icons.volume_off_outlined),
                       label: const Text('Clear audio cache'),
                       onPressed: () async {
+                        final ok = await showYesNoDialog(
+                          ctx,
+                          title: 'Clear audio cache?',
+                          message: 'Deletes cached spoken-audio clips. They\'ll be re-synthesized/re-fetched '
+                              'the next time they play.',
+                        );
+                        if (ok != true) return;
                         await state.clearGoogleTtsAudioCache();
                         if (mounted) lpSnack(context, 'Audio cache cleared.', 3000);
                       },
@@ -2006,6 +2020,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     if (files.isNotEmpty)
                       TextButton(
                         onPressed: () async {
+                          final ok = await showYesNoDialog(
+                            ctx,
+                            title: 'Clear all loaded files?',
+                            message: 'This removes every file you loaded from this device. It won\'t delete '
+                                'the files themselves — you can load them again later.',
+                          );
+                          if (ok != true) return;
                           await _service.clearDeviceFiles();
                           await _loadBank();
                           setSheet(() => files = []);
@@ -2034,6 +2055,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                             icon: const Icon(Icons.delete_outline),
                             tooltip: 'Remove',
                             onPressed: () async {
+                              final ok = await showYesNoDialog(
+                                ctx,
+                                title: 'Remove ${f.file}?',
+                                message: 'This unloads the file from the sentence bank. You can load it again later.',
+                              );
+                              if (ok != true) return;
                               await _service.removeDeviceFile(f.file);
                               await _loadBank();
                               final updated = await _service.loadDeviceFiles();
