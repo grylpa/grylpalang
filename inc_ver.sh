@@ -7,7 +7,16 @@
 #   ./inc_ver.sh --major   major:  (X+1).0.0
 #
 # Follows semver: bumping minor resets patch to 0; bumping major resets minor
-# and patch to 0. Versions are kept as X.Y.Z (any "+build" suffix is dropped).
+# and patch to 0. The Android version code (the "+build" suffix) is derived from
+# the semver as:
+#
+#   code = max(0, major - 1) * 100000 + minor * 1000 + patch
+#
+# so the written version is X.Y.Z+<code>. This is required because without a
+# "+build" Flutter defaults the version code to 1 and the Play Store rejects the
+# upload with "Version code 1 has already been used." The formula is monotonically
+# increasing across patch/minor/major bumps (minor < 100, patch < 1000 assumed),
+# so every kind of bump yields a higher code than the previous one.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -38,7 +47,9 @@ case "$part" in
   major) major=$((major + 1)); minor=0; patch=0 ;;
 esac
 
-new="${major}.${minor}.${patch}"
+major_component=$(( major > 1 ? major - 1 : 0 ))
+code=$(( major_component * 100000 + minor * 1000 + patch ))
+new="${major}.${minor}.${patch}+${code}"
 
 tmp=$(mktemp)
 sed -E "s/^version:[[:space:]].*/version: ${new}/" "$PUBSPEC" > "$tmp"
