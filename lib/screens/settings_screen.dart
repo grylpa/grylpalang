@@ -37,16 +37,27 @@ Future<void> _showAbout(BuildContext context) async {
       child: Image.asset('assets/icon.png', width: 48, height: 48),
     ),
     applicationLegalese: '© ${DateTime.now().year} Katalaveno',
-    children: const [
-      SizedBox(height: 12),
-      Text(
+    children: [
+      const SizedBox(height: 12),
+      const Text(
         'A spaced-repetition vocabulary trainer that uses AI to generate '
         'example sentences and reinforces them through scheduled notifications '
         'and an interactive sentence bank.',
       ),
-      SizedBox(height: 12),
-      Text(
+      const SizedBox(height: 12),
+      const Text(
         'Built with Flutter. AI by Google Gemini.',
+      ),
+      const SizedBox(height: 12),
+      InkWell(
+        onTap: () => launchUrl(Uri.parse('https://grylpa.com'), mode: LaunchMode.externalApplication),
+        child: Text(
+          'grylpa.com',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.primary,
+            decoration: TextDecoration.underline,
+          ),
+        ),
       ),
     ],
   );
