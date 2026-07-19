@@ -2282,7 +2282,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                   const SizedBox(height: 8),
                   _translating
                       ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(strokeWidth: 2))
-                      : Text(_translatedSentence ?? '', style: Theme.of(context).textTheme.titleMedium),
+                      // SelectableText so a long/malformed translation can be
+                      // long-pressed and copied out (plain Text offers no copy).
+                      : SelectableText(_translatedSentence ?? '', style: Theme.of(context).textTheme.titleMedium),
                 ],
               ),
             ),
