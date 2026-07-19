@@ -900,7 +900,7 @@ class SentenceBankService {
 
     final prompt = '''
 Translate the following sentence from $sourceLang to $targetLang.
-Return ONLY the translated sentence, no explanation, no quotes.
+Return ONLY the translation in the "t" field — no explanation, no quotes.
 
 Sentence: $sentence
 ''';
@@ -913,7 +913,23 @@ Sentence: $sentence
           ],
         },
       ],
-      'generationConfig': {'temperature': 0.1},
+      'generationConfig': {
+        // Structured output is what actually prevents the model's chain-of-
+        // thought from leaking into the answer: the schema constrains the
+        // *answer* part to JSON, so the model may still think (better quality on
+        // tricky sentences) without its reasoning ever landing in "t". This is
+        // the same contract the batch path relies on — hence thinking is left at
+        // the model default here, not disabled.
+        'responseMimeType': 'application/json',
+        'responseSchema': {
+          'type': 'object',
+          'properties': {
+            't': {'type': 'string'},
+          },
+          'required': ['t'],
+        },
+        'temperature': 0.1,
+      },
     };
 
     final resp = await AiService.queryModel(apiKey, body, allowFallback: allowFallback);
@@ -926,7 +942,17 @@ Sentence: $sentence
     final parts = content?['parts'] as List?;
     if (parts == null || parts.isEmpty) throw Exception('AI returned no content.');
     final model = decoded['modelVersion'] as String?;
-    return (text: (parts.first['text'] as String? ?? sentence).trim(), model: model);
+    final text = (parts.first['text'] as String? ?? '').trim();
+    try {
+      final obj = jsonDecode(text) as Map<String, dynamic>;
+      final t = obj['t']?.toString().trim();
+      // Empty/parse failure → return the source so the caller treats it as a
+      // failure (uncached, retried) rather than displaying garbage.
+      if (t == null || t.isEmpty) return (text: sentence, model: model);
+      return (text: t, model: model);
+    } catch (_) {
+      return (text: sentence, model: model);
+    }
   }
 
   Future<({List<String> translations, String? model})> _translateBatchViaAi({
