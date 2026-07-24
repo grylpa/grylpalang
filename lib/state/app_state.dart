@@ -68,6 +68,15 @@ class AppState extends ChangeNotifier {
 
   int sentenceBankReloadToken = 0;
 
+  /// Bumped to ask the Settings screen to expand its "AI engine" card and scroll
+  /// it into view (used at startup when no API key is set so the user is pointed
+  /// straight at where to paste one). SettingsScreen watches this via select.
+  int aiEngineFocusToken = 0;
+  void requestAiEngineFocus() {
+    aiEngineFocusToken++;
+    notifyListeners();
+  }
+
   /// The auto_source_pause value from the currently loaded YAML bank (default 1).
   /// Updated by SentenceBankTab whenever a bank is loaded.
   int sentenceBankYamlSourcePause = 1;

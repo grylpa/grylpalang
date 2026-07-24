@@ -70,6 +70,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   bool _savingSettings = false;
 
+  // Lets the startup "no API key" flow (AppState.aiEngineFocusToken) open the
+  // AI-engine card and scroll it into view.
+  final ScrollController _scrollCtrl = ScrollController();
+  final ExpansibleController _aiExpansion = ExpansibleController();
+  final GlobalKey _aiSectionKey = GlobalKey();
+  int _seenAiFocusToken = 0;
+
   @override
   void initState() {
     super.initState();
@@ -84,11 +91,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _knownCtrl.dispose();
     _targetCtrl.dispose();
     _apiKeyCtrl.dispose();
+    _scrollCtrl.dispose();
     super.dispose();
   }
 
-  Widget _section(String title, List<Widget> children) {
+  /// Expands the AI-engine card and scrolls it into view. Called when
+  /// [AppState.aiEngineFocusToken] changes (startup flow with no API key).
+  void _focusAiEngine() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_aiExpansion.isExpanded) _aiExpansion.expand();
+      final ctx = _aiSectionKey.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 350), alignment: 0.1);
+      }
+    });
+  }
+
+  Widget _section(String title, List<Widget> children, {Key? sectionKey, ExpansibleController? controller}) {
     return Card(
+      key: sectionKey,
       margin: const EdgeInsets.only(bottom: 10),
       elevation: 0,
       shape: RoundedRectangleBorder(
@@ -97,6 +119,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       clipBehavior: Clip.antiAlias,
       child: ExpansionTile(
+        controller: controller,
         title: Text(title, style: Theme.of(context).textTheme.titleMedium),
         shape: const Border(),
         collapsedShape: const Border(),
@@ -232,8 +255,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final textStyle = Theme.of(context).textTheme.bodyMedium;
     final titleStyle = Theme.of(context).textTheme.titleMedium;
 
+    // Startup "no API key" flow asked us to reveal the AI-engine card.
+    if (state.aiEngineFocusToken != _seenAiFocusToken) {
+      _seenAiFocusToken = state.aiEngineFocusToken;
+      _focusAiEngine();
+    }
+
     return SafeArea(
       child: SingleChildScrollView(
+        controller: _scrollCtrl,
         padding: const EdgeInsets.fromLTRB(8, 12, 8, 0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -336,7 +366,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ],
                     ),
-                  ]),
+                  ], sectionKey: _aiSectionKey, controller: _aiExpansion),
 
                   // ── Books — Audio mode ──────────────────────────────────────
                   _section('Books — Audio mode', [
