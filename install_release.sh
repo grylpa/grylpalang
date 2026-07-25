@@ -9,12 +9,12 @@
 
 set -euo pipefail
 
-# Resolve the directory this script lives in (the Flutter project root, dlom/),
+# Resolve the directory this script lives in (the Flutter project root, main/),
 # so it works regardless of the current working directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PACKAGE="com.dlom.dlom"
+PACKAGE="com.grylpa.katalaveno"
 APK="build/app/outputs/flutter-apk/app-release.apk"
 
 # Parse args: --build flag plus an optional device serial.
