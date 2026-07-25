@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-// import 'dart:io';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../main.dart';
@@ -121,6 +122,24 @@ class AppState extends ChangeNotifier {
     await GoogleTranslateTts.clearAllCachedAudio();
   }
 
+  /// Clears the on-device synthesized-speech caches (the Sentence Bank source
+  /// clips in `tts_synth_cache` and the Books clips in `book_audio`). These are
+  /// separate from the Google Translate TTS cache and are where a failed/partial
+  /// synthesis could otherwise sit forever as a silent clip. The directories are
+  /// recreated empty so the tabs' cached directory handles stay valid.
+  Future<void> clearOnDeviceSynthCache() async {
+    final base = await getApplicationSupportDirectory();
+    for (final name in const ['tts_synth_cache', 'book_audio']) {
+      final dir = Directory('${base.path}/$name');
+      try {
+        if (await dir.exists()) await dir.delete(recursive: true);
+      } catch (_) {}
+      try {
+        await dir.create(recursive: true);
+      } catch (_) {}
+    }
+  }
+
   int _notificationTapToken = 0;
 
   // Snapshots of notifications (content + planned fire time).
@@ -137,7 +156,9 @@ class AppState extends ChangeNotifier {
   List<NotificationSnapshot> get snapshots => List.unmodifiable(_snapshots);
 
   NavigatorState? _nav;
-  void attachNavigator(NavigatorState? nav) { _nav = nav; }
+  void attachNavigator(NavigatorState? nav) {
+    _nav = nav;
+  }
 
   // ---------------------------------------------------------
   // Global step helpers
@@ -196,7 +217,7 @@ class AppState extends ChangeNotifier {
     var loadedHistory = results[2] as List<HistoryEntry>;
     _snapshots = results[3] as List<NotificationSnapshot>;
 
-    for (int ihe = 0 ; ihe < loadedHistory.length ; ihe++) {
+    for (int ihe = 0; ihe < loadedHistory.length; ihe++) {
       loadedHistory[ihe].removeDuplicateMainWords();
     }
 
@@ -228,8 +249,7 @@ class AppState extends ChangeNotifier {
 
     if (launchPayload != null) {
       _handleNotificationTap(launchPayload);
-    }
-    else {
+    } else {
       debugPrint("got null payload from getLaunchPayload");
     }
 
@@ -253,7 +273,8 @@ class AppState extends ChangeNotifier {
     });
   }
 
-  void _markHistoryHighlight(String fp) {//, {Duration keepFor = const Duration(seconds: 4)}) {
+  void _markHistoryHighlight(String fp) {
+    //, {Duration keepFor = const Duration(seconds: 4)}) {
     _highlightHistoryFingerprint = fp;
     scrolledToHighlight = false;
     notifyListeners();
@@ -272,18 +293,21 @@ class AppState extends ChangeNotifier {
     for (var i = 0; i < a.length; i++) {
       final sa = a[i];
       final sb = b[i];
-      if (sa.l1.toLowerCase().trim() != sb.l1.toLowerCase().trim() || sa.l2.toLowerCase().trim() != sb.l2.toLowerCase().trim()) {
+      if (sa.l1.toLowerCase().trim() != sb.l1.toLowerCase().trim() ||
+          sa.l2.toLowerCase().trim() != sb.l2.toLowerCase().trim()) {
         return false;
       }
     }
     return true;
   }
 
-  void _sortHistoryNewestFirst() { _history.sort((a, b) => b.tappedAt.compareTo(a.tappedAt)); }
+  void _sortHistoryNewestFirst() {
+    _history.sort((a, b) => b.tappedAt.compareTo(a.tappedAt));
+  }
 
   void _addSentencesToHistory(List<WordSentence> sentences, int atIndex) {
     if (sentences.isEmpty) return;
-    for (int iws = 0 ; iws < sentences.length ; iws++) {
+    for (int iws = 0; iws < sentences.length; iws++) {
       WordSentence ws = sentences[iws];
       String cleaned = removeDuplicateMainWord(sentences[iws].l2);
       if (cleaned != ws.l2)
@@ -337,7 +361,7 @@ class AppState extends ChangeNotifier {
         debugPrint('🔔 tap step=$step payloadLen=${payload.length}');
         final rawList = (data['sentences'] as List?) ?? [];
         final sentences = rawList.map((e) => WordSentence.fromJson((e as Map).cast<String, dynamic>())).toList();
-        _addSentencesToHistory(sentences,0);
+        _addSentencesToHistory(sentences, 0);
 
         final fp = fingerprintSentences(sentences);
         final existingIndex = _history.indexWhere((e) => e.fingerprint == fp);
@@ -433,7 +457,17 @@ class AppState extends ChangeNotifier {
     }
 
     // Option A: one Gemini request does (a) translate/normalize into final L2 word and (b) generate the sentences.
-    final combined = await AiService.generateWordAndSentences(apiKey: s.aiApiKey, wordL1: l1.isEmpty ? null : l1, wordL2: l2.isEmpty ? null : l2, type: type, knownLanguage: s.knownLanguage, targetLanguage: s.targetLanguage, simpleCount: s.simpleCount, conjugatedCount: s.conjugatedCount, connectorWords: s.connectorWords);
+    final combined = await AiService.generateWordAndSentences(
+      apiKey: s.aiApiKey,
+      wordL1: l1.isEmpty ? null : l1,
+      wordL2: l2.isEmpty ? null : l2,
+      type: type,
+      knownLanguage: s.knownLanguage,
+      targetLanguage: s.targetLanguage,
+      simpleCount: s.simpleCount,
+      conjugatedCount: s.conjugatedCount,
+      connectorWords: s.connectorWords,
+    );
     final baseWord = combined.wordL2;
     final generated = combined.sentences;
 
@@ -625,7 +659,9 @@ class AppState extends ChangeNotifier {
         bool tryNextTime = false;
         do {
           fireTime = fireTime.add(interval);
-          tryNextTime = _settings.useDnd && isTODBetween(TimeOfDay.fromDateTime(fireTime), _settings.dndStartTime, _settings.dndEndTime);
+          tryNextTime =
+              _settings.useDnd &&
+              isTODBetween(TimeOfDay.fromDateTime(fireTime), _settings.dndStartTime, _settings.dndEndTime);
         } while (tryNextTime);
       }
       startAtExactly = false;
@@ -673,10 +709,7 @@ class AppState extends ChangeNotifier {
       newSnapshots.removeWhere((snap) => snap.step == step);
       newSnapshots.add(NotificationSnapshot(step: step, firedAt: fireTime));
 
-      final payload = jsonEncode({
-        'step': step,
-        'sentences': displaySentences.map((s) => s.toJson()).toList(),
-      });
+      final payload = jsonEncode({'step': step, 'sentences': displaySentences.map((s) => s.toJson()).toList()});
       _addSentencesToHistory(displaySentences, 1);
 
       final notifId = 100000 + step;
@@ -799,7 +832,9 @@ class AppState extends ChangeNotifier {
       );
 
       final verdict = (res['verdict']?.toString() ?? '').trim();
-      final scoreNum = (res['score'] is num) ? (res['score'] as num).toDouble() : double.tryParse(res['score']?.toString() ?? '');
+      final scoreNum = (res['score'] is num)
+          ? (res['score'] as num).toDouble()
+          : double.tryParse(res['score']?.toString() ?? '');
       final score = (scoreNum ?? 0.0).clamp(0.0, 1.0);
       final shortFb = (res['feedback_short']?.toString() ?? '').trim();
       final detailFb = (res['feedback_detail']?.toString() ?? '').trim();
@@ -835,18 +870,22 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       // If AI fails (no key / network), fail softly with an actionable message.
       if ((_settings.aiApiKey).trim().isEmpty) {
-        return (text: '⚠️ AI evaluation needs an API key.\nGo to Settings → AI API Key.\n\nExpected $targetLang:\n$expectedL2', ok: false);
+        return (
+          text:
+              '⚠️ AI evaluation needs an API key.\nGo to Settings → AI API Key.\n\nExpected $targetLang:\n$expectedL2',
+          ok: false,
+        );
       }
-      return (text: '⚠️ Could not evaluate with AI (${e.toString()}).\n\nExpected $targetLang:\n$expectedL2', ok: false);
+      return (
+        text: '⚠️ Could not evaluate with AI (${e.toString()}).\n\nExpected $targetLang:\n$expectedL2',
+        ok: false,
+      );
     }
   }
 
   String _norm(String s) {
     // Lower, trim, collapse whitespace. Keep Greek as-is.
-    return s.toLowerCase()
-        .replaceAll(RegExp(r"[_\-.,/\\()\[\]{}:;'|]+"),' ',)
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
+    return s.toLowerCase().replaceAll(RegExp(r"[_\-.,/\\()\[\]{}:;'|]+"), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
   Future<void> clearAllHistory() async {
@@ -862,16 +901,20 @@ class AppState extends ChangeNotifier {
     await NotificationService.instance.cancelAll();
     _snapshots.clear();
     await _storage.saveSnapshots(_snapshots);
-    _words = _words.map((w) => WordEntry(
-      id: w.id,
-      wordL2: w.wordL2,
-      wordL1: w.wordL1,
-      type: w.type,
-      createdAt: w.createdAt,
-      active: w.active,
-      sentences: w.sentences,
-      startStep: 0,
-    )).toList();
+    _words = _words
+        .map(
+          (w) => WordEntry(
+            id: w.id,
+            wordL2: w.wordL2,
+            wordL1: w.wordL1,
+            type: w.type,
+            createdAt: w.createdAt,
+            active: w.active,
+            sentences: w.sentences,
+            startStep: 0,
+          ),
+        )
+        .toList();
     await _storage.saveWords(_words);
 
     _predictionQueue = [];
@@ -891,16 +934,20 @@ class AppState extends ChangeNotifier {
     await _storage.saveSnapshots(_snapshots);
 
     // 3) Clear cached sentences per word (THIS is the key missing part)
-    _words = _words.map((w) => WordEntry(
-      id: w.id,
-      wordL2: w.wordL2,
-      wordL1: w.wordL1,
-      type: w.type,
-      createdAt: w.createdAt,
-      active: w.active,
-      sentences: const [],
-      startStep: _currentStep, // reset anchor to "now"
-    )).toList();
+    _words = _words
+        .map(
+          (w) => WordEntry(
+            id: w.id,
+            wordL2: w.wordL2,
+            wordL1: w.wordL1,
+            type: w.type,
+            createdAt: w.createdAt,
+            active: w.active,
+            sentences: const [],
+            startStep: _currentStep, // reset anchor to "now"
+          ),
+        )
+        .toList();
     await _storage.saveWords(_words);
 
     // 4) Regenerate sentences for every active word using current settings
@@ -925,16 +972,18 @@ class AppState extends ChangeNotifier {
         connectorWords: s.connectorWords,
       );
 
-      newWords.add(WordEntry(
-        id: w.id,
-        wordL2: w.wordL2,
-        wordL1: w.wordL1,
-        type: w.type,
-        createdAt: w.createdAt,
-        active: w.active,
-        sentences: generated,
-        startStep: _currentStep,
-      ));
+      newWords.add(
+        WordEntry(
+          id: w.id,
+          wordL2: w.wordL2,
+          wordL1: w.wordL1,
+          type: w.type,
+          createdAt: w.createdAt,
+          active: w.active,
+          sentences: generated,
+          startStep: _currentStep,
+        ),
+      );
     }
 
     _words = newWords;

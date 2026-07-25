@@ -19,9 +19,11 @@ String _dailyQuotaMessage() {
     final now = DateTime.now();
     final hh = local.hour.toString().padLeft(2, '0');
     final mm = local.minute.toString().padLeft(2, '0');
-    final dayDiff = DateTime(local.year, local.month, local.day)
-        .difference(DateTime(now.year, now.month, now.day))
-        .inDays;
+    final dayDiff = DateTime(
+      local.year,
+      local.month,
+      local.day,
+    ).difference(DateTime(now.year, now.month, now.day)).inDays;
     final when = dayDiff <= 0 ? ' today' : (dayDiff == 1 ? ' tomorrow' : '');
     return 'Daily Gemini quota reached — resets around $hh:$mm$when.';
   } catch (_) {
@@ -64,8 +66,7 @@ class SentenceBankService {
 
   /// True if [modelVersion] (from a Gemini response's `modelVersion` field) is
   /// the weaker lite fallback — those translations are the upgrade candidates.
-  static bool isWeakModel(String? modelVersion) =>
-      modelVersion != null && modelVersion.toLowerCase().contains('lite');
+  static bool isWeakModel(String? modelVersion) => modelVersion != null && modelVersion.toLowerCase().contains('lite');
 
   final SharedPreferencesAsync _prefs;
 
@@ -135,8 +136,9 @@ class SentenceBankService {
 
   /// Recursively converts a (possibly immutable Yaml*) structure into plain,
   /// mutable Dart maps/lists with String keys.
-  static Map<String, dynamic> _toPlainMap(Map src) =>
-      {for (final e in src.entries) e.key.toString(): _toPlainValue(e.value)};
+  static Map<String, dynamic> _toPlainMap(Map src) => {
+    for (final e in src.entries) e.key.toString(): _toPlainValue(e.value),
+  };
 
   static dynamic _toPlainValue(dynamic v) {
     if (v is Map) return _toPlainMap(v);
@@ -213,10 +215,7 @@ class SentenceBankService {
     }
 
     // Already a raw Gist URL with a pinned commit hash → drop it for the latest.
-    return u.replaceFirstMapped(
-      RegExp(r'(gist\.githubusercontent\.com/.+/raw/)[0-9a-f]{40}/'),
-      (m) => m.group(1)!,
-    );
+    return u.replaceFirstMapped(RegExp(r'(gist\.githubusercontent\.com/.+/raw/)[0-9a-f]{40}/'), (m) => m.group(1)!);
   }
 
   Future<String> _fetchFromUrl(String url) async {
@@ -225,20 +224,24 @@ class SentenceBankService {
     // Normalize Gist URLs and append a cache-buster so CDNs never serve a stale copy.
     final normalized = _normalizeUrl(url.trim());
     final uri = Uri.parse(normalized);
-    final bustUrl = uri.replace(queryParameters: {
-      ...uri.queryParameters,
-      '_cb': DateTime.now().millisecondsSinceEpoch.toString(),
-    }).toString();
+    final bustUrl = uri
+        .replace(queryParameters: {...uri.queryParameters, '_cb': DateTime.now().millisecondsSinceEpoch.toString()})
+        .toString();
 
     try {
-      final resp = await http.get(Uri.parse(bustUrl), headers: const {
-        // Some hosts/CDNs block or stale-serve a request with no browser UA, and
-        // we want the freshest copy — mirror what a browser sends.
-        'User-Agent': 'Mozilla/5.0 (Android; Flutter) Katalaveno/1.0',
-        'Accept': 'text/yaml, text/plain, */*',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-      }).timeout(const Duration(seconds: 15));
+      final resp = await http
+          .get(
+            Uri.parse(bustUrl),
+            headers: const {
+              // Some hosts/CDNs block or stale-serve a request with no browser UA, and
+              // we want the freshest copy — mirror what a browser sends.
+              'User-Agent': 'Mozilla/5.0 (Android; Flutter) Katalaveno/1.0',
+              'Accept': 'text/yaml, text/plain, */*',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache',
+            },
+          )
+          .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
         final body = resp.body;
         // Only cache (and use) the fetched file if it actually parses. Caching a
@@ -395,8 +398,7 @@ class SentenceBankService {
     await _mergeIntoCache(additions, models: models);
   }
 
-  static String _cacheKey(String sourceLang, String targetLang, String sentence) =>
-      '$sourceLang|$targetLang|$sentence';
+  static String _cacheKey(String sourceLang, String targetLang, String sentence) => '$sourceLang|$targetLang|$sentence';
 
   // ── Active Words store ─────────────────────────────────────────────────────
   //
@@ -461,7 +463,7 @@ class SentenceBankService {
       final rawCurrent = await loadActiveWords(targetLang);
       final current = [
         for (final e in rawCurrent)
-          (src: _cleanForBank(e.src, stripNumberHints: true), tgt: _cleanForBank(e.tgt, stripNumberHints: false))
+          (src: _cleanForBank(e.src, stripNumberHints: true), tgt: _cleanForBank(e.tgt, stripNumberHints: false)),
       ];
       var changed = !_samePairs(rawCurrent, current);
 
@@ -480,7 +482,11 @@ class SentenceBankService {
       final capped = merged.length > cap ? merged.sublist(0, cap) : merged;
       if (changed) {
         await _prefs.setString(
-            _activeWordsKey(targetLang), jsonEncode([for (final e in capped) {'s': e.src, 't': e.tgt}]));
+          _activeWordsKey(targetLang),
+          jsonEncode([
+            for (final e in capped) {'s': e.src, 't': e.tgt},
+          ]),
+        );
       }
       return capped;
     });
@@ -513,10 +519,7 @@ class SentenceBankService {
   Future<List<String>> sortedSubjects(List<String> all) async {
     final history = await _loadSubjectHistory();
     final historySet = history.toSet();
-    return [
-      ...history.where(all.contains),
-      ...all.where((s) => !historySet.contains(s)),
-    ];
+    return [...history.where(all.contains), ...all.where((s) => !historySet.contains(s))];
   }
 
   /// Returns the last explicitly selected subject that still exists in [all],
@@ -574,7 +577,9 @@ class SentenceBankService {
   Future<void> _saveDeviceFiles(List<({String file, Map<String, dynamic> map})> files) async {
     await _prefs.setString(
       _kDeviceFilesKey,
-      jsonEncode([for (final f in files) {'file': f.file, 'map': f.map}]),
+      jsonEncode([
+        for (final f in files) {'file': f.file, 'map': f.map},
+      ]),
     );
   }
 
@@ -633,6 +638,33 @@ class SentenceBankService {
     await _prefs.setString(_kSubjectImportanceKey, jsonEncode(map));
   }
 
+  // ── Excluded ("mastered") sentences ────────────────────────────────────────
+  //
+  // Per target language: the set of sentence *spoken forms* (SbSentence.spoken)
+  // the user has un-checked in the subject picker so they no longer play. Keyed
+  // by content so it survives `N,`/hint edits and matches the translation-cache
+  // key; the sentence is only hidden, never deleted, so re-checking restores it.
+  static String _excludedKey(String targetLang) => 'sentenceBankExcludedSentences_$targetLang';
+
+  Future<Set<String>> loadExcludedSentences(String targetLang) async {
+    final raw = await _prefs.getString(_excludedKey(targetLang));
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final l = jsonDecode(raw);
+      if (l is! List) return {};
+      return {
+        for (final e in l)
+          if (e is String) e,
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> saveExcludedSentences(String targetLang, Set<String> keys) async {
+    await _prefs.setString(_excludedKey(targetLang), jsonEncode(keys.toList()));
+  }
+
   // ── Position persistence ──────────────────────────────────────────────────
   //
   // The resume point is remembered by the *sentence text itself*, keyed by the
@@ -665,11 +697,7 @@ class SentenceBankService {
   }
 
   /// Returns a cached translation without making any network calls. Returns null if not cached.
-  Future<String?> getCached({
-    required String sentence,
-    required String sourceLang,
-    required String targetLang,
-  }) async {
+  Future<String?> getCached({required String sentence, required String sourceLang, required String targetLang}) async {
     final cache = await _loadCache();
     return cache[_cacheKey(sourceLang, targetLang, sentence)];
   }
@@ -898,7 +926,8 @@ class SentenceBankService {
   }) async {
     if (apiKey.trim().isEmpty) throw Exception('AI API key is empty (set it in Settings).');
 
-    final prompt = '''
+    final prompt =
+        '''
 Translate the following sentence from $sourceLang to $targetLang.
 Return ONLY the translation in the "t" field — no explanation, no quotes.
 
@@ -965,7 +994,8 @@ Sentence: $sentence
 
     final numberedList = sentences.asMap().entries.map((e) => '${e.key + 1}. ${e.value}').join('\n');
 
-    final prompt = '''
+    final prompt =
+        '''
 Translate the following numbered sentences from $sourceLang to $targetLang.
 Return ONLY a JSON array of objects, one per sentence, each {"n": <the sentence number>, "t": <its translation>}.
 Keep the same "n" the sentence was given. Do not merge, drop, or reorder sentences.

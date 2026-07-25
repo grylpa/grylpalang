@@ -7,7 +7,8 @@ import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show FilteringTextInputFormatter;
+import 'package:flutter/services.dart' show FilteringTextInputFormatter, rootBundle;
+import 'package:flutter_email_sender/flutter_email_sender.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:yaml/yaml.dart';
 import 'package:just_audio/just_audio.dart';
@@ -16,6 +17,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/sentence_bank.dart';
+import 'markdown_doc_screen.dart';
 import '../services/audio_utils.dart';
 import '../services/auto_playlist_controller.dart';
 import '../services/katalaveno_audio_handler.dart';
@@ -112,6 +114,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   List<String> _sortedSubjectNames = [];
   // Per-subject repeat multiplier (long-press a subject to set 2–5). Absent = 1.
   Map<String, int> _importance = {};
+  // "Mastered" sentences (by SbSentence.spoken key) hidden from play via the
+  // subject picker's per-sentence checkboxes. Loaded per target language.
+  Set<String> _excluded = {};
 
   String? _sourceSentence;
   String? _translatedSentence;
@@ -137,7 +142,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   bool _upgradeRunning = false;
   // How many sentences ahead of the current one the upgrader scans each tick.
   static const int _kUpgradeLookAhead = 30;
-
 
   // Auto-mode (driven by the native playlist in AutoPlaylistController).
   bool _autoMode = false;
@@ -202,7 +206,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     setState(() => _ttsPlaying = false);
   }
 
-
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -222,7 +225,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   }
 
   Future<void> _loadBank() async {
-    setState(() { _loading = true; _loadError = null; });
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
     try {
       final appState = context.read<AppState>();
       final url = appState.settings.sentenceBankUrl;
@@ -240,6 +246,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       appState.updateSentenceBankYamlTtsRepeatDelay(bank.ttsRepeatDelay);
       appState.updateSentenceBankYamlTtsRepeatCount(bank.ttsRepeatCount);
       _importance = await _service.loadSubjectImportance();
+      _excluded = await _service.loadExcludedSentences(appState.settings.targetLanguage);
       final sorted = await _service.sortedSubjects(bank.subjectNames);
       // Restore the selection: keep the in-memory set (validated against the new
       // bank) if any, else the persisted set, else default to the first subject.
@@ -267,7 +274,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           _translatedSentence = null;
           _showTranslation = false;
         }
-        if (shuffle) _generateShuffledOrder(); else _shuffledOrder = null;
+        if (shuffle)
+          _generateShuffledOrder();
+        else
+          _shuffledOrder = null;
         _sourceSentence = _currentSource();
       });
 
@@ -289,7 +299,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       if (warning != null && mounted) lpSnack(context, warning, 6000);
     } catch (e) {
       if (!mounted) return;
-      setState(() { _loadError = e.toString(); _loading = false; });
+      setState(() {
+        _loadError = e.toString();
+        _loading = false;
+      });
     }
   }
 
@@ -327,8 +340,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       bank.subjects.remove(kActiveWordsSubject);
       return;
     }
-    bank.subjects[kActiveWordsSubject] =
-        LeafSubject(name: kActiveWordsSubject, sentences: [for (final e in stored) e.src]);
+    bank.subjects[kActiveWordsSubject] = LeafSubject(
+      name: kActiveWordsSubject,
+      sentences: [for (final e in stored) e.src],
+    );
     await _service.seedTranslations(
       pairs: {for (final e in stored) e.src: e.tgt},
       sourceLang: sourceLang,
@@ -428,6 +443,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       // sentence's own `N,` prefix don't compound — the larger of the two wins.
       final importance = _importance[name] ?? 1;
       for (final s in bank.sentencesFor(name)) {
+        // Skip "mastered" sentences the user un-checked in the picker.
+        if (_excluded.contains(SbSentence.spoken(s))) continue;
         // Dedup accidental leaf/meta overlap on the raw entry (first selected
         // owner wins), then emit max(sentence `N,`, subject importance) copies.
         if (seen.add(s)) {
@@ -490,7 +507,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   void _generateShuffledOrder() {
     final sents = _currentSentences();
-    if (sents.isEmpty) { _shuffledOrder = null; return; }
+    if (sents.isEmpty) {
+      _shuffledOrder = null;
+      return;
+    }
     final indices = List.generate(sents.length, (i) => i)..shuffle();
     _shuffledOrder = indices;
   }
@@ -505,7 +525,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         ..clear()
         ..addAll(sel);
       _sentenceIndex = 0;
-      if (shuffle) _generateShuffledOrder(); else _shuffledOrder = null;
+      if (shuffle)
+        _generateShuffledOrder();
+      else
+        _shuffledOrder = null;
       _sourceSentence = _currentSource();
       _translatedSentence = null;
       _showTranslation = false;
@@ -541,16 +564,33 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final bank = _bank;
     if (bank == null) return;
     final all = _sortedSubjectNames;
+    final targetLang = context.read<AppState>().settings.targetLanguage;
     final working = {..._selectedSubjects};
+    // Per-sentence "mastered" exclusions the sheet mutates; committed on Done.
+    final workingExcluded = {..._excluded};
+    // Which leaf subjects are expanded to show their per-sentence checkboxes.
+    final expanded = <String>{};
     // Long-pressing a row edits importance (mutates `_importance` directly); if
     // any changed we rebuild on Done even when the checkbox selection didn't.
     var importanceChanged = false;
+
+    // Distinct (display, spokenKey) rows for a leaf subject, in bank order.
+    List<(String, String)> leafRows(String name) {
+      final seen = <String>{};
+      final rows = <(String, String)>[];
+      for (final s in bank.sentencesFor(name)) {
+        final k = SbSentence.spoken(s);
+        if (seen.add(k)) rows.add((SbSentence.display(s), k));
+      }
+      return rows;
+    }
 
     final result = await showModalBottomSheet<Set<String>>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
       builder: (ctx) {
+        final scheme = Theme.of(ctx).colorScheme;
         return StatefulBuilder(
           builder: (ctx, setSheet) {
             final allChecked = working.length >= all.length && all.isNotEmpty;
@@ -564,8 +604,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                       children: [
                         Text('Select subjects', style: Theme.of(ctx).textTheme.titleMedium),
                         const Spacer(),
-                        Text('${working.length}/${all.length}',
-                            style: Theme.of(ctx).textTheme.labelMedium),
+                        Text('${working.length}/${all.length}', style: Theme.of(ctx).textTheme.labelMedium),
                       ],
                     ),
                   ),
@@ -594,7 +633,42 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                         final name = all[i];
                         final isMeta = bank.subjects[name] is MetaSubject;
                         final imp = _importance[name] ?? 1;
-                        return GestureDetector(
+                        // Leaf subjects expand to per-sentence checkboxes; the
+                        // parent is tristate (full/partial/off) derived from how
+                        // many of its sentences are excluded. Meta subjects keep a
+                        // plain whole-subject checkbox (no expansion).
+                        final rows = isMeta ? const <(String, String)>[] : leafRows(name);
+                        final excludedCount = isMeta ? 0 : rows.where((r) => workingExcluded.contains(r.$2)).length;
+                        final isOn = working.contains(name);
+                        final bool? parentValue = isMeta
+                            ? isOn
+                            : (!isOn
+                                  ? false
+                                  : (excludedCount == 0 ? true : (excludedCount >= rows.length ? false : null)));
+                        final isExpanded = expanded.contains(name);
+
+                        void toggleParent() => setSheet(() {
+                          if (isMeta) {
+                            if (isOn) {
+                              working.remove(name);
+                            } else {
+                              working.add(name);
+                            }
+                            return;
+                          }
+                          // Leaf: full → off; partial/off → full (SDK-manager
+                          // group toggle). "Full" means selected with nothing
+                          // excluded.
+                          final isFull = isOn && excludedCount == 0;
+                          if (isFull) {
+                            working.remove(name);
+                          } else {
+                            working.add(name);
+                            for (final r in rows) workingExcluded.remove(r.$2);
+                          }
+                        });
+
+                        final tile = GestureDetector(
                           // Long-press to weight this subject (drill it more often).
                           onLongPress: () async {
                             final changed = await _pickImportance(name);
@@ -605,33 +679,84 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                           },
                           child: CheckboxListTile(
                             dense: true,
-                            value: working.contains(name),
-                            onChanged: (v) => setSheet(() {
-                              if (v == true) {
-                                working.add(name);
-                              } else {
-                                working.remove(name);
-                              }
-                            }),
+                            value: parentValue,
+                            tristate: !isMeta,
+                            onChanged: (_) => toggleParent(),
                             secondary: Icon(
                               isMeta ? Icons.folder_outlined : Icons.list_alt_outlined,
-                              color: Theme.of(ctx).colorScheme.primary,
+                              color: scheme.primary,
                             ),
                             title: Row(
                               children: [
                                 Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
+                                if (excludedCount > 0)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 8),
+                                    child: Text(
+                                      '−$excludedCount',
+                                      style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w700),
+                                    ),
+                                  ),
                                 if (imp > 1)
                                   Padding(
                                     padding: const EdgeInsets.only(left: 8),
-                                    child: Text('×$imp',
-                                        style: TextStyle(
-                                          color: Theme.of(ctx).colorScheme.primary,
-                                          fontWeight: FontWeight.w700,
-                                        )),
+                                    child: Text(
+                                      '×$imp',
+                                      style: TextStyle(color: scheme.primary, fontWeight: FontWeight.w700),
+                                    ),
+                                  ),
+                                if (!isMeta)
+                                  IconButton(
+                                    visualDensity: VisualDensity.compact,
+                                    icon: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
+                                    tooltip: isExpanded ? 'Collapse' : 'Show sentences',
+                                    onPressed: () => setSheet(() {
+                                      if (isExpanded) {
+                                        expanded.remove(name);
+                                      } else {
+                                        expanded.add(name);
+                                      }
+                                    }),
                                   ),
                               ],
                             ),
                           ),
+                        );
+
+                        if (isMeta || !isExpanded) return tile;
+                        // Expanded leaf: parent + a checkbox per sentence.
+                        return Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            tile,
+                            for (final r in rows)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 32),
+                                child: CheckboxListTile(
+                                  dense: true,
+                                  value: !workingExcluded.contains(r.$2),
+                                  onChanged: (v) => setSheet(() {
+                                    if (v == true) {
+                                      workingExcluded.remove(r.$2);
+                                      working.add(name); // re-mark the subject
+                                    } else {
+                                      workingExcluded.add(r.$2);
+                                      // All sentences excluded → subject turns off.
+                                      if (rows.every((x) => workingExcluded.contains(x.$2))) {
+                                        working.remove(name);
+                                      }
+                                    }
+                                  }),
+                                  title: Text(
+                                    r.$1,
+                                    style: Theme.of(ctx).textTheme.bodyMedium,
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ),
+                            const Divider(height: 1),
+                          ],
                         );
                       },
                     ),
@@ -640,10 +765,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     padding: const EdgeInsets.all(8),
                     child: SizedBox(
                       width: double.infinity,
-                      child: FilledButton(
-                        onPressed: () => Navigator.of(ctx).pop(working),
-                        child: const Text('Done'),
-                      ),
+                      child: FilledButton(onPressed: () => Navigator.of(ctx).pop(working), child: const Text('Done')),
                     ),
                   ),
                 ],
@@ -656,12 +778,18 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
     if (result == null || !mounted) return;
     final selectionChanged = !setEquals(result, _selectedSubjects);
-    if (selectionChanged || importanceChanged) {
-      // Importance affects the sentence list length but not the selection
-      // signature, so drop the cached playlist/translations to force a rebuild.
-      if (importanceChanged) {
+    final excludedChanged = !setEquals(workingExcluded, _excluded);
+    if (selectionChanged || importanceChanged || excludedChanged) {
+      // Importance and exclusions affect the sentence list length but not the
+      // selection signature, so drop the cached playlist/translations to force a
+      // rebuild.
+      if (importanceChanged || excludedChanged) {
         _preparedSig = null;
         _translationsSig = null;
+      }
+      if (excludedChanged) {
+        _excluded = {...workingExcluded};
+        await _service.saveExcludedSentences(targetLang, _excluded);
       }
       await _applySelection(result);
     }
@@ -777,7 +905,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final apiKey = state.settings.aiApiKey;
     if (apiKey.trim().isEmpty) return;
 
-    setState(() { _batchRunning = true; _batchDone = 0; _batchTotal = 0; _batchAttempt = 0; });
+    setState(() {
+      _batchRunning = true;
+      _batchDone = 0;
+      _batchTotal = 0;
+      _batchAttempt = 0;
+    });
 
     try {
       // If the playlist build is already translating this subject, this awaits
@@ -790,19 +923,32 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           apiKey: apiKey,
           onProgress: (done, total, attempt) {
             if (!mounted) return;
-            setState(() { _batchDone = done; _batchTotal = total; _batchAttempt = attempt; });
+            setState(() {
+              _batchDone = done;
+              _batchTotal = total;
+              _batchAttempt = attempt;
+            });
             _loadCachedTranslationForCurrent();
           },
         );
         if (failed > 0 && mounted) {
-          lpSnack(context, "$failed sentence${failed == 1 ? '' : 's'} couldn't be translated yet — tap Translate again to retry.", 6000);
+          lpSnack(
+            context,
+            "$failed sentence${failed == 1 ? '' : 's'} couldn't be translated yet — tap Translate again to retry.",
+            6000,
+          );
         }
       });
     } catch (e) {
       if (mounted) lpSnack(context, e.toString().replaceFirst('Exception: ', ''), 5000);
     } finally {
       if (mounted) {
-        setState(() { _batchRunning = false; _batchDone = 0; _batchTotal = 0; _batchAttempt = 0; });
+        setState(() {
+          _batchRunning = false;
+          _batchDone = 0;
+          _batchTotal = 0;
+          _batchAttempt = 0;
+        });
         _loadCachedTranslationForCurrent();
       }
     }
@@ -876,14 +1022,19 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   void _reshuffleAvoidingCurrent() {
     final order = _shuffledOrder;
-    if (order == null || order.length < 2) { _generateShuffledOrder(); return; }
+    if (order == null || order.length < 2) {
+      _generateShuffledOrder();
+      return;
+    }
     final currentSentIdx = order[_sentenceIndex % order.length];
     _generateShuffledOrder();
     final newOrder = _shuffledOrder!;
     if (newOrder.first == currentSentIdx) {
       // Swap first with a random other position to avoid repeating the same sentence.
       final swapPos = 1 + (DateTime.now().millisecondsSinceEpoch % (newOrder.length - 1)).toInt();
-      final tmp = newOrder[0]; newOrder[0] = newOrder[swapPos]; newOrder[swapPos] = tmp;
+      final tmp = newOrder[0];
+      newOrder[0] = newOrder[swapPos];
+      newOrder[swapPos] = tmp;
     }
   }
 
@@ -959,7 +1110,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         apiKey: apiKey,
       );
       if (!mounted) return null;
-      setState(() { _translatedSentence = t; _translating = false; });
+      setState(() {
+        _translatedSentence = t;
+        _translating = false;
+      });
       return t;
     } catch (e) {
       if (!mounted) return null;
@@ -1126,21 +1280,40 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           if (RegExp(r'-x-\w*m\w*-').hasMatch(vName)) score += 5;
           if (vName.contains('male')) score += 4;
           // iOS: known male voice names (heuristic — male voices are usually men's names).
-          if (vName.contains('nikos') || vName.contains('jorge') || vName.contains('thomas') ||
-              vName.contains('daniel') || vName.contains('alex') || vName.contains('fred')) score += 6;
+          if (vName.contains('nikos') ||
+              vName.contains('jorge') ||
+              vName.contains('thomas') ||
+              vName.contains('daniel') ||
+              vName.contains('alex') ||
+              vName.contains('fred'))
+            score += 6;
           // Penalise obvious female names.
-          if (vName.contains('female') || vName.contains('#f') || vName.contains('melina') ||
-              vName.contains('anna') || vName.contains('samantha') || vName.contains('victoria')) score -= 20;
+          if (vName.contains('female') ||
+              vName.contains('#f') ||
+              vName.contains('melina') ||
+              vName.contains('anna') ||
+              vName.contains('samantha') ||
+              vName.contains('victoria'))
+            score -= 20;
         } else {
           if (vName.contains('#female') || vName.contains('female_')) score += 8;
           if (RegExp(r'-x-\w*a\w*-').hasMatch(vName)) score += 5;
           if (vName.contains('female')) score += 4;
           // iOS known female voice names.
-          if (vName.contains('melina') || vName.contains('anna') || vName.contains('samantha') ||
-              vName.contains('victoria') || vName.contains('karen') || vName.contains('moira')) score += 6;
+          if (vName.contains('melina') ||
+              vName.contains('anna') ||
+              vName.contains('samantha') ||
+              vName.contains('victoria') ||
+              vName.contains('karen') ||
+              vName.contains('moira'))
+            score += 6;
           // Penalise obvious male names.
-          if (vName.contains('#male') || vName.contains('male_') ||
-              vName.contains('nikos') || vName.contains('daniel') || vName.contains('thomas')) score -= 20;
+          if (vName.contains('#male') ||
+              vName.contains('male_') ||
+              vName.contains('nikos') ||
+              vName.contains('daniel') ||
+              vName.contains('thomas'))
+            score -= 20;
         }
 
         if (score > bestScore) {
@@ -1207,39 +1380,41 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       return;
     }
 
-    setState(() { _autoPreparing = true; _prepDone = 0; _prepTotal = 0; });
+    setState(() {
+      _autoPreparing = true;
+      _prepDone = 0;
+      _prepTotal = 0;
+    });
     try {
       // Translations depend only on subject/order/target language — not the
       // voice — so reuse the in-memory set across voice changes instead of
       // re-hitting the translator.
-      final translationsSig =
-          [_selectionSig(), _lastReloadToken, order?.join(','), settings.targetLanguage].join('¦');
+      final translationsSig = [_selectionSig(), _lastReloadToken, order?.join(','), settings.targetLanguage].join('¦');
       List<String> translations;
       if (translationsSig == _translationsSig && _autoTranslations.length == ordered.length) {
         translations = _autoTranslations;
       } else {
         Future<List<String>> doBatch() => _service.translateBatch(
-              sentences: orderedSpoken,
-              sourceLang: _bank!.language,
-              targetLang: settings.targetLanguage,
-              apiKey: settings.aiApiKey,
-            );
+          sentences: orderedSpoken,
+          sourceLang: _bank!.language,
+          targetLang: settings.targetLanguage,
+          apiKey: settings.aiApiKey,
+        );
         // Coalesce with any in-flight background prefetch for this subject so we
         // don't run two translation passes at once. If a prefetch pass was
         // already running, it has now finished and cached everything, so the
         // doBatch() below is pure cache hits (no API calls).
         late List<String> fetched;
-        final coalesced = await _withTranslationPass(
-          _subjectTransSig(settings.targetLanguage),
-          () async { fetched = await doBatch(); },
-        );
+        final coalesced = await _withTranslationPass(_subjectTransSig(settings.targetLanguage), () async {
+          fetched = await doBatch();
+        });
         translations = coalesced ? await doBatch() : fetched;
         if (!mounted) return;
         _autoTranslations = translations;
         // Only mark this set reusable if every sentence actually translated;
         // otherwise leave it unset so the failed ones retry on the next build.
         final anyFailed = [
-          for (var i = 0; i < ordered.length; i++) translations[i].trim() == orderedSpoken[i].trim()
+          for (var i = 0; i < ordered.length; i++) translations[i].trim() == orderedSpoken[i].trim(),
         ].any((f) => f);
         _translationsSig = anyFailed ? null : translationsSig;
       }
@@ -1261,15 +1436,23 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             final failed = translations[o].trim() == orderedSpoken[o].trim();
             final clipLang = failed ? _bank!.language : settings.targetLanguage;
             final cached = await _cachedClipFile(
-                translations[o], clipLang, gender, preferVoice: failed ? sourceVoice : '');
+              translations[o],
+              clipLang,
+              gender,
+              preferVoice: failed ? sourceVoice : '',
+            );
             if (cached != null) {
               translationPaths[o] = cached;
             } else {
               needsWork.add(o);
             }
             if (speakSource) {
-              sourcePaths[o] =
-                  await _cachedClipFile(orderedSpoken[o], _bank!.language, gender, preferVoice: sourceVoice);
+              sourcePaths[o] = await _cachedClipFile(
+                orderedSpoken[o],
+                _bank!.language,
+                gender,
+                preferVoice: sourceVoice,
+              );
             }
           }(),
       ]);
@@ -1291,7 +1474,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         final clipLang = failed ? _bank!.language : settings.targetLanguage;
         try {
           translationPaths[o] = await _ensureClipFile(
-              translations[o], clipLang, gender, preferVoice: failed ? sourceVoice : '');
+            translations[o],
+            clipLang,
+            gender,
+            preferVoice: failed ? sourceVoice : '',
+          );
         } catch (_) {
           // Even after Google→local fallback this one couldn't be produced —
           // leave the path empty so the playlist controller skips this
@@ -1304,7 +1491,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       for (final o in sourceMissing) {
         if (!mounted) return;
         sourcePaths[o] = await _ensureClipFileOrNull(
-            orderedSpoken[o], _bank!.language, gender, preferVoice: sourceVoice);
+          orderedSpoken[o],
+          _bank!.language,
+          gender,
+          preferVoice: sourceVoice,
+        );
         if (mounted) setState(() => _prepDone = _prepDone + 1);
       }
       if (!mounted) return;
@@ -1320,7 +1511,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       // starts (e.g. prep finished while the screen was locked), playback
       // begins silently — the symptom that "stop then play" used to clear.
       // Release it explicitly so the player wins focus on the first try.
-      try { await _tts.stop(); } catch (_) {}
+      try {
+        await _tts.stop();
+      } catch (_) {}
 
       await _autoPlaylist.start(
         translations: translations,
@@ -1343,7 +1536,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       // Keep auto mode on so the user can recover by pressing next (which now
       // falls back to manual sentence nav when no playlist is loaded) — they
       // shouldn't have to fish the phone out of their pocket to press stop.
-      setState(() { _autoPreparing = false; });
+      setState(() {
+        _autoPreparing = false;
+      });
       lpSnack(context, 'Could not prepare audio.', 4000);
     }
   }
@@ -1415,10 +1610,14 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     return _synthToFile(text, _localeForLanguage(languageName), code, gender, preferVoice);
   }
 
-
   /// Like [_ensureClipFile] but returns null instead of throwing — used for the
   /// optional source clip so one failure just drops that source.
-  Future<String?> _ensureClipFileOrNull(String text, String languageName, String gender, {String preferVoice = ''}) async {
+  Future<String?> _ensureClipFileOrNull(
+    String text,
+    String languageName,
+    String gender, {
+    String preferVoice = '',
+  }) async {
     try {
       return await _ensureClipFile(text, languageName, gender, preferVoice: preferVoice);
     } catch (_) {
@@ -1458,11 +1657,18 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     // p6 = native rate, no downsampling, p7 = no pitch-shift fallback). The
     // current kSourceSpeechRate is folded into the key so changing it
     // auto-invalidates clips that were synthesised at a different rate.
-    final key = sha1
-        .convert(utf8.encode('$code|$voiceKey|p7|r$kSourceSpeechRate|$text'))
-        .toString();
+    final key = sha1.convert(utf8.encode('$code|$voiceKey|p7|r$kSourceSpeechRate|$text')).toString();
     final file = File('${dir.path}/$key.wav');
-    if (await file.exists()) return file.path;
+    // Reuse a cached clip only if it's a plausibly-real WAV. A previously
+    // failed/timed-out synthesis can leave a 0-byte or header-only file; a valid
+    // clip is always >20 KB (the 500ms silence pad alone is that big). Serving
+    // the tiny one would replay as permanent silence, so delete + re-synth.
+    if (await file.exists()) {
+      if (await _isUsableClip(file)) return file.path;
+      try {
+        await file.delete();
+      } catch (_) {}
+    }
     await _evictSynthIfFull(dir);
 
     await _tts.stop();
@@ -1486,17 +1692,44 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     // with no way for the per-item catch to kick in. Wrap it in a hard timeout
     // so a hung synthesis becomes a normal per-item failure that gets skipped.
     try {
-      await _tts.synthesizeToFile(text, file.path, true).timeout(const Duration(seconds: 8));
+      await _tts.synthesizeToFile(text, file.path, true).timeout(const Duration(seconds: 30));
     } on TimeoutException {
-      // Best-effort: cancel any in-flight engine work so the next call starts clean.
-      try { await _tts.stop(); } catch (_) {}
+      // Best-effort: cancel any in-flight engine work so the next call starts
+      // clean, and delete any partial file so it isn't cached as a silent clip.
+      try {
+        await _tts.stop();
+      } catch (_) {}
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
       throw Exception('TTS synthesis timed out');
     }
     if (!await file.exists()) throw Exception('TTS synthesis produced no file');
     // Prepend 500ms silence — the audio path drops the first frames at a clip
     // boundary / cold start. Keeps the engine's native rate (mono).
     await _normalizeSynthWav(file);
+    // Guard against a "successful" synth that produced an empty/broken clip:
+    // don't cache silence — delete it so it retries next time.
+    if (!await _isUsableClip(file)) {
+      try {
+        await file.delete();
+      } catch (_) {}
+      throw Exception('TTS synthesis produced an empty clip');
+    }
     return file.path;
+  }
+
+  /// A synthesized clip is only usable if it holds real audio. Failed/timed-out
+  /// synthesis leaves a 0-byte or header-only (~44-byte) WAV; a genuine clip is
+  /// always far larger (the 500ms silence pad alone is >20 KB), so a small file
+  /// is treated as a failure to be retried rather than replayed as silence.
+  static const int _kMinUsableClipBytes = 1024;
+  Future<bool> _isUsableClip(File file) async {
+    try {
+      return await file.length() >= _kMinUsableClipBytes;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Prepends [padMs] of silence to a synthesized WAV (the audio path drops the
@@ -1553,7 +1786,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final reloadToken = context.select<AppState, int>((s) => s.sentenceBankReloadToken);
     if (reloadToken != _lastReloadToken && !_loading) {
       _lastReloadToken = reloadToken;
-      WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _loadBank(); });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadBank();
+      });
     }
 
     // History changed (e.g. a new active word's notification was tapped) →
@@ -1561,7 +1796,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final historyRevision = context.select<AppState, int>((s) => s.historyRevision);
     if (historyRevision != _lastHistoryRevision && !_loading) {
       _lastHistoryRevision = historyRevision;
-      WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _refreshActiveWords(); });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _refreshActiveWords();
+      });
     }
 
     final shuffle = context.select<AppState, bool>((s) => s.settings.sentenceBankShuffle);
@@ -1571,7 +1808,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         if (!mounted) return;
         setState(() {
           _sentenceIndex = 0;
-          if (shuffle) _generateShuffledOrder(); else _shuffledOrder = null;
+          if (shuffle)
+            _generateShuffledOrder();
+          else
+            _shuffledOrder = null;
           _sourceSentence = _currentSource();
           _translatedSentence = null;
           _showTranslation = false;
@@ -1586,16 +1826,18 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     // target language, repeat count, pauses) live while auto mode is running.
     // The sig check inside _buildOrResumePlaylist no-ops if nothing relevant
     // actually changed.
-    final autoCfg = context.select<AppState, String>((s) => [
-          s.settings.sentenceBankSpeakSource,
-          s.settings.sentenceBankSourceVoice,
-          s.settings.sentenceBankVoiceGender,
-          s.settings.targetLanguage,
-          s.sentenceBankResolvedTtsRepeatCount,
-          s.settings.sentenceBankSourcePauseOverride,
-          s.settings.sentenceBankTtsRepeatDelayOverride,
-          s.settings.sentenceBankRepeatSourceBetween,
-        ].join('¦'));
+    final autoCfg = context.select<AppState, String>(
+      (s) => [
+        s.settings.sentenceBankSpeakSource,
+        s.settings.sentenceBankSourceVoice,
+        s.settings.sentenceBankVoiceGender,
+        s.settings.targetLanguage,
+        s.sentenceBankResolvedTtsRepeatCount,
+        s.settings.sentenceBankSourcePauseOverride,
+        s.settings.sentenceBankTtsRepeatDelayOverride,
+        s.settings.sentenceBankRepeatSourceBetween,
+      ].join('¦'),
+    );
     if (autoCfg != _lastAutoCfg) {
       _lastAutoCfg = autoCfg;
       if (_autoMode) {
@@ -1648,14 +1890,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
               _buildVoiceButton(),
             ],
           ),
-          SizedBox(height: 20,),
+          SizedBox(height: 20),
           const SizedBox(height: 4),
           // Sentence cards scroll in available space.
-          Expanded(
-            child: SingleChildScrollView(
-              child: _buildSentenceCard(settings.targetLang),
-            ),
-          ),
+          Expanded(child: SingleChildScrollView(child: _buildSentenceCard(settings.targetLang))),
           const SizedBox(height: 10),
           // Controls always at the same vertical position.
           _buildControls(settings.repeatCount),
@@ -1681,13 +1919,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                 child: Text(
                   _selectionSummary(),
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: _autoMode ? Theme.of(context).disabledColor : null,
-                  ),
+                  style: TextStyle(color: _autoMode ? Theme.of(context).disabledColor : null),
                 ),
               ),
-              Icon(Icons.arrow_drop_down,
-                  color: _autoMode ? Theme.of(context).disabledColor : null),
+              Icon(Icons.arrow_drop_down, color: _autoMode ? Theme.of(context).disabledColor : null),
             ],
           ),
         ),
@@ -1700,9 +1935,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   /// and file management. Uses the app-wide themed (bordered) popup surface.
   Widget _buildVoiceButton() {
     PopupMenuItem<String> item(String v, IconData icon, String label) => PopupMenuItem<String>(
-          value: v,
-          child: Row(children: [Icon(icon), const SizedBox(width: 12), Text(label)]),
-        );
+      value: v,
+      child: Row(children: [Icon(icon), const SizedBox(width: 12), Text(label)]),
+    );
     return PopupMenuButton<String>(
       enabled: !_autoMode,
       tooltip: 'Sentence bank options',
@@ -1715,11 +1950,20 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       ),
       onSelected: (v) {
         switch (v) {
-          case 'voice': _showVoicePicker();
-          case 'settings': _showSbSettingsSheet();
-          case 'url': _showUrlDialog();
-          case 'load': _importDeviceFile();
-          case 'manage': _showManageFilesSheet();
+          case 'voice':
+            _showVoicePicker();
+          case 'settings':
+            _showSbSettingsSheet();
+          case 'url':
+            _showUrlDialog();
+          case 'load':
+            _importDeviceFile();
+          case 'manage':
+            _showManageFilesSheet();
+          case 'format':
+            _openFormatGuide();
+          case 'template':
+            _emailStarterTemplate();
         }
       },
       itemBuilder: (ctx) => [
@@ -1728,8 +1972,45 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         item('url', Icons.link, 'Sentence bank URL'),
         item('load', Icons.upload_file, 'Load file from device'),
         item('manage', Icons.folder_open, 'Manage loaded files'),
+        item('format', Icons.help_outline, 'Sentence bank format'),
+        item('template', Icons.email_outlined, 'Email starter template'),
       ],
     );
+  }
+
+  /// Opens the bundled sentence-bank format guide (Markdown).
+  void _openFormatGuide() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            const MarkdownDocScreen(title: 'Sentence bank format', assetPath: 'assets/docs/sentence_bank_format.md'),
+      ),
+    );
+  }
+
+  /// Writes the bundled starter template to a temp file and opens an email with
+  /// it attached (matches the app's other email flows). The user can then send
+  /// it to themselves, edit it, and re-load it via "Load file from device".
+  Future<void> _emailStarterTemplate() async {
+    try {
+      const asset = 'assets/docs/sentence_bank_template.yml';
+      final data = await rootBundle.loadString(asset);
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/sentence_bank_template.yml');
+      await file.writeAsString(data);
+      final mail = Email(
+        subject: 'Katalaveno — sentence bank starter template',
+        body:
+            'Attached is a starter sentence_bank.yml. Edit it, then load it in '
+            'the app via the Sentences tab ⋮ menu → "Load file from device" '
+            '(or host it publicly and set its URL). The ⋮ → "Sentence bank '
+            'format" guide explains every option.',
+        attachmentPaths: [file.path],
+      );
+      await FlutterEmailSender.send(mail);
+    } catch (e) {
+      if (mounted) lpSnack(context, 'Could not open email: $e', 5000);
+    }
   }
 
   /// Sentence Bank settings (moved out of the main Settings screen): auto-mode
@@ -1752,22 +2033,32 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                 children: [
                   Text('Sentence Bank settings', style: Theme.of(ctx).textTheme.titleMedium),
                   const SizedBox(height: 4),
-                  _sbStepper(ctx,
-                    label: 'Pause after source', suffix: 's', min: 0,
+                  _sbStepper(
+                    ctx,
+                    label: 'Pause after source',
+                    suffix: 's',
+                    min: 0,
                     current: s.sentenceBankSourcePauseOverride ?? state.sentenceBankYamlSourcePause,
                     yamlValue: state.sentenceBankYamlSourcePause,
                     onSet: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankSourcePauseOverride: v)),
                     onReset: () => state.saveSettingsOnly(s.copyWith(sentenceBankSourcePauseOverride: null)),
                   ),
-                  _sbStepper(ctx,
-                    label: 'Repeat translation TTS', suffix: '×', min: 1, max: 10,
+                  _sbStepper(
+                    ctx,
+                    label: 'Repeat translation TTS',
+                    suffix: '×',
+                    min: 1,
+                    max: 10,
                     current: s.sentenceBankTtsRepeatCountOverride ?? state.sentenceBankYamlTtsRepeatCount,
                     yamlValue: state.sentenceBankYamlTtsRepeatCount,
                     onSet: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankTtsRepeatCountOverride: v)),
                     onReset: () => state.saveSettingsOnly(s.copyWith(sentenceBankTtsRepeatCountOverride: null)),
                   ),
-                  _sbStepper(ctx,
-                    label: 'Delay between repeats', suffix: 's', min: 0,
+                  _sbStepper(
+                    ctx,
+                    label: 'Delay between repeats',
+                    suffix: 's',
+                    min: 0,
                     current: s.sentenceBankTtsRepeatDelayOverride ?? state.sentenceBankYamlTtsRepeatDelay,
                     yamlValue: state.sentenceBankYamlTtsRepeatDelay,
                     onSet: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankTtsRepeatDelayOverride: v)),
@@ -1796,39 +2087,46 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                   const Divider(height: 24),
                   Text('Maintenance', style: Theme.of(ctx).textTheme.titleSmall),
                   const SizedBox(height: 8),
-                  Wrap(spacing: 8, runSpacing: 8, children: [
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.translate_outlined),
-                      label: const Text('Clear translations'),
-                      onPressed: () async {
-                        final ok = await showYesNoDialog(
-                          ctx,
-                          title: 'Clear translations?',
-                          message: 'Discards every cached translation. They\'ll be re-generated on demand, '
-                              'which uses the AI service again.',
-                        );
-                        if (ok != true) return;
-                        await state.clearSentenceBankTranslationCache();
-                        state.triggerSentenceBankReload();
-                        if (mounted) lpSnack(context, 'Translation cache cleared — re-translating…', 3000);
-                      },
-                    ),
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.volume_off_outlined),
-                      label: const Text('Clear audio cache'),
-                      onPressed: () async {
-                        final ok = await showYesNoDialog(
-                          ctx,
-                          title: 'Clear audio cache?',
-                          message: 'Deletes cached spoken-audio clips. They\'ll be re-synthesized/re-fetched '
-                              'the next time they play.',
-                        );
-                        if (ok != true) return;
-                        await state.clearGoogleTtsAudioCache();
-                        if (mounted) lpSnack(context, 'Audio cache cleared.', 3000);
-                      },
-                    ),
-                  ]),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.translate_outlined),
+                        label: const Text('Clear translations'),
+                        onPressed: () async {
+                          final ok = await showYesNoDialog(
+                            ctx,
+                            title: 'Clear translations?',
+                            message:
+                                'Discards every cached translation. They\'ll be re-generated on demand, '
+                                'which uses the AI service again.',
+                          );
+                          if (ok != true) return;
+                          await state.clearSentenceBankTranslationCache();
+                          state.triggerSentenceBankReload();
+                          if (mounted) lpSnack(context, 'Translation cache cleared — re-translating…', 3000);
+                        },
+                      ),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.volume_off_outlined),
+                        label: const Text('Clear audio cache'),
+                        onPressed: () async {
+                          final ok = await showYesNoDialog(
+                            ctx,
+                            title: 'Clear audio cache?',
+                            message:
+                                'Deletes cached spoken-audio clips. They\'ll be re-synthesized/re-fetched '
+                                'the next time they play.',
+                          );
+                          if (ok != true) return;
+                          await state.clearGoogleTtsAudioCache();
+                          await state.clearOnDeviceSynthCache();
+                          if (mounted) lpSnack(context, 'Audio cache cleared.', 3000);
+                        },
+                      ),
+                    ],
+                  ),
                 ],
               ),
             );
@@ -1838,7 +2136,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     );
   }
 
-  Widget _sbStepper(BuildContext ctx, {
+  Widget _sbStepper(
+    BuildContext ctx, {
     required String label,
     required String suffix,
     required int current,
@@ -1853,10 +2152,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       child: Row(
         children: [
           Expanded(child: Text(label, style: Theme.of(ctx).textTheme.bodyMedium)),
-          IconButton(
-            icon: const Icon(Icons.remove),
-            onPressed: current <= min ? null : () => onSet(current - 1),
-          ),
+          IconButton(icon: const Icon(Icons.remove), onPressed: current <= min ? null : () => onSet(current - 1)),
           SizedBox(
             width: 40,
             child: Text('$current$suffix', textAlign: TextAlign.center, style: Theme.of(ctx).textTheme.titleMedium),
@@ -1893,12 +2189,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
               onPressed: () => Navigator.pop(ctx, false),
             ),
             title: const Text('Sentence bank URL'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Save & reload'),
-              ),
-            ],
+            actions: [TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save & reload'))],
           ),
           body: SafeArea(
             child: Padding(
@@ -1977,14 +2268,16 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
     Map<String, dynamic> map;
     if (ext == 'txt') {
-      final lines = [
-        for (final l in content.split('\n')) l.trim(),
-      ].where((l) => l.isNotEmpty).toList();
+      final lines = [for (final l in content.split('\n')) l.trim()].where((l) => l.isNotEmpty).toList();
       if (lines.isEmpty) {
         if (mounted) lpSnack(context, 'That text file has no sentences.', 4000);
         return;
       }
-      map = {'subjects': {stem: {'sentences': lines}}};
+      map = {
+        'subjects': {
+          stem: {'sentences': lines},
+        },
+      };
     } else {
       try {
         final parsed = loadYaml(content);
@@ -2043,7 +2336,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                           final ok = await showYesNoDialog(
                             ctx,
                             title: 'Clear all loaded files?',
-                            message: 'This removes every file you loaded from this device. It won\'t delete '
+                            message:
+                                'This removes every file you loaded from this device. It won\'t delete '
                                 'the files themselves — you can load them again later.',
                           );
                           if (ok != true) return;
@@ -2057,10 +2351,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                 ),
               ),
               if (files.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Text('No files loaded from this device.'),
-                )
+                const Padding(padding: EdgeInsets.all(24), child: Text('No files loaded from this device.'))
               else
                 Flexible(
                   child: ListView(
@@ -2135,6 +2426,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       final i = regionPrefs.indexOf(rp.length > 1 ? rp[1] : '');
       return i >= 0 ? i : regionPrefs.length;
     }
+
     final orderedLocales = byLocale.keys.toList()
       ..sort((a, b) {
         final r = regionRank(a).compareTo(regionRank(b));
@@ -2156,40 +2448,45 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                 : IconButton(
                     icon: const Icon(Icons.download_outlined),
                     tooltip: 'Use & download',
-                    onPressed: () { Navigator.pop(ctx); _selectVoiceAndGenerate(''); },
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _selectVoiceAndGenerate('');
+                    },
                   ),
           ),
           if (byLocale.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('No installed voices found for this language.'),
-            ),
+            const Padding(padding: EdgeInsets.all(16), child: Text('No installed voices found for this language.')),
           for (final loc in orderedLocales)
             ExpansionTile(
               title: Text('$loc  (${byLocale[loc]!.length})'),
               children: [
                 for (var i = 0; i < byLocale[loc]!.length; i++)
-                  Builder(builder: (_) {
-                    final v = byLocale[loc]![i];
-                    final id = '${v['name']}__SEP__$loc';
-                    return ListTile(
-                      dense: true,
-                      contentPadding: const EdgeInsets.only(left: 32, right: 16),
-                      leading: IconButton(
-                        icon: const Icon(Icons.play_arrow_outlined),
-                        tooltip: 'Preview',
-                        onPressed: () => _previewVoice(v),
-                      ),
-                      title: Text('Voice ${i + 1}'),
-                      trailing: id == current
-                          ? const Icon(Icons.check)
-                          : IconButton(
-                              icon: const Icon(Icons.download_outlined),
-                              tooltip: 'Use & download',
-                              onPressed: () { Navigator.pop(ctx); _selectVoiceAndGenerate(id); },
-                            ),
-                    );
-                  }),
+                  Builder(
+                    builder: (_) {
+                      final v = byLocale[loc]![i];
+                      final id = '${v['name']}__SEP__$loc';
+                      return ListTile(
+                        dense: true,
+                        contentPadding: const EdgeInsets.only(left: 32, right: 16),
+                        leading: IconButton(
+                          icon: const Icon(Icons.play_arrow_outlined),
+                          tooltip: 'Preview',
+                          onPressed: () => _previewVoice(v),
+                        ),
+                        title: Text('Voice ${i + 1}'),
+                        trailing: id == current
+                            ? const Icon(Icons.check)
+                            : IconButton(
+                                icon: const Icon(Icons.download_outlined),
+                                tooltip: 'Use & download',
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _selectVoiceAndGenerate(id);
+                                },
+                              ),
+                      );
+                    },
+                  ),
               ],
             ),
         ],
@@ -2237,8 +2534,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             if (_batchRunning && _batchTotal > 0)
-              Text('${_batchAttempt > 0 ? 'Retrying' : 'Translating'} $_batchDone/$_batchTotal…',
-                  style: Theme.of(context).textTheme.labelSmall)
+              Text(
+                '${_batchAttempt > 0 ? 'Retrying' : 'Translating'} $_batchDone/$_batchTotal…',
+                style: Theme.of(context).textTheme.labelSmall,
+              )
             else if (_batchRunning)
               Text('Preparing translations…', style: Theme.of(context).textTheme.labelSmall)
             else
@@ -2246,18 +2545,20 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             Text('$idx / $total', style: Theme.of(context).textTheme.labelSmall),
           ],
         ),
-        // const SizedBox(height: 4),
 
+        // const SizedBox(height: 4),
         Card(
           elevation: 0,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(0,0,0,0),
+            padding: const EdgeInsets.fromLTRB(0, 0, 0, 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
                   _bank!.language,
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.primary),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.primary),
                 ),
                 const SizedBox(height: 8),
                 Text(SbSentence.display(src), style: Theme.of(context).textTheme.titleMedium),
@@ -2271,13 +2572,15 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           Card(
             elevation: 0,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(0,0,0,0),
+              padding: const EdgeInsets.fromLTRB(0, 0, 0, 0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Text(
                     targetLang,
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.primary),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.primary),
                   ),
                   const SizedBox(height: 8),
                   _translating
@@ -2322,15 +2625,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
     final navRow = Row(
       children: [
-        _navBtn(
-          icon: Icons.skip_previous,
-          onPressed: _autoMode ? _autoPrevious : _previousSentence,
-        ),
+        _navBtn(icon: Icons.skip_previous, onPressed: _autoMode ? _autoPrevious : _previousSentence),
         const SizedBox(width: 8),
-        _navBtn(
-          icon: Icons.skip_next,
-          onPressed: _autoMode ? _autoNext : _nextSentence,
-        ),
+        _navBtn(icon: Icons.skip_next, onPressed: _autoMode ? _autoNext : _nextSentence),
         const SizedBox(width: 8),
         _navBtn(
           icon: _autoMode ? Icons.stop_circle_outlined : Icons.play_circle_outline,
@@ -2346,9 +2643,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            _autoPreparing
-                ? 'Preparing audio… $_prepDone/$_prepTotal'
-                : 'Auto mode — playing',
+            _autoPreparing ? 'Preparing audio… $_prepDone/$_prepTotal' : 'Auto mode — playing',
             style: Theme.of(context).textTheme.bodySmall,
             textAlign: TextAlign.center,
           ),
@@ -2366,8 +2661,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             children: [
               const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
               const SizedBox(width: 12),
-              Text('Preparing audio… $_prepDone/$_prepTotal',
-                  style: Theme.of(context).textTheme.bodySmall),
+              Text('Preparing audio… $_prepDone/$_prepTotal', style: Theme.of(context).textTheme.bodySmall),
             ],
           ),
           const SizedBox(height: 12),
@@ -2380,9 +2674,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                 icon: (_translating || _batchRunning)
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.translate),
-                label: Text(_batchRunning && _batchTotal > 0
-                    ? '${_batchAttempt > 0 ? 'Retrying' : 'Translating'} $_batchDone/$_batchTotal'
-                    : (_showTranslation && _translatedSentence != null ? 'Re-translate' : 'Translate')),
+                label: Text(
+                  _batchRunning && _batchTotal > 0
+                      ? '${_batchAttempt > 0 ? 'Retrying' : 'Translating'} $_batchDone/$_batchTotal'
+                      : (_showTranslation && _translatedSentence != null ? 'Re-translate' : 'Translate'),
+                ),
               ),
             ),
             if (ttsOk) ...[
