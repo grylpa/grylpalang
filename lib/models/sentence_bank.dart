@@ -98,7 +98,15 @@ class SentenceBank {
       }
     }
 
-    return SentenceBank(language: language, subjects: subjects, autoShowDelay: autoShowDelay, autoPostTtsDelay: autoPostTtsDelay, autoSourcePause: autoSourcePause, ttsRepeatDelay: ttsRepeatDelay, ttsRepeatCount: ttsRepeatCount);
+    return SentenceBank(
+      language: language,
+      subjects: subjects,
+      autoShowDelay: autoShowDelay,
+      autoPostTtsDelay: autoPostTtsDelay,
+      autoSourcePause: autoSourcePause,
+      ttsRepeatDelay: ttsRepeatDelay,
+      ttsRepeatCount: ttsRepeatCount,
+    );
   }
 }
 
@@ -120,6 +128,40 @@ class SbSentence {
   static final RegExp _optionRe = RegExp(r'[^\s/]+(?:/[^\s/]+)+');
   static final RegExp _wsRe = RegExp(r'\s{2,}');
 
+  // Slash-joined tokens that are single lexical units, NOT `a/b` alternatives —
+  // so `spoken()` must keep them whole instead of dropping everything after the
+  // first slash. Matched case-insensitively with surrounding punctuation
+  // stripped. Extend this set as more abbreviations turn up.
+  static final Set<String> _slashExceptions = {
+    'a/c', // air conditioning / conditioner
+    'w/o', // without
+    'c/o', // care of
+    'b/c', // because
+    'n/a', // not applicable
+    'i/o', // input/output
+    'a/v', // audio-visual
+    'p/e', // price-to-earnings
+    'a/b', // A/B (testing)
+    'and/or',
+    'either/or',
+    'tcp/ip',
+    'ci/cd',
+    'km/h',
+    'm/s',
+  };
+  static final RegExp _edgePunctRe = RegExp(r'^[^a-z0-9]+|[^a-z0-9]+$');
+  static final RegExp _numericPartRe = RegExp(r'^\d+(?:\.\d+)?$');
+
+  /// True when [token] (a slash-joined match) should be spoken whole rather than
+  /// collapsed to its first alternative: a known abbreviation, or a purely
+  /// numeric ratio/date/fraction (24/7, 9/11, 12/25, 1/2).
+  static bool _isSlashException(String token) {
+    final norm = token.toLowerCase().replaceAll(_edgePunctRe, '');
+    if (_slashExceptions.contains(norm)) return true;
+    final parts = norm.split('/');
+    return parts.length > 1 && parts.every(_numericPartRe.hasMatch);
+  }
+
   /// How many times this sentence should appear in the play order (1–99).
   static int repeatCount(String raw) {
     final m = _repeatRe.firstMatch(raw);
@@ -138,7 +180,10 @@ class SbSentence {
   static String spoken(String raw) {
     var s = raw.replaceFirst(_repeatRe, '');
     s = s.replaceAll(_hintRe, '');
-    s = s.replaceAllMapped(_optionRe, (m) => m.group(0)!.split('/').first);
+    s = s.replaceAllMapped(_optionRe, (m) {
+      final tok = m.group(0)!;
+      return _isSlashException(tok) ? tok : tok.split('/').first;
+    });
     return s.replaceAll(_wsRe, ' ').trim();
   }
 }

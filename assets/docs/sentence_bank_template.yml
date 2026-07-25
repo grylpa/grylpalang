@@ -1,0 +1,54 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Katalaveno sentence bank — starter template
+#
+# Edit this file, then load it in the app:  Sentences tab → ⋮ → "Load file from
+# device". (Or host it somewhere public and set its raw URL via ⋮ → "Sentence
+# bank URL".)  Everything after a '#' is a comment and is ignored.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The language the sentences below are written in (the "source"). The app
+# translates them into your chosen target language on the fly.
+language: English
+
+# OPTIONAL playback defaults (seconds / counts). Delete any you don't need — the
+# app has sensible defaults, and the in-app Settings can override these.
+auto_source_pause: 1     # pause after the source sentence, before the translation
+tts_repeat_count: 2      # times the translation is spoken
+tts_repeat_delay: 1      # pause between those repeats
+auto_post_tts_delay: 2   # pause after a sentence, before the next one
+
+# ── Subjects ─────────────────────────────────────────────────────────────────
+# Every sentence lives under a named subject. In the app you pick which subjects
+# to study. A subject is either a LEAF (has `sentences:`) or a META (has
+# `subjects:` — a group that plays several leaf subjects together).
+subjects:
+
+  Greetings:
+    sentences:
+      - Hello, how are you?
+      - Good morning! Did you sleep well?
+      - See you tomorrow.
+
+  At the cafe:
+    sentences:
+      # A leading "N," makes a sentence appear N times in the mix (emphasis):
+      - 3, I would like a coffee, please.
+      # "( … )" is an on-screen hint — shown, but never spoken or translated:
+      - Could I have the bill (the check)?
+      # "a/b" offers alternatives — the FIRST is spoken/translated, BOTH show:
+      - I'll have tea/coffee.
+      # "[[ … ]]" marks the focus word for the cloze (fill-in-the-blank) display:
+      - The [[waiter]] will be here soon.
+
+  Emergencies:
+    sentences:
+      # Slash abbreviations like A/C, w/o, 24/7 are spoken whole (not split):
+      - The A/C is not working.
+      - Call an ambulance, please.
+
+  # A META subject groups leaf subjects so they play together. It lists subject
+  # names under `includes:` (one level only — a meta can't contain another meta).
+  Everyday basics:
+    includes:
+      - Greetings
+      - At the cafe

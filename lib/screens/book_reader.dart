@@ -754,7 +754,13 @@ class _BookReaderState extends State<BookReader> {
     final dir = await _ensureSynthDir();
     final key = sha1.convert(utf8.encode('$locale|$voiceVal|v3|$text')).toString();
     final file = File('${dir.path}/$key.wav');
-    if (await file.exists()) return file.path;
+    // Only reuse a cached clip that holds real audio — a previously failed/
+    // timed-out synthesis can leave a tiny (0-byte/header-only) file that would
+    // otherwise replay as permanent silence.
+    if (await file.exists()) {
+      if (await file.length() >= 1024) return file.path;
+      try { await file.delete(); } catch (_) {}
+    }
 
     await _audioTts.stop();
     await _audioTts.setLanguage(voiceName.isNotEmpty ? voiceLocale : locale);
@@ -764,8 +770,18 @@ class _BookReaderState extends State<BookReader> {
     await _audioTts.setSpeechRate(0.5); // engine native rate
     await _audioTts.setPitch(1.0);
     await _audioTts.awaitSynthCompletion(true);
-    await _audioTts.synthesizeToFile(text, file.path, true);
-    if (!await file.exists()) {
+    // Hard timeout: synthesizeToFile can hang on Android (completion callback
+    // never fires). On failure delete any partial file so it isn't cached as a
+    // silent clip.
+    try {
+      await _audioTts.synthesizeToFile(text, file.path, true).timeout(const Duration(seconds: 30));
+    } on TimeoutException {
+      try { await _audioTts.stop(); } catch (_) {}
+      try { if (await file.exists()) await file.delete(); } catch (_) {}
+      throw Exception('TTS synthesis timed out for "$locale".');
+    }
+    if (!await file.exists() || await file.length() < 1024) {
+      try { if (await file.exists()) await file.delete(); } catch (_) {}
       throw Exception('TTS produced no audio for "$locale".');
     }
     return file.path;
