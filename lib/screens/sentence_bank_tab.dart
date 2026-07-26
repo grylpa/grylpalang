@@ -912,6 +912,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _batchAttempt = 0;
     });
 
+    // Set when every sentence translated cleanly, so the audio pre-build below
+    // never synthesizes a clip from an untranslated (source-text) fallback.
+    var allTranslated = false;
     try {
       // If the playlist build is already translating this subject, this awaits
       // it and skips — no second concurrent pass.
@@ -931,6 +934,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             _loadCachedTranslationForCurrent();
           },
         );
+        allTranslated = failed == 0;
         if (failed > 0 && mounted) {
           lpSnack(
             context,
@@ -951,6 +955,23 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         });
         _loadCachedTranslationForCurrent();
       }
+    }
+    if (allTranslated) await _maybePrepareAudio();
+  }
+
+  /// Pre-builds the audio clips for the current subject right after its
+  /// translations land, so the first Play is instant instead of showing the
+  /// "preparing" progress. Same work the voice picker does, just triggered
+  /// automatically; skipped while auto mode is already running (it owns the
+  /// playlist) and when the user turns the setting off.
+  Future<void> _maybePrepareAudio() async {
+    if (!mounted || _autoMode || _autoPreparing) return;
+    if (!context.read<AppState>().settings.sentenceBankPrepareAudio) return;
+    if (_currentSentences().isEmpty) return;
+    try {
+      await _buildOrResumePlaylist(play: false);
+    } catch (_) {
+      // Best-effort warm-up: a failure here just means Play prepares as before.
     }
   }
 
@@ -1347,7 +1368,35 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   /// clip file and the native playlist. When [play] is false it builds but does
   /// not start playback — used by the voice picker so generation happens at
   /// selection time and the next Play is instant.
+  /// Serializes playlist builds. Clip synthesis drives a single shared TTS
+  /// engine and writes cache files keyed by content, so two overlapping passes
+  /// would cancel each other's in-flight synthesis (`_tts.stop()`) and race on
+  /// the same WAV paths. This happens for real now that audio is pre-built after
+  /// loading: pressing Play mid-warm-up would start a second pass. Instead the
+  /// second caller awaits the running build, then falls through — by which point
+  /// the signature matches and it takes the cheap resume/play path.
+  Future<void>? _playlistBuild;
+
   Future<void> _buildOrResumePlaylist({required bool play}) async {
+    final inFlight = _playlistBuild;
+    if (inFlight != null) {
+      // A failed warm-up must not fail the user's Play — swallow and continue,
+      // which rebuilds whatever the aborted pass left missing.
+      try {
+        await inFlight;
+      } catch (_) {}
+      if (!mounted) return;
+    }
+    final build = _runPlaylistBuild(play: play);
+    _playlistBuild = build;
+    try {
+      await build;
+    } finally {
+      if (identical(_playlistBuild, build)) _playlistBuild = null;
+    }
+  }
+
+  Future<void> _runPlaylistBuild({required bool play}) async {
     final sents = _currentSentences();
     if (sents.isEmpty) return;
     final state = context.read<AppState>();
@@ -1376,7 +1425,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
     if (sig == _preparedSig && _autoPlaylist.isLoaded) {
       _autoOrdinalSub ??= _autoPlaylist.currentOrdinalStream.listen(_onAutoOrdinal);
-      if (play) await _autoPlaylist.resumeAt(_sentenceIndex);
+      // `_autoMode` is re-checked (as the full build does via `autoPlay:`)
+      // because this call may have waited on an in-flight build — the user could
+      // have pressed Stop in the meantime, and it must not start playing anyway.
+      if (play && _autoMode) await _autoPlaylist.resumeAt(_sentenceIndex);
       return;
     }
 
@@ -2083,6 +2135,17 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     title: Text('Shuffle sentence order', style: textStyle),
                     value: s.sentenceBankShuffle,
                     onChanged: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankShuffle: v)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Prepare audio after loading', style: textStyle),
+                    subtitle: Text(
+                      'Builds the spoken clips as soon as a subject is translated, so Play '
+                      'starts instantly. Turn off to save battery and storage.',
+                      style: Theme.of(ctx).textTheme.bodySmall,
+                    ),
+                    value: s.sentenceBankPrepareAudio,
+                    onChanged: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankPrepareAudio: v)),
                   ),
                   const Divider(height: 24),
                   Text('Maintenance', style: Theme.of(ctx).textTheme.titleSmall),

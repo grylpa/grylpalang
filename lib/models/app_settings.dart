@@ -21,28 +21,29 @@ class AppSettings {
   TimeOfDay dndEndTime;
   bool useDnd;
   Map<String, String> languageNameCache;
-  bool modeClean;    // show full L2 sentence
-  bool modeCloze;    // show L2 with target word blanked
-  bool modeReverse;  // show L1 sentence as title
+  bool modeClean; // show full L2 sentence
+  bool modeCloze; // show L2 with target word blanked
+  bool modeReverse; // show L1 sentence as title
 
   // Sentence Bank settings
-  String sentenceBankUrl;           // URL to fetch sentence_bank.yaml (empty = use bundled asset)
-  String sentenceBankVoiceGender;   // 'male' | 'female' (fallback when no explicit source voice)
-  String sentenceBankSourceVoice;   // chosen source-language TTS voice "namelocale" ('' = auto)
-  bool sentenceBankSpeakSource;     // in auto mode, speak the source sentence before the translation
+  String sentenceBankUrl; // URL to fetch sentence_bank.yaml (empty = use bundled asset)
+  String sentenceBankVoiceGender; // 'male' | 'female' (fallback when no explicit source voice)
+  String sentenceBankSourceVoice; // chosen source-language TTS voice "namelocale" ('' = auto)
+  bool sentenceBankSpeakSource; // in auto mode, speak the source sentence before the translation
   int? sentenceBankTtsRepeatCountOverride; // overrides tts_repeat_count from YAML (null = use YAML value)
   int? sentenceBankSourcePauseOverride; // overrides auto_source_pause from YAML (null = use YAML value)
   int? sentenceBankTtsRepeatDelayOverride; // overrides tts_repeat_delay from YAML (null = use YAML value)
-  bool sentenceBankShuffle;             // randomize sentence order within subject
+  bool sentenceBankShuffle; // randomize sentence order within subject
   bool sentenceBankRepeatSourceBetween; // also replay the source before every target repeat (off by default)
+  bool sentenceBankPrepareAudio; // pre-build audio clips after loading, so Play is instant (on by default)
 
   // Books mode (Phase 3 audio playback). All times in seconds.
-  String booksChunkUnit;                // 'sentence' | 'paragraph'
-  int booksRepeatCount;                 // times each side (source + target) is repeated
-  int booksSourcePauseSec;              // pause between source and target TTS
-  int booksRepeatDelaySec;              // pause between repeats of the same side
-  int booksBetweenChunksPauseSec;       // pause after target before the next chunk
-  bool booksForceShortSentences;        // split sentence chunks further on inner punctuation (off by default)
+  String booksChunkUnit; // 'sentence' | 'paragraph'
+  int booksRepeatCount; // times each side (source + target) is repeated
+  int booksSourcePauseSec; // pause between source and target TTS
+  int booksRepeatDelaySec; // pause between repeats of the same side
+  int booksBetweenChunksPauseSec; // pause after target before the next chunk
+  bool booksForceShortSentences; // split sentence chunks further on inner punctuation (off by default)
   // Selected TTS voice keyed by BCP-47 locale (e.g. 'en-US', 'el-GR'). The
   // voice value is the flutter_tts voice name as returned by getVoices().
   Map<String, String> booksVoiceByLocale;
@@ -73,6 +74,7 @@ class AppSettings {
     this.sentenceBankTtsRepeatDelayOverride,
     required this.sentenceBankShuffle,
     this.sentenceBankRepeatSourceBetween = false,
+    this.sentenceBankPrepareAudio = true,
     this.booksChunkUnit = 'sentence',
     this.booksRepeatCount = kBooksRepeatCountDefault,
     this.booksSourcePauseSec = kBooksSourcePauseSecDefault,
@@ -108,6 +110,7 @@ class AppSettings {
     Object? sentenceBankTtsRepeatDelayOverride = _keep,
     bool? sentenceBankShuffle,
     bool? sentenceBankRepeatSourceBetween,
+    bool? sentenceBankPrepareAudio,
     String? booksChunkUnit,
     int? booksRepeatCount,
     int? booksSourcePauseSec,
@@ -148,6 +151,7 @@ class AppSettings {
           : sentenceBankTtsRepeatDelayOverride as int?,
       sentenceBankShuffle: sentenceBankShuffle ?? this.sentenceBankShuffle,
       sentenceBankRepeatSourceBetween: sentenceBankRepeatSourceBetween ?? this.sentenceBankRepeatSourceBetween,
+      sentenceBankPrepareAudio: sentenceBankPrepareAudio ?? this.sentenceBankPrepareAudio,
       booksChunkUnit: booksChunkUnit ?? this.booksChunkUnit,
       booksRepeatCount: booksRepeatCount ?? this.booksRepeatCount,
       booksSourcePauseSec: booksSourcePauseSec ?? this.booksSourcePauseSec,
@@ -186,6 +190,7 @@ class AppSettings {
     'sentenceBankTtsRepeatDelayOverride': sentenceBankTtsRepeatDelayOverride,
     'sentenceBankShuffle': sentenceBankShuffle,
     'sentenceBankRepeatSourceBetween': sentenceBankRepeatSourceBetween,
+    'sentenceBankPrepareAudio': sentenceBankPrepareAudio,
     'booksChunkUnit': booksChunkUnit,
     'booksRepeatCount': booksRepeatCount,
     'booksSourcePauseSec': booksSourcePauseSec,
@@ -199,9 +204,7 @@ class AppSettings {
     final startM = (json['dndStartMinutes'] as int?) ?? (22 * 60);
     final endM = (json['dndEndMinutes'] as int?) ?? (6 * 60);
     final rawCache = json['languageNameCache'];
-    final cache = (rawCache is Map)
-        ? rawCache.map((k, v) => MapEntry(k.toString(), v.toString()))
-        : <String, String>{};
+    final cache = (rawCache is Map) ? rawCache.map((k, v) => MapEntry(k.toString(), v.toString())) : <String, String>{};
     final appSettings = AppSettings(
       knownLanguage: json['knownLanguage'] as String? ?? 'English',
       targetLanguage: json['targetLanguage'] as String? ?? 'Greek',
@@ -233,14 +236,15 @@ class AppSettings {
       sentenceBankTtsRepeatDelayOverride: json['sentenceBankTtsRepeatDelayOverride'] as int?,
       sentenceBankShuffle: json['sentenceBankShuffle'] as bool? ?? true,
       sentenceBankRepeatSourceBetween: json['sentenceBankRepeatSourceBetween'] as bool? ?? false,
+      sentenceBankPrepareAudio: json['sentenceBankPrepareAudio'] as bool? ?? true,
       booksChunkUnit: json['booksChunkUnit'] as String? ?? 'sentence',
       booksRepeatCount: (json['booksRepeatCount'] as int?) ?? kBooksRepeatCountDefault,
       booksSourcePauseSec: (json['booksSourcePauseSec'] as int?) ?? kBooksSourcePauseSecDefault,
       booksRepeatDelaySec: (json['booksRepeatDelaySec'] as int?) ?? kBooksRepeatDelaySecDefault,
       booksBetweenChunksPauseSec: (json['booksBetweenChunksPauseSec'] as int?) ?? kBooksBetweenChunksPauseSecDefault,
       booksForceShortSentences: json['booksForceShortSentences'] as bool? ?? false,
-      booksVoiceByLocale: (json['booksVoiceByLocale'] as Map?)
-              ?.map((k, v) => MapEntry(k.toString(), v.toString())) ??
+      booksVoiceByLocale:
+          (json['booksVoiceByLocale'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ??
           <String, String>{},
     );
     return appSettings;
@@ -268,6 +272,7 @@ class AppSettings {
       sentenceBankVoiceGender: 'female',
       sentenceBankSpeakSource: true,
       sentenceBankShuffle: true,
+      sentenceBankPrepareAudio: true,
     );
   }
 }
