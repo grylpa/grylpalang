@@ -668,20 +668,14 @@ class AppState extends ChangeNotifier {
 
       final sentences = items.map((s) => s.data).toList();
 
-      // Pad to at least 4 by pulling extra sentences from the same words,
-      // cycling round-robin so each word contributes different sentences.
-      final displaySentences = List<WordSentence>.from(sentences);
-      if (displaySentences.length < 4 && displaySentences.isNotEmpty) {
-        final wordEntries = items.map((e) => e.word).toList();
-        final nextIndices = items.map((e) => (e.index + 1) % e.word.sentences.length).toList();
-        var wi = 0;
-        while (displaySentences.length < 4) {
-          final wordIdx = wi % wordEntries.length;
-          displaySentences.add(wordEntries[wordIdx].sentences[nextIndices[wordIdx]]);
-          nextIndices[wordIdx] = (nextIndices[wordIdx] + 1) % wordEntries[wordIdx].sentences.length;
-          wi++;
-        }
-      }
+      // Each sentence is created once and used once: a step shows exactly the
+      // sentences scheduled for it (one per active word), however few that is.
+      // The `shown >= 4` cap below is an upper bound for the notification's
+      // size — never a quota to fill. Padding up to 4 from the same word's later
+      // sentences was tried and removed: it re-used each sentence ~4×, showed
+      // sentences before their own step, and made consecutive notifications
+      // overlap by three of four.
+      final displaySentences = sentences;
 
       final buf = StringBuffer();
       var shown = 0;
