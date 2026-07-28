@@ -638,6 +638,40 @@ class SentenceBankService {
     await _prefs.setString(_kSubjectImportanceKey, jsonEncode(map));
   }
 
+  // ── Per-sentence importance ───────────────────────────────────────────────
+  //
+  // Same idea as subject importance but for one sentence, keyed by its spoken
+  // form (SbSentence.spoken) so it survives `N,`/hint edits. Absent = 1.
+  static const String _kSentenceImportanceKey = 'sentenceBankSentenceImportance';
+
+  Future<Map<String, int>> loadSentenceImportance() async {
+    final raw = await _prefs.getString(_kSentenceImportanceKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final m = jsonDecode(raw);
+      if (m is! Map) return {};
+      final out = <String, int>{};
+      m.forEach((k, v) {
+        final n = (v is num) ? v.toInt() : int.tryParse('$v');
+        if (k is String && n != null && n > 1) out[k] = n.clamp(2, 5);
+      });
+      return out;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// Sets [key]'s importance (2–5). [value] <= 1 removes the entry (normal).
+  Future<void> setSentenceImportance(String key, int value) async {
+    final map = await loadSentenceImportance();
+    if (value <= 1) {
+      map.remove(key);
+    } else {
+      map[key] = value.clamp(2, 5);
+    }
+    await _prefs.setString(_kSentenceImportanceKey, jsonEncode(map));
+  }
+
   // ── Excluded ("mastered") sentences ────────────────────────────────────────
   //
   // Per target language: the set of sentence *spoken forms* (SbSentence.spoken)

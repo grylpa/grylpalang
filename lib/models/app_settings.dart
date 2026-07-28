@@ -35,6 +35,7 @@ class AppSettings {
   int? sentenceBankTtsRepeatDelayOverride; // overrides tts_repeat_delay from YAML (null = use YAML value)
   bool sentenceBankShuffle; // randomize sentence order within subject
   bool sentenceBankRepeatSourceBetween; // also replay the source before every target repeat (off by default)
+  bool sentenceBankTargetFirst; // for ~half the sentences, play the target language before the source
   bool sentenceBankPrepareAudio; // pre-build audio clips after loading, so Play is instant (on by default)
 
   // Books mode (Phase 3 audio playback). All times in seconds.
@@ -74,6 +75,7 @@ class AppSettings {
     this.sentenceBankTtsRepeatDelayOverride,
     required this.sentenceBankShuffle,
     this.sentenceBankRepeatSourceBetween = false,
+    this.sentenceBankTargetFirst = false,
     this.sentenceBankPrepareAudio = true,
     this.booksChunkUnit = 'sentence',
     this.booksRepeatCount = kBooksRepeatCountDefault,
@@ -110,6 +112,7 @@ class AppSettings {
     Object? sentenceBankTtsRepeatDelayOverride = _keep,
     bool? sentenceBankShuffle,
     bool? sentenceBankRepeatSourceBetween,
+    bool? sentenceBankTargetFirst,
     bool? sentenceBankPrepareAudio,
     String? booksChunkUnit,
     int? booksRepeatCount,
@@ -151,6 +154,7 @@ class AppSettings {
           : sentenceBankTtsRepeatDelayOverride as int?,
       sentenceBankShuffle: sentenceBankShuffle ?? this.sentenceBankShuffle,
       sentenceBankRepeatSourceBetween: sentenceBankRepeatSourceBetween ?? this.sentenceBankRepeatSourceBetween,
+      sentenceBankTargetFirst: sentenceBankTargetFirst ?? this.sentenceBankTargetFirst,
       sentenceBankPrepareAudio: sentenceBankPrepareAudio ?? this.sentenceBankPrepareAudio,
       booksChunkUnit: booksChunkUnit ?? this.booksChunkUnit,
       booksRepeatCount: booksRepeatCount ?? this.booksRepeatCount,
@@ -190,6 +194,7 @@ class AppSettings {
     'sentenceBankTtsRepeatDelayOverride': sentenceBankTtsRepeatDelayOverride,
     'sentenceBankShuffle': sentenceBankShuffle,
     'sentenceBankRepeatSourceBetween': sentenceBankRepeatSourceBetween,
+    'sentenceBankTargetFirst': sentenceBankTargetFirst,
     'sentenceBankPrepareAudio': sentenceBankPrepareAudio,
     'booksChunkUnit': booksChunkUnit,
     'booksRepeatCount': booksRepeatCount,
@@ -236,6 +241,7 @@ class AppSettings {
       sentenceBankTtsRepeatDelayOverride: json['sentenceBankTtsRepeatDelayOverride'] as int?,
       sentenceBankShuffle: json['sentenceBankShuffle'] as bool? ?? true,
       sentenceBankRepeatSourceBetween: json['sentenceBankRepeatSourceBetween'] as bool? ?? false,
+      sentenceBankTargetFirst: json['sentenceBankTargetFirst'] as bool? ?? false,
       sentenceBankPrepareAudio: json['sentenceBankPrepareAudio'] as bool? ?? true,
       booksChunkUnit: json['booksChunkUnit'] as String? ?? 'sentence',
       booksRepeatCount: (json['booksRepeatCount'] as int?) ?? kBooksRepeatCountDefault,
@@ -272,6 +278,7 @@ class AppSettings {
       sentenceBankVoiceGender: 'female',
       sentenceBankSpeakSource: true,
       sentenceBankShuffle: true,
+      sentenceBankTargetFirst: false,
       sentenceBankPrepareAudio: true,
     );
   }
