@@ -83,6 +83,10 @@ class AutoPlaylistController {
     // When true, each chunk plays as (source → sourcePause → target) repeated
     // `repeatCount` times, instead of (source × srcReps) then (target × reps).
     bool alternate = false,
+    // Per-ordinal flag: play the target-language block *before* the source one,
+    // so the learner hears the sentence they're learning first and the known
+    // language confirms it. Absent/short list = normal (source-first) order.
+    List<bool>? targetFirst,
   }) async {
     final dir = await getApplicationSupportDirectory();
     final sources = <AudioSource>[];
@@ -103,34 +107,55 @@ class AutoPlaylistController {
       // jumps to the next sentence.
       if (path.isEmpty) continue;
       final reps = repeatCount < 1 ? 1 : repeatCount;
+      final flip = targetFirst != null && ord < targetFirst.length && targetFirst[ord];
+
+      // The two per-sentence blocks, so the order can be swapped without
+      // duplicating the repeat/pause logic.
+      Future<void> addSourceBlock() async {
+        if (src == null) return;
+        final srcReps = sourceRepeatCount < 1 ? 1 : sourceRepeatCount;
+        for (var r = 0; r < srcReps; r++) {
+          if (r > 0) await addSilence(repeatDelaySec, ord);
+          sources.add(_fileSource(src, 'src-$ord-$r', text));
+          clipToOrdinal.add(ord);
+        }
+      }
+
+      Future<void> addTargetBlock() async {
+        for (var r = 0; r < reps; r++) {
+          if (r > 0) await addSilence(repeatDelaySec, ord);
+          sources.add(_fileSource(path, 't-$ord-$r', text));
+          clipToOrdinal.add(ord);
+        }
+      }
 
       if (alternate) {
         // (source → sourcePause → target) repeated `reps` times, then postDelay.
+        // Flipped, the pair becomes (target → sourcePause → source).
         for (var r = 0; r < reps; r++) {
-          if (src != null) {
+          if (src != null && !flip) {
             sources.add(_fileSource(src, 'src-$ord-$r', text));
             clipToOrdinal.add(ord);
             await addSilence(sourcePauseSec, ord);
           }
           sources.add(_fileSource(path, 't-$ord-$r', text));
           clipToOrdinal.add(ord);
-          if (r < reps - 1) await addSilence(repeatDelaySec, ord);
-        }
-      } else {
-        if (src != null) {
-          final srcReps = sourceRepeatCount < 1 ? 1 : sourceRepeatCount;
-          for (var r = 0; r < srcReps; r++) {
-            if (r > 0) await addSilence(repeatDelaySec, ord);
+          if (src != null && flip) {
+            await addSilence(sourcePauseSec, ord);
             sources.add(_fileSource(src, 'src-$ord-$r', text));
             clipToOrdinal.add(ord);
           }
-          await addSilence(sourcePauseSec, ord);
+          if (r < reps - 1) await addSilence(repeatDelaySec, ord);
         }
-        for (var r = 0; r < reps; r++) {
-          if (r > 0) await addSilence(repeatDelaySec, ord);
-          sources.add(_fileSource(path, 't-$ord-$r', text));
-          clipToOrdinal.add(ord);
-        }
+      } else if (flip) {
+        // Target first: hear the language being learned, then the known one.
+        await addTargetBlock();
+        if (src != null) await addSilence(sourcePauseSec, ord);
+        await addSourceBlock();
+      } else {
+        await addSourceBlock();
+        if (src != null) await addSilence(sourcePauseSec, ord);
+        await addTargetBlock();
       }
       await addSilence(postDelaySec, ord);
     }
@@ -149,11 +174,7 @@ class AutoPlaylistController {
     // reliably produce sound.
     await _player.stop();
 
-    await _player.setAudioSources(
-      sources,
-      initialIndex: startClip < 0 ? 0 : startClip,
-      initialPosition: Duration.zero,
-    );
+    await _player.setAudioSources(sources, initialIndex: startClip < 0 ? 0 : startClip, initialPosition: Duration.zero);
     await _player.setLoopMode(LoopMode.all); // keep looping the subject when locked
     _idxSub?.cancel();
     _idxSub = _player.currentIndexStream.listen((i) {
@@ -230,8 +251,9 @@ class AutoPlaylistController {
 
     Future<void> addSilence(int sec) async {
       if (sec <= 0) return;
-      newSources.add(_fileSource(
-          await _silenceFile(dir, sec), 'sil-$ord-${_clipToOrdinal.length + newSources.length}', 'gap'));
+      newSources.add(
+        _fileSource(await _silenceFile(dir, sec), 'sil-$ord-${_clipToOrdinal.length + newSources.length}', 'gap'),
+      );
       newOrdinals.add(ord);
     }
 
@@ -325,9 +347,9 @@ class AutoPlaylistController {
   }
 
   AudioSource _fileSource(String path, String id, String title) => AudioSource.file(
-        path,
-        tag: MediaItem(id: id, title: title, album: 'Katalaveno'),
-      );
+    path,
+    tag: MediaItem(id: id, title: title, album: 'Katalaveno'),
+  );
 
   // Silent WAV of [sec] seconds, cached by duration.
   Future<String> _silenceFile(Directory dir, int sec) async {
@@ -343,9 +365,19 @@ class AutoPlaylistController {
     void str(String s) => b.add(s.codeUnits);
     void u32(int v) => b.add([v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff]);
     void u16(int v) => b.add([v & 0xff, (v >> 8) & 0xff]);
-    str('RIFF'); u32(36 + dataLen); str('WAVE');
-    str('fmt '); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
-    str('data'); u32(dataLen);
+    str('RIFF');
+    u32(36 + dataLen);
+    str('WAVE');
+    str('fmt ');
+    u32(16);
+    u16(1);
+    u16(1);
+    u32(rate);
+    u32(rate * 2);
+    u16(2);
+    u16(16);
+    str('data');
+    u32(dataLen);
     b.add(Uint8List(dataLen)); // zeros = silence
     return b.toBytes();
   }

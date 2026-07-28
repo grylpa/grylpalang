@@ -114,6 +114,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   List<String> _sortedSubjectNames = [];
   // Per-subject repeat multiplier (long-press a subject to set 2–5). Absent = 1.
   Map<String, int> _importance = {};
+  // Per-sentence repeat multiplier (long-press a sentence in the picker), keyed
+  // by SbSentence.spoken. Absent = 1.
+  Map<String, int> _sentenceImportance = {};
   // "Mastered" sentences (by SbSentence.spoken key) hidden from play via the
   // subject picker's per-sentence checkboxes. Loaded per target language.
   Set<String> _excluded = {};
@@ -246,6 +249,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       appState.updateSentenceBankYamlTtsRepeatDelay(bank.ttsRepeatDelay);
       appState.updateSentenceBankYamlTtsRepeatCount(bank.ttsRepeatCount);
       _importance = await _service.loadSubjectImportance();
+      _sentenceImportance = await _service.loadSentenceImportance();
       _excluded = await _service.loadExcludedSentences(appState.settings.targetLanguage);
       final sorted = await _service.sortedSubjects(bank.subjectNames);
       // Restore the selection: keep the in-memory set (validated against the new
@@ -258,7 +262,22 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         final saved = await _service.loadSelectedSubjects();
         selection = {...?saved}.where(available.contains).toSet();
       }
-      if (selection.isEmpty && sorted.isNotEmpty) selection = {sorted.first};
+      // Meta subjects are pure groups now — selecting one means selecting its
+      // children. Expand any meta left in a selection saved by an older build
+      // (or still in memory) so it keeps playing the same sentences.
+      for (final name in selection.toList()) {
+        final sub = bank.subjects[name];
+        if (sub is MetaSubject) {
+          selection.remove(name);
+          selection.addAll([
+            for (final r in sub.subjectRefs)
+              if (bank.subjects[r] is LeafSubject) r,
+          ]);
+        }
+      }
+      if (selection.isEmpty && sorted.isNotEmpty) {
+        selection = {sorted.firstWhere((n) => bank.subjects[n] is! MetaSubject, orElse: () => sorted.first)};
+      }
       if (!mounted) return;
       final preserving = setEquals(selection, _selectedSubjects);
 
@@ -437,19 +456,39 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (bank == null || _selectedSubjects.isEmpty) return [];
     final seen = <String>{};
     final out = <String>[];
+    // A meta is a pure group and is never itself selected, so its own importance
+    // would otherwise be dead. Instead it acts as a *floor* for each of its
+    // children — consistent with the rest of the chain, importance never
+    // compounds, the larger value simply wins.
+    final metaFloor = <String, int>{};
+    for (final n in bank.subjectNames) {
+      final sub = bank.subjects[n];
+      if (sub is! MetaSubject) continue;
+      final mi = _importance[n] ?? 1;
+      if (mi <= 1) continue;
+      for (final r in sub.subjectRefs) {
+        if ((metaFloor[r] ?? 1) < mi) metaFloor[r] = mi;
+      }
+    }
     for (final name in bank.subjectNames) {
       if (!_selectedSubjects.contains(name)) continue;
-      // A favored subject drills its sentences more often. Importance and a
-      // sentence's own `N,` prefix don't compound — the larger of the two wins.
-      final importance = _importance[name] ?? 1;
+      // A favored subject drills its sentences more often.
+      final own = _importance[name] ?? 1;
+      final floor = metaFloor[name] ?? 1;
+      final importance = own > floor ? own : floor;
       for (final s in bank.sentencesFor(name)) {
+        final key = SbSentence.spoken(s);
         // Skip "mastered" sentences the user un-checked in the picker.
-        if (_excluded.contains(SbSentence.spoken(s))) continue;
+        if (_excluded.contains(key)) continue;
         // Dedup accidental leaf/meta overlap on the raw entry (first selected
-        // owner wins), then emit max(sentence `N,`, subject importance) copies.
+        // owner wins), then emit the sentence that many times.
         if (seen.add(s)) {
-          final n = SbSentence.repeatCount(s);
-          final reps = importance > n ? importance : n;
+          // A sentence's own importance *replaces* its `N,` prefix (it's the
+          // more specific, user-set value); with none set, the `N,` prefix
+          // stands. That result never compounds with the subject's importance —
+          // the larger of the two wins.
+          final base = _sentenceImportance[key] ?? SbSentence.repeatCount(s);
+          final reps = importance > base ? importance : base;
           for (var i = 0; i < reps; i++) out.add(s);
         }
       }
@@ -486,11 +525,28 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
   }
 
+  /// The child subjects of meta [name] that actually exist in the bank.
+  List<String> _metaChildren(String name) {
+    final sub = _bank?.subjects[name];
+    if (sub is! MetaSubject) return const [];
+    return [
+      for (final r in sub.subjectRefs)
+        if (_bank!.subjects[r] is LeafSubject) r,
+    ];
+  }
+
+  /// Every selectable subject — meta subjects are pure groups (never selected
+  /// themselves; selecting one selects its children), so they're excluded.
+  List<String> get _selectableSubjects => [
+    for (final n in _bank?.subjectNames ?? const <String>[])
+      if (_bank!.subjects[n] is! MetaSubject) n,
+  ];
+
   /// Short summary of the selection for the picker button.
   String _selectionSummary() {
     final bank = _bank;
     if (bank == null || _selectedSubjects.isEmpty) return 'none';
-    if (_selectedSubjects.length >= bank.subjectNames.length) return 'All';
+    if (_selectedSubjects.length >= _selectableSubjects.length) return 'All';
     if (_selectedSubjects.length == 1) return _selectedSubjects.first;
     return '${_selectedSubjects.length} selected';
   }
@@ -593,7 +649,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         final scheme = Theme.of(ctx).colorScheme;
         return StatefulBuilder(
           builder: (ctx, setSheet) {
-            final allChecked = working.length >= all.length && all.isNotEmpty;
+            // Metas are groups, not selections — count/act on leaves only.
+            final selectable = [
+              for (final n in all)
+                if (bank.subjects[n] is! MetaSubject) n,
+            ];
+            final allChecked = working.length >= selectable.length && selectable.isNotEmpty;
             return SafeArea(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -604,7 +665,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                       children: [
                         Text('Select subjects', style: Theme.of(ctx).textTheme.titleMedium),
                         const Spacer(),
-                        Text('${working.length}/${all.length}', style: Theme.of(ctx).textTheme.labelMedium),
+                        Text('${working.length}/${selectable.length}', style: Theme.of(ctx).textTheme.labelMedium),
                       ],
                     ),
                   ),
@@ -620,7 +681,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                       } else {
                         working
                           ..clear()
-                          ..addAll(all);
+                          ..addAll(selectable);
                       }
                     }),
                   ),
@@ -639,20 +700,31 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                         // plain whole-subject checkbox (no expansion).
                         final rows = isMeta ? const <(String, String)>[] : leafRows(name);
                         final excludedCount = isMeta ? 0 : rows.where((r) => workingExcluded.contains(r.$2)).length;
-                        final isOn = working.contains(name);
+                        // A meta is a pure group: never selected itself, its
+                        // checkbox derives from how many children are selected,
+                        // and it plays exactly what its children are configured
+                        // to play (including their un-checked sentences).
+                        final kids = isMeta ? _metaChildren(name) : const <String>[];
+                        final kidsOn = kids.where(working.contains).length;
+                        final isOn = isMeta ? kidsOn > 0 : working.contains(name);
                         final bool? parentValue = isMeta
-                            ? isOn
+                            ? (kidsOn == 0 ? false : (kidsOn >= kids.length ? true : null))
                             : (!isOn
                                   ? false
                                   : (excludedCount == 0 ? true : (excludedCount >= rows.length ? false : null)));
                         final isExpanded = expanded.contains(name);
 
+                        // Selecting a subject selects every sentence in it;
+                        // deselecting deselects them all. Children are therefore
+                        // never "checked" under an unselected parent — see the
+                        // child `value` below, which ands in `isOn`.
                         void toggleParent() => setSheet(() {
                           if (isMeta) {
-                            if (isOn) {
-                              working.remove(name);
+                            // All children on → clear them; otherwise select all.
+                            if (kidsOn >= kids.length) {
+                              working.removeAll(kids);
                             } else {
-                              working.add(name);
+                              working.addAll(kids);
                             }
                             return;
                           }
@@ -668,7 +740,22 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                           }
                         });
 
-                        final tile = GestureDetector(
+                        void toggleExpanded() => setSheet(() {
+                          if (isExpanded) {
+                            expanded.remove(name);
+                          } else {
+                            expanded.add(name);
+                          }
+                        });
+
+                        // A plain ListTile (not CheckboxListTile) so the row and
+                        // the checkbox have separate actions: tapping the row
+                        // expands/collapses the sentence list, and only the
+                        // checkbox changes the selection. Meta rows have nothing
+                        // to expand, so tapping them toggles selection.
+                        final tile = ListTile(
+                          dense: true,
+                          onTap: toggleExpanded,
                           // Long-press to weight this subject (drill it more often).
                           onLongPress: () async {
                             final changed = await _pickImportance(name);
@@ -677,53 +764,105 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                               setSheet(() {});
                             }
                           },
-                          child: CheckboxListTile(
-                            dense: true,
-                            value: parentValue,
-                            tristate: !isMeta,
-                            onChanged: (_) => toggleParent(),
-                            secondary: Icon(
-                              isMeta ? Icons.folder_outlined : Icons.list_alt_outlined,
-                              color: scheme.primary,
-                            ),
-                            title: Row(
-                              children: [
-                                Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
-                                if (excludedCount > 0)
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 8),
-                                    child: Text(
-                                      '−$excludedCount',
-                                      style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w700),
-                                    ),
+                          leading: Icon(
+                            isMeta ? Icons.folder_outlined : Icons.list_alt_outlined,
+                            color: scheme.primary,
+                          ),
+                          title: Row(
+                            children: [
+                              Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
+                              // Only meaningful while the subject is on — an off
+                              // subject shows all its sentences as unchecked.
+                              if (isOn && excludedCount > 0)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 8),
+                                  child: Text(
+                                    '−$excludedCount',
+                                    style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w700),
                                   ),
-                                if (imp > 1)
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 8),
-                                    child: Text(
-                                      '×$imp',
-                                      style: TextStyle(color: scheme.primary, fontWeight: FontWeight.w700),
-                                    ),
+                                ),
+                              if (imp > 1)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 8),
+                                  child: Text(
+                                    '×$imp',
+                                    style: TextStyle(color: scheme.primary, fontWeight: FontWeight.w700),
                                   ),
-                                if (!isMeta)
-                                  IconButton(
-                                    visualDensity: VisualDensity.compact,
-                                    icon: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
-                                    tooltip: isExpanded ? 'Collapse' : 'Show sentences',
-                                    onPressed: () => setSheet(() {
-                                      if (isExpanded) {
-                                        expanded.remove(name);
-                                      } else {
-                                        expanded.add(name);
-                                      }
-                                    }),
-                                  ),
-                              ],
-                            ),
+                                ),
+                            ],
+                          ),
+                          // Checkbox stays on the right for this row and for the
+                          // sentence rows below, so every checkbox in the sheet
+                          // lines up on the same edge. The caret is a plain
+                          // indicator — the whole row is the tap target.
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(isExpanded ? Icons.expand_less : Icons.expand_more, color: scheme.onSurfaceVariant),
+                              Checkbox(value: parentValue, tristate: !isMeta, onChanged: (_) => toggleParent()),
+                            ],
                           ),
                         );
 
-                        if (isMeta || !isExpanded) return tile;
+                        if (!isExpanded) return tile;
+                        if (isMeta) {
+                          // Expanded meta: one level only — its child subjects,
+                          // each a plain checkbox (no further expansion). The
+                          // checkbox is the child's own selection, so the child's
+                          // top-level row stays in sync automatically.
+                          return Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              tile,
+                              for (final child in kids)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 32),
+                                  child: ListTile(
+                                    dense: true,
+                                    onTap: () => setSheet(() {
+                                      if (working.contains(child)) {
+                                        working.remove(child);
+                                      } else {
+                                        working.add(child);
+                                      }
+                                    }),
+                                    onLongPress: () async {
+                                      final changed = await _pickImportance(child);
+                                      if (changed) {
+                                        importanceChanged = true;
+                                        setSheet(() {});
+                                      }
+                                    },
+                                    leading: Icon(Icons.list_alt_outlined, color: scheme.primary),
+                                    title: Row(
+                                      children: [
+                                        Expanded(child: Text(child, overflow: TextOverflow.ellipsis)),
+                                        if ((_importance[child] ?? 1) > 1)
+                                          Padding(
+                                            padding: const EdgeInsets.only(left: 8),
+                                            child: Text(
+                                              '×${_importance[child]}',
+                                              style: TextStyle(color: scheme.primary, fontWeight: FontWeight.w700),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    trailing: Checkbox(
+                                      value: working.contains(child),
+                                      onChanged: (v) => setSheet(() {
+                                        if (v == true) {
+                                          working.add(child);
+                                        } else {
+                                          working.remove(child);
+                                        }
+                                      }),
+                                    ),
+                                  ),
+                                ),
+                              const Divider(height: 1),
+                            ],
+                          );
+                        }
                         // Expanded leaf: parent + a checkbox per sentence.
                         return Column(
                           mainAxisSize: MainAxisSize.min,
@@ -732,26 +871,63 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                             for (final r in rows)
                               Padding(
                                 padding: const EdgeInsets.only(left: 32),
-                                child: CheckboxListTile(
-                                  dense: true,
-                                  value: !workingExcluded.contains(r.$2),
-                                  onChanged: (v) => setSheet(() {
-                                    if (v == true) {
-                                      workingExcluded.remove(r.$2);
-                                      working.add(name); // re-mark the subject
-                                    } else {
-                                      workingExcluded.add(r.$2);
-                                      // All sentences excluded → subject turns off.
-                                      if (rows.every((x) => workingExcluded.contains(x.$2))) {
-                                        working.remove(name);
-                                      }
+                                child: GestureDetector(
+                                  // Long-press a sentence to weight it on its own
+                                  // (same 1-5 scale as a subject).
+                                  onLongPress: () async {
+                                    final changed = await _pickSentenceImportance(r.$2, r.$1);
+                                    if (changed) {
+                                      importanceChanged = true;
+                                      setSheet(() {});
                                     }
-                                  }),
-                                  title: Text(
-                                    r.$1,
-                                    style: Theme.of(ctx).textTheme.bodyMedium,
-                                    maxLines: 3,
-                                    overflow: TextOverflow.ellipsis,
+                                  },
+                                  child: CheckboxListTile(
+                                    dense: true,
+                                    // An unselected subject shows every sentence
+                                    // unchecked, so the parent checkbox reads as
+                                    // "select/deselect all children".
+                                    value: isOn && !workingExcluded.contains(r.$2),
+                                    onChanged: (v) => setSheet(() {
+                                      if (v == true) {
+                                        workingExcluded.remove(r.$2);
+                                        // Checking any sentence re-marks the subject.
+                                        // If it was off, its other sentences were
+                                        // showing as unchecked — make that real so
+                                        // only this one turns on.
+                                        if (!isOn) {
+                                          for (final x in rows) {
+                                            if (x.$2 != r.$2) workingExcluded.add(x.$2);
+                                          }
+                                          working.add(name);
+                                        }
+                                      } else {
+                                        workingExcluded.add(r.$2);
+                                        // All sentences excluded → subject turns off.
+                                        if (rows.every((x) => workingExcluded.contains(x.$2))) {
+                                          working.remove(name);
+                                        }
+                                      }
+                                    }),
+                                    title: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            r.$1,
+                                            style: Theme.of(ctx).textTheme.bodyMedium,
+                                            maxLines: 3,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        if ((_sentenceImportance[r.$2] ?? 1) > 1)
+                                          Padding(
+                                            padding: const EdgeInsets.only(left: 8),
+                                            child: Text(
+                                              '\u00d7${_sentenceImportance[r.$2]}',
+                                              style: TextStyle(color: scheme.primary, fontWeight: FontWeight.w700),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -795,25 +971,62 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
   }
 
-  /// Long-press importance editor (1–5). Persists and updates [_importance];
-  /// returns true if the value actually changed.
+  /// Long-press importance editor for a subject (1–5). Persists and updates
+  /// [_importance]; returns true if the value actually changed.
   Future<bool> _pickImportance(String name) async {
-    final result = await showDialog<int>(
+    final result = await _showImportanceDialog(
+      title: name,
+      current: _importance[name] ?? 1,
+      blurb: 'How often should this subject’s sentences appear in the mix? 1 = regular, 5 = most important.',
+    );
+    if (result == null) return false;
+    final old = _importance[name] ?? 1;
+    if (result == old) return false;
+    await _service.setSubjectImportance(name, result);
+    if (result <= 1) {
+      _importance.remove(name);
+    } else {
+      _importance[name] = result;
+    }
+    return true;
+  }
+
+  /// Long-press importance editor for a single sentence, keyed by its spoken
+  /// form. Returns true if the value actually changed.
+  Future<bool> _pickSentenceImportance(String key, String display) async {
+    final result = await _showImportanceDialog(
+      title: display,
+      current: _sentenceImportance[key] ?? 1,
+      blurb:
+          'How often should this sentence appear in the mix? 1 = regular, 5 = most important. '
+          'It never stacks with the subject’s importance — the larger of the two wins.',
+    );
+    if (result == null) return false;
+    final old = _sentenceImportance[key] ?? 1;
+    if (result == old) return false;
+    await _service.setSentenceImportance(key, result);
+    if (result <= 1) {
+      _sentenceImportance.remove(key);
+    } else {
+      _sentenceImportance[key] = result;
+    }
+    return true;
+  }
+
+  /// Shared 1–5 importance picker. Returns the chosen value, or null if cancelled.
+  Future<int?> _showImportanceDialog({required String title, required int current, required String blurb}) async {
+    return showDialog<int>(
       context: context,
       builder: (ctx) {
-        var value = _importance[name] ?? 1;
+        var value = current;
         return StatefulBuilder(
           builder: (ctx, setD) => AlertDialog(
-            title: Text('Importance — $name', maxLines: 2, overflow: TextOverflow.ellipsis),
+            title: Text('Importance — $title', maxLines: 2, overflow: TextOverflow.ellipsis),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'How often should this subject’s sentences appear in the mix? '
-                  '1 = regular, 5 = most important.',
-                  style: Theme.of(ctx).textTheme.bodySmall,
-                ),
+                Text(blurb, style: Theme.of(ctx).textTheme.bodySmall),
                 const SizedBox(height: 16),
                 Center(
                   child: SegmentedButton<int>(
@@ -839,16 +1052,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         );
       },
     );
-    if (result == null) return false;
-    final old = _importance[name] ?? 1;
-    if (result == old) return false;
-    await _service.setSubjectImportance(name, result);
-    if (result <= 1) {
-      _importance.remove(name);
-    } else {
-      _importance[name] = result;
-    }
-    return true;
   }
 
   Future<void> _loadCachedTranslationForCurrent() async {
@@ -1396,6 +1599,14 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
   }
 
+  /// Coin flip deciding whether [spoken] plays target-language-first. Derived
+  /// from the sentence's own content hash rather than `Random`, so a sentence
+  /// keeps the same direction across playlist rebuilds, resumes and app
+  /// restarts (a re-roll on every rebuild would make the order jump around
+  /// mid-session). SHA-1's low bit is an even 50/50 split across sentences, and
+  /// unlike alternating by position it isn't a pattern the ear can predict.
+  static bool _isTargetFirst(String spoken) => sha1.convert(utf8.encode(spoken)).bytes.last.isEven;
+
   Future<void> _runPlaylistBuild({required bool play}) async {
     final sents = _currentSentences();
     if (sents.isEmpty) return;
@@ -1421,6 +1632,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       settings.sentenceBankTtsRepeatDelayOverride ?? _bank?.ttsRepeatDelay,
       _bank?.autoPostTtsDelay,
       settings.sentenceBankRepeatSourceBetween,
+      settings.sentenceBankTargetFirst,
     ].join('¦');
 
     if (sig == _preparedSig && _autoPlaylist.isLoaded) {
@@ -1580,6 +1792,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         // When on, replay the source before every target repeat (source between
         // targets) instead of speaking the source once up front.
         alternate: settings.sentenceBankSpeakSource && settings.sentenceBankRepeatSourceBetween,
+        targetFirst: settings.sentenceBankTargetFirst ? [for (final t in orderedSpoken) _isTargetFirst(t)] : null,
       );
       _preparedSig = sig;
       if (mounted) setState(() => _autoPreparing = false);
@@ -1888,6 +2101,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         s.settings.sentenceBankSourcePauseOverride,
         s.settings.sentenceBankTtsRepeatDelayOverride,
         s.settings.sentenceBankRepeatSourceBetween,
+        s.settings.sentenceBankTargetFirst,
       ].join('¦'),
     );
     if (autoCfg != _lastAutoCfg) {
@@ -2128,6 +2342,19 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     value: s.sentenceBankRepeatSourceBetween,
                     onChanged: s.sentenceBankSpeakSource
                         ? (v) => state.saveSettingsOnly(s.copyWith(sentenceBankRepeatSourceBetween: v))
+                        : null,
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Sometimes ${s.targetLanguage} first', style: textStyle),
+                    subtitle: Text(
+                      'For about half the sentences, play the ${s.targetLanguage} audio before the '
+                      'source instead of after — so you try to understand it first.',
+                      style: Theme.of(ctx).textTheme.bodySmall,
+                    ),
+                    value: s.sentenceBankTargetFirst,
+                    onChanged: s.sentenceBankSpeakSource
+                        ? (v) => state.saveSettingsOnly(s.copyWith(sentenceBankTargetFirst: v))
                         : null,
                   ),
                   SwitchListTile(
