@@ -133,6 +133,8 @@ subjects:
       - The church is 937 meters uphill
       - North, south, north, south, north, south
       - East, west, east, west, east, west
+      - Does the sun always set on the west?
+      - Does the sun rise from the east?
 
   Health:
     sentences:
@@ -161,6 +163,9 @@ subjects:
       - I have a reservation under the name Arnold.
       - You must visit this island
       - Did you climb the mountain?
+      - Where did Winnie the pooh go?
+      - What's in the north pole?
+      - How far is Patagonia from the south pole?
 
   Work and Daily Life:
     sentences:
