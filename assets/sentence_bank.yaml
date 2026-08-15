@@ -131,6 +131,8 @@ subjects:
       - Go left, right, left, right and it will be there
       - The bus station is about 20 meters ahead
       - The church is 937 meters uphill
+      - North, south, north, south, north, south
+      - East, west, east, west, east, west
 
   Health:
     sentences:
@@ -142,6 +144,10 @@ subjects:
       - Call an ambulance, please.
       - Where is the nearest hospital?
       - I need my prescription filled.
+      - My back hurts
+      - My eyes are tired
+      - I need to close my eyes for a bit
+      - My hands are protected from the sun
 
   Travel:
     sentences:
@@ -212,6 +218,7 @@ subjects:
       - 200 grams more
       - Can I pay next time?
       - I owe you 9 euro from last time
+      - The fishmonger will be here later
 
   At the butcher:
     sentences:
@@ -221,6 +228,7 @@ subjects:
       - i want souvlaki but from the thigh
       - will you be open on sunday?
       - do you make the sausages?
+      - Is the butcher here?
 
   At the gym:
     sentences:
@@ -243,6 +251,9 @@ subjects:
     sentences:
       - Do you need help with that?
       - I remember it now
+      - My hair is wet
+      - Her eyes are blue
+      - Hold this in your hands
 
   At my places:
     includes:
