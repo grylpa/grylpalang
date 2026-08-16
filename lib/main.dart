@@ -20,8 +20,23 @@ void main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.grylpa.katalaveno.audio',
       androidNotificationChannelName: 'Katalaveno audio',
-      androidNotificationOngoing: true,
-      androidStopForegroundOnPause: true,
+      // Must be a white/alpha silhouette — audio_service defaults to
+      // 'mipmap/ic_launcher', whose full-colour bitmap the status bar cannot
+      // render (it shows as a blank square). Reuses the notification icon
+      // flutter_local_notifications already uses; kept from resource shrinking
+      // by res/raw/keep.xml, since this is resolved by name at runtime.
+      androidNotificationIcon: 'mipmap/notif_launcher',
+      // Ongoing must be false whenever androidStopForegroundOnPause is false —
+      // audio_service asserts the pair, since "ongoing" only means anything for
+      // a service that leaves the foreground when paused.
+      androidNotificationOngoing: false,
+      // Must stay false: dropping foreground state on pause is one-way. Android
+      // 12+ forbids re-entering it from the background (dumpsys shows
+      // code:DENIED), so a pause with the screen locked would leave hour-long
+      // playback running as a plain background service — which Android's audio
+      // hardening warns it will mute. Keeping it foreground costs only a
+      // notification that persists while paused.
+      androidStopForegroundOnPause: false,
     ),
   );
 
