@@ -1,3 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Resources resolved by NAME at runtime, which the shrinker cannot see.
+     AGP 9's optimized resource shrinking deletes them otherwise:
+     - @mipmap/notif_launcher   : flutter_local_notifications small icon.
+     - @drawable/audio_service_*: audio_service's media-control icons, looked up
+       via getIdentifier(). Without them setState() throws
+       "You must specify an icon resource id to build a CustomAction",
+       which aborts before startForeground() — killing the media notification
+       and the foreground service that keeps screen-off playback alive. -->
 <resources xmlns:tools="http://schemas.android.com/tools"
-    tools:keep="@mipmap/notif_launcher" />
+    tools:keep="@mipmap/notif_launcher,@drawable/audio_service_*" />
