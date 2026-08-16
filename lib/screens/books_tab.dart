@@ -47,14 +47,14 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
 
   // Filters / sort.
   String _query = '';
-  String? _genre;                // null = any
-  String _length = 'any';        // 'any' | 'short' | 'medium' | 'long'
-  String _difficulty = 'any';    // 'any' | 'easy' | 'medium' | 'hard'
+  String? _genre; // null = any
+  String _length = 'any'; // 'any' | 'short' | 'medium' | 'long'
+  String _difficulty = 'any'; // 'any' | 'easy' | 'medium' | 'hard'
   // Earliest author year — drives both the Gutendex query (server-side cutoff)
   // and the post-fetch display filter, so they can never disagree. Persisted in
   // SharedPreferences under [_kEarliestYearKey].
   int _earliestYear = 1900;
-  String _sort = 'newest';       // 'newest' | 'oldest' | 'title' | 'author' | 'shortest' | 'longest'
+  String _sort = 'newest'; // 'newest' | 'oldest' | 'title' | 'author' | 'shortest' | 'longest'
 
   static const String _kEarliestYearKey = 'booksEarliestAuthorYear';
   static const int _kMinAllowedYear = 1500;
@@ -199,14 +199,14 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
       if (entry == null) return; // user cancelled
       await _reloadLocal();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Imported "${entry.title}"'), duration: const Duration(seconds: 3)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Imported "${entry.title}"'), duration: const Duration(seconds: 3)));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Import failed: ${e.toString().replaceFirst('Exception: ', '')}')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Import failed: ${e.toString().replaceFirst('Exception: ', '')}')));
     }
   }
 
@@ -218,11 +218,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     if (pos == null) return;
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => BookReader(
-          book: b,
-          initialChapterIndex: pos.chapter,
-          autoStartAudio: true,
-        ),
+        builder: (_) => BookReader(book: b, initialChapterIndex: pos.chapter, autoStartAudio: true),
       ),
     );
     if (mounted) await _reloadAudioPositions();
@@ -232,9 +228,9 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     await _localBooks.remove(b.id);
     await _reloadLocal();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Removed "${b.title}"'), duration: const Duration(seconds: 2)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Removed "${b.title}"'), duration: const Duration(seconds: 2)));
   }
 
   bool get _isFetchingMore => _pagesPlanned > 0 && _pagesDone < _pagesPlanned;
@@ -244,9 +240,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
   List<BookEntry> _visibleBooks() {
     final q = _query.toLowerCase();
     bool matchesQuery(BookEntry b) =>
-        q.isEmpty ||
-        b.title.toLowerCase().contains(q) ||
-        b.authors.any((a) => a.toLowerCase().contains(q));
+        q.isEmpty || b.title.toLowerCase().contains(q) || b.authors.any((a) => a.toLowerCase().contains(q));
 
     // Local imports bypass genre / length / difficulty / year filters — they're
     // explicitly yours, the user expects them to always be findable. Search is
@@ -273,8 +267,11 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
         list.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
         break;
       case 'author':
-        list.sort((a, b) => (a.authors.isEmpty ? '' : a.authors.first.toLowerCase())
-            .compareTo(b.authors.isEmpty ? '' : b.authors.first.toLowerCase()));
+        list.sort(
+          (a, b) => (a.authors.isEmpty ? '' : a.authors.first.toLowerCase()).compareTo(
+            b.authors.isEmpty ? '' : b.authors.first.toLowerCase(),
+          ),
+        );
         break;
       case 'shortest':
         list.sort((a, b) => a.wordCount.compareTo(b.wordCount));
@@ -296,8 +293,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
         rest.add(b);
       }
     }
-    recent.sort((a, b) =>
-        (_audioPositions[b.id]!.at).compareTo(_audioPositions[a.id]!.at));
+    recent.sort((a, b) => (_audioPositions[b.id]!.at).compareTo(_audioPositions[a.id]!.at));
     return [...recent, ...rest];
   }
 
@@ -340,10 +336,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
           children: [
             const CircularProgressIndicator(),
             const SizedBox(height: 12),
-            Text(
-              'Loading from Gutendex… ${_loadElapsedSec}s',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            Text('Loading from Gutendex… ${_loadElapsedSec}s', style: Theme.of(context).textTheme.bodySmall),
             if (_loadElapsedSec >= 10)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
@@ -361,17 +354,20 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            const Icon(Icons.cloud_off, size: 48),
-            const SizedBox(height: 12),
-            Text('Could not load catalog:\n$_error', textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: () => _fetchRemote(force: true),
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-            ),
-          ]),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.cloud_off, size: 48),
+              const SizedBox(height: 12),
+              Text('Could not load catalog:\n$_error', textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () => _fetchRemote(force: true),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -418,13 +414,9 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
                   const Icon(Icons.error_outline, size: 16),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text('Gutenberg fetch failed: $_error',
-                        style: Theme.of(context).textTheme.labelSmall),
+                    child: Text('Gutenberg fetch failed: $_error', style: Theme.of(context).textTheme.labelSmall),
                   ),
-                  TextButton(
-                    onPressed: () => _fetchRemote(force: true),
-                    child: const Text('Retry'),
-                  ),
+                  TextButton(onPressed: () => _fetchRemote(force: true), child: const Text('Retry')),
                 ],
               ),
             ),
@@ -439,8 +431,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
                 ),
               ),
               if (_fetchedAt != null && !_isFetchingMore)
-                Text('Updated ${_relativeTime(_fetchedAt!)}',
-                    style: Theme.of(context).textTheme.labelSmall),
+                Text('Updated ${_relativeTime(_fetchedAt!)}', style: Theme.of(context).textTheme.labelSmall),
             ],
           ),
           const SizedBox(height: 6),
@@ -484,8 +475,12 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
             Expanded(child: _genreDropdown()),
             const SizedBox(width: 12),
             Expanded(
-              child: _enumDropdown('Length', _length, const ['any', 'short', 'medium', 'long'],
-                  (v) => setState(() => _length = v)),
+              child: _enumDropdown('Length', _length, const [
+                'any',
+                'short',
+                'medium',
+                'long',
+              ], (v) => setState(() => _length = v)),
             ),
           ],
         ),
@@ -493,14 +488,23 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
         Row(
           children: [
             Expanded(
-              child: _enumDropdown('Difficulty', _difficulty, const ['any', 'easy', 'medium', 'hard'],
-                  (v) => setState(() => _difficulty = v)),
+              child: _enumDropdown('Difficulty', _difficulty, const [
+                'any',
+                'easy',
+                'medium',
+                'hard',
+              ], (v) => setState(() => _difficulty = v)),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: _enumDropdown('Sort', _sort,
-                  const ['newest', 'oldest', 'title', 'author', 'shortest', 'longest'],
-                  (v) => setState(() => _sort = v)),
+              child: _enumDropdown('Sort', _sort, const [
+                'newest',
+                'oldest',
+                'title',
+                'author',
+                'shortest',
+                'longest',
+              ], (v) => setState(() => _sort = v)),
             ),
           ],
         ),
@@ -626,26 +630,19 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
                                 color: Theme.of(context).colorScheme.primaryContainer,
                                 borderRadius: BorderRadius.circular(4),
                               ),
-                              child: Text('LOCAL',
-                                  style: Theme.of(context).textTheme.labelSmall),
+                              child: Text('LOCAL', style: Theme.of(context).textTheme.labelSmall),
                             ),
                           ),
-                        Expanded(
-                          child: Text(b.title, style: Theme.of(context).textTheme.titleMedium),
-                        ),
+                        Expanded(child: Text(b.title, style: Theme.of(context).textTheme.titleMedium)),
                       ],
                     ),
-                    if (b.authors.isNotEmpty)
-                      Text(b.authors.join(', '), style: Theme.of(context).textTheme.bodyMedium),
+                    if (b.authors.isNotEmpty) Text(b.authors.join(', '), style: Theme.of(context).textTheme.bodyMedium),
                     const SizedBox(height: 6),
                     Text(_metaLine(b), style: Theme.of(context).textTheme.labelSmall),
                     if (b.tags.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          _genresLine(b.tags),
-                          style: Theme.of(context).textTheme.labelSmall,
-                        ),
+                        child: Text(_genresLine(b.tags), style: Theme.of(context).textTheme.labelSmall),
                       ),
                   ],
                 ),
@@ -668,8 +665,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     return parts.join(' • ');
   }
 
-  String _genresLine(List<String> tags) =>
-      '${tags.length == 1 ? "Genre" : "Genres"}: ${tags.join(", ")}';
+  String _genresLine(List<String> tags) => '${tags.length == 1 ? "Genre" : "Genres"}: ${tags.join(", ")}';
 
   /// Load / Reload Project Gutenberg button. Label adapts to current state:
   /// no cached remote → "Load…"; cached → "Reload…"; in-flight → spinner.
@@ -680,9 +676,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const SizedBox(
-              width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2),
-            ),
+            const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
             const SizedBox(width: 8),
             Text(
               'Loading from Gutenberg… (${_remoteBooks.length} of ~${_pagesPlanned * 32})',
@@ -716,9 +710,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const SizedBox(
-              width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2),
-            ),
+            const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
             const SizedBox(width: 10),
             Text(
               // Concrete book counts make this self-explanatory — no "page" jargon.
@@ -781,14 +773,10 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
               if (b.tags.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    _genresLine(b.tags),
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
+                  child: Text(_genresLine(b.tags), style: Theme.of(context).textTheme.bodyMedium),
                 ),
               const SizedBox(height: 12),
-              if (b.summary.isNotEmpty)
-                Text(b.summary, style: Theme.of(context).textTheme.bodyMedium),
+              if (b.summary.isNotEmpty) Text(b.summary, style: Theme.of(context).textTheme.bodyMedium),
               const SizedBox(height: 24),
               Row(
                 children: [
@@ -798,9 +786,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
                           ? null
                           : () async {
                               Navigator.of(context).pop();
-                              await Navigator.of(context).push(
-                                MaterialPageRoute(builder: (_) => BookReader(book: b)),
-                              );
+                              await Navigator.of(context).push(MaterialPageRoute(builder: (_) => BookReader(book: b)));
                               if (mounted) await _reloadAudioPositions();
                             },
                       icon: const Icon(Icons.menu_book_outlined),

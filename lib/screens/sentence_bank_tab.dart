@@ -22,7 +22,6 @@ import '../services/audio_utils.dart';
 import '../services/auto_playlist_controller.dart';
 import '../services/katalaveno_audio_handler.dart';
 import '../services/google_translate_tts.dart';
-import '../services/sentence_bank_foreground_service.dart';
 import '../services/sentence_bank_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
@@ -1836,7 +1835,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _autoPreparing = false;
       _ttsPlaying = false;
     });
-    SentenceBankForegroundService.stop();
   }
 
   void _saveAutoPosition() {
@@ -1898,7 +1896,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     try {
       final code = _ttsLangCode(languageName);
       if (_googleTtsLanguages.contains(code)) {
-        return _googleTts.cachedFile(text, code);
+        // Awaited so a failure lands in this function's catch instead of
+        // escaping as an unhandled async error.
+        return await _googleTts.cachedFile(text, code);
       }
       final dir = await _ensureSynthDir();
       final voiceKey = preferVoice.isNotEmpty ? preferVoice : gender;
@@ -2038,7 +2038,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     _tts.stop();
     _autoOrdinalSub?.cancel();
     _autoPlaylist.dispose();
-    if (_autoMode) SentenceBankForegroundService.stop();
     super.dispose();
   }
 

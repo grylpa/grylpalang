@@ -10,9 +10,19 @@ Uint8List pcm16MonoToWav(Int16List samples, int rate) {
   void s(String x) => b.add(x.codeUnits);
   void u32(int v) => b.add([v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff]);
   void u16(int v) => b.add([v & 0xff, (v >> 8) & 0xff]);
-  s('RIFF'); u32(36 + dataLen); s('WAVE');
-  s('fmt '); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
-  s('data'); u32(dataLen);
+  s('RIFF');
+  u32(36 + dataLen);
+  s('WAVE');
+  s('fmt ');
+  u32(16);
+  u16(1);
+  u16(1);
+  u32(rate);
+  u32(rate * 2);
+  u16(2);
+  u16(16);
+  s('data');
+  u32(dataLen);
   b.add(Uint8List.view(samples.buffer, samples.offsetInBytes, dataLen));
   return b.toBytes();
 }
@@ -21,8 +31,7 @@ Uint8List pcm16MonoToWav(Int16List samples, int rate) {
 /// is stereo, channel 0 is taken. Returns null if it isn't a 16-bit PCM WAV.
 ({Int16List samples, int rate})? parseWavPcm16(Uint8List b) {
   if (b.length < 44) return null;
-  if (String.fromCharCodes(b.sublist(0, 4)) != 'RIFF' ||
-      String.fromCharCodes(b.sublist(8, 12)) != 'WAVE') return null;
+  if (String.fromCharCodes(b.sublist(0, 4)) != 'RIFF' || String.fromCharCodes(b.sublist(8, 12)) != 'WAVE') return null;
   int u32(int o) => b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
   int u16(int o) => b[o] | (b[o + 1] << 8);
 

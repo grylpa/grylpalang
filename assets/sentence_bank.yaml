@@ -105,6 +105,7 @@ subjects:
       - It was a little too salty
       - I'm full, thank you
       - Can I have another one?
+      - I use olive oil in everything
 
   Shopping:
     sentences:
@@ -180,6 +181,12 @@ subjects:
       - It is very quiet today
       - The music is too loud
       - The pigeons are noisy
+      - The meeting is useless
+      - I worry this won't work
+      - The boss is coming!
+      - What's your employer like?
+      - Do you work for a corporate or a small company?
+      - Do you like your job?
 
   Weather:
     sentences:
@@ -191,6 +198,9 @@ subjects:
       - It is cold outside, dress warmly.
       - There is a storm coming tonight.
       - What a beautiful day it is!
+      - Did you see the big fire yesterday?
+      - Luckily, the wind blew north
+      - It's going to be very windy
 
   # ── Meta subjects ──────────────────────────────────────────
   # These combine sentences from multiple leaf subjects.

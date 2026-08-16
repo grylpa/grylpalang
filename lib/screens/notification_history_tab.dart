@@ -33,7 +33,14 @@ class _NotificationHistoryTabState extends State<NotificationHistoryTab> with Si
     return false;
   }
 
-  Widget _buildSentenceTile(BuildContext context, HistoryEntry entry, WordSentence s, int i, AppState state, String noTranslation) {
+  Widget _buildSentenceTile(
+    BuildContext context,
+    HistoryEntry entry,
+    WordSentence s,
+    int i,
+    AppState state,
+    String noTranslation,
+  ) {
     // final theme = Theme.of(context);
     // final cs = theme.colorScheme;
     // final isDark = theme.brightness == Brightness.dark;
@@ -43,10 +50,7 @@ class _NotificationHistoryTabState extends State<NotificationHistoryTab> with Si
     // );
 
     // this is needed to avoid the ugly top and bottom horizontal lines
-    final tileShape = RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(10),
-      side: BorderSide.none,
-    );
+    final tileShape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide.none);
 
     var (titleText, expandedText) = state.prepareSentenceToShow(entry.sentences, s, noTranslation);
     // final localSeed = entry.fingerprint.hashCode ^ i ^ s.l2.hashCode ^ s.l1.hashCode;
@@ -76,25 +80,19 @@ class _NotificationHistoryTabState extends State<NotificationHistoryTab> with Si
       expandedAlignment: Alignment.centerLeft,
       shape: tileShape,
       collapsedShape: tileShape,
-      title: Text(titleText,
+      title: Text(
+        titleText,
         textAlign: TextAlign.left,
-        style: DefaultTextStyle
-            .of(context)
-            .style
-            .apply(fontSizeDelta: 2.0, fontWeightDelta: 2),
+        style: DefaultTextStyle.of(context).style.apply(fontSizeDelta: 2.0, fontWeightDelta: 2),
       ),
       children: [
-        Text(expandedText,
-          style: Theme
-              .of(context)
-              .textTheme
-              .bodyMedium
-              ?.copyWith(
+        Text(
+          expandedText,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
             fontStyle: s.l1.isEmpty ? FontStyle.italic : null,
-            color: Theme
-                .of(context)
-                .colorScheme
-                .onSurfaceVariant,),),
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
       ],
     );
   }
@@ -103,7 +101,8 @@ class _NotificationHistoryTabState extends State<NotificationHistoryTab> with Si
     final history = state.history;
     final entry = history[index];
     final sentences = entry.sentences;
-    final isHighlighted = state.highlightHistoryFingerprint != null && entry.fingerprint == state.highlightHistoryFingerprint;
+    final isHighlighted =
+        state.highlightHistoryFingerprint != null && entry.fingerprint == state.highlightHistoryFingerprint;
 
     final cs = Theme.of(context).colorScheme;
     final cardColor = cs.surfaceContainerHigh;
@@ -180,7 +179,12 @@ class _NotificationHistoryTabState extends State<NotificationHistoryTab> with Si
         if (!_isIndexComfortablyVisible(idx)) {
           scrollInFlight = true;
           try {
-            await _scrollCtl.scrollTo(index: idx, alignment: 0.15, duration: const Duration(milliseconds: 350), curve: Curves.easeOut);
+            await _scrollCtl.scrollTo(
+              index: idx,
+              alignment: 0.15,
+              duration: const Duration(milliseconds: 350),
+              curve: Curves.easeOut,
+            );
             if (!mounted) return;
           } finally {
             scrollInFlight = false;
@@ -190,7 +194,8 @@ class _NotificationHistoryTabState extends State<NotificationHistoryTab> with Si
     }
 
     return ScrollablePositionedList.builder(
-      itemScrollController: _scrollCtl, itemPositionsListener: _posListener,
+      itemScrollController: _scrollCtl,
+      itemPositionsListener: _posListener,
       key: const PageStorageKey('history_list'),
       padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
       itemCount: history.length,

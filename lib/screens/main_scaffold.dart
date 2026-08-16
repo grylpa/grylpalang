@@ -141,10 +141,7 @@ class _MainScaffoldState extends State<MainScaffold> {
                   '(open below).',
                 ),
                 SizedBox(height: 16),
-                Text(
-                  'Tap anywhere to continue.',
-                  style: TextStyle(fontStyle: FontStyle.italic),
-                ),
+                Text('Tap anywhere to continue.', style: TextStyle(fontStyle: FontStyle.italic)),
               ],
             ),
           ),
@@ -283,65 +280,62 @@ class _MainScaffoldState extends State<MainScaffold> {
           ),
         );
 
-        return !appState.initialized ?
-          Container(
-            alignment: Alignment.center,
-            color: Colors.black,
-            width: double.infinity,
-            height: double.infinity,
-            child: Image.asset(
-              'assets/splash.png',
-              width: 300,
-              fit: BoxFit.contain,
-            ),
-          ) : Scaffold(
-          appBar: AppBar(title: const Text('Katalaveno'), centerTitle: true, titleSpacing: 8),
-          body: body,
-          bottomNavigationBar: BottomNavigationBar(
-            currentIndex: _index.clamp(0, _pages.length - 1),
-            onTap: _goToTab,
-            type: BottomNavigationBarType.fixed,
-            selectedItemColor: Theme.of(context).colorScheme.primary,
-            unselectedItemColor: Theme.of(context).colorScheme.onSurfaceVariant,
-            selectedFontSize: 12,
-            unselectedFontSize: 12,
-            // <- same size, no “jump”
-            showUnselectedLabels: true,
-            // or false if you prefer
-            items: const [
-              BottomNavigationBarItem(
-                icon: Icon(Icons.spellcheck_outlined),
-                activeIcon: Icon(Icons.spellcheck),
-                label: 'Active',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(Icons.history_outlined),
-                activeIcon: Icon(Icons.history),
-                label: 'History',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(Icons.psychology_outlined),
-                activeIcon: Icon(Icons.psychology),
-                label: 'Predict',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(Icons.menu_book_outlined),
-                activeIcon: Icon(Icons.menu_book),
-                label: 'Sentences',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(Icons.auto_stories_outlined),
-                activeIcon: Icon(Icons.auto_stories),
-                label: 'Books',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(Icons.settings_outlined),
-                activeIcon: Icon(Icons.settings),
-                label: 'Settings',
-              ),
-            ],
-          ),
-        );
+        return !appState.initialized
+            ? Container(
+                alignment: Alignment.center,
+                color: Colors.black,
+                width: double.infinity,
+                height: double.infinity,
+                child: Image.asset('assets/splash.png', width: 300, fit: BoxFit.contain),
+              )
+            : Scaffold(
+                appBar: AppBar(title: const Text('Katalaveno'), centerTitle: true, titleSpacing: 8),
+                body: body,
+                bottomNavigationBar: BottomNavigationBar(
+                  currentIndex: _index.clamp(0, _pages.length - 1),
+                  onTap: _goToTab,
+                  type: BottomNavigationBarType.fixed,
+                  selectedItemColor: Theme.of(context).colorScheme.primary,
+                  unselectedItemColor: Theme.of(context).colorScheme.onSurfaceVariant,
+                  selectedFontSize: 12,
+                  unselectedFontSize: 12,
+                  // <- same size, no “jump”
+                  showUnselectedLabels: true,
+                  // or false if you prefer
+                  items: const [
+                    BottomNavigationBarItem(
+                      icon: Icon(Icons.spellcheck_outlined),
+                      activeIcon: Icon(Icons.spellcheck),
+                      label: 'Active',
+                    ),
+                    BottomNavigationBarItem(
+                      icon: Icon(Icons.history_outlined),
+                      activeIcon: Icon(Icons.history),
+                      label: 'History',
+                    ),
+                    BottomNavigationBarItem(
+                      icon: Icon(Icons.psychology_outlined),
+                      activeIcon: Icon(Icons.psychology),
+                      label: 'Predict',
+                    ),
+                    BottomNavigationBarItem(
+                      icon: Icon(Icons.menu_book_outlined),
+                      activeIcon: Icon(Icons.menu_book),
+                      label: 'Sentences',
+                    ),
+                    BottomNavigationBarItem(
+                      icon: Icon(Icons.auto_stories_outlined),
+                      activeIcon: Icon(Icons.auto_stories),
+                      label: 'Books',
+                    ),
+                    BottomNavigationBarItem(
+                      icon: Icon(Icons.settings_outlined),
+                      activeIcon: Icon(Icons.settings),
+                      label: 'Settings',
+                    ),
+                  ],
+                ),
+              );
       },
     );
   }

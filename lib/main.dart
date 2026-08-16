@@ -3,11 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:timezone/data/latest.dart' as tz;
 
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-
 import 'screens/main_scaffold.dart';
 import 'services/katalaveno_audio_handler.dart' as kah;
-import 'services/sentence_bank_foreground_service.dart';
 import 'state/app_state.dart';
 
 final GlobalKey<NavigatorState> rootNavKey = GlobalKey<NavigatorState>();
@@ -28,10 +25,6 @@ void main() async {
     ),
   );
 
-  // Foreground service for Sentence Bank auto mode (Android only, no-op elsewhere).
-  FlutterForegroundTask.initCommunicationPort();
-  SentenceBankForegroundService.init();
-
   // Timezone for scheduling
   tz.initializeTimeZones();
   // tz.setLocalLocation(tz.getLocation('Europe/Athens'));
@@ -49,7 +42,9 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final settings = context.watch<AppState>().settings;
 
-    WidgetsBinding.instance.addPostFrameCallback((_) { context.read<AppState>().attachNavigator(rootNavKey.currentState); });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<AppState>().attachNavigator(rootNavKey.currentState);
+    });
 
     ThemeData buildTheme(Brightness brightness) {
       // Blue seed shared with the sibling app so the palette matches. All
@@ -64,20 +59,11 @@ class MyApp extends StatelessWidget {
       final inputTheme = InputDecorationTheme(
         filled: true,
         fillColor: scheme.surfaceContainerHighest,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(radius),
-          borderSide: BorderSide.none,
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(radius),
-          borderSide: BorderSide.none,
-        ),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(radius), borderSide: BorderSide.none),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(radius), borderSide: BorderSide.none),
         // No focus ring — fields stay flat filled with no border in any state
         // (a focus outline read as an unwanted "border").
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(radius),
-          borderSide: BorderSide.none,
-        ),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(radius), borderSide: BorderSide.none),
       );
 
       // The single button look every action button inherits: solid tonal-blue
@@ -105,7 +91,10 @@ class MyApp extends StatelessWidget {
       // with a gentle outline + shadow so they read as floating above the page.
       final menuSurface = WidgetStatePropertyAll(scheme.surfaceContainerHighest);
       final menuBorder = WidgetStatePropertyAll<OutlinedBorder>(
-        RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius), side: BorderSide(color: scheme.outline)),
+        RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(radius),
+          side: BorderSide(color: scheme.outline),
+        ),
       );
 
       return ThemeData(
