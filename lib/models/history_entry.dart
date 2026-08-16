@@ -32,7 +32,7 @@ class HistoryEntry {
   }
 
   void removeDuplicateMainWords() {
-    for (int iws = 0 ; iws < sentences.length ; iws++) {
+    for (int iws = 0; iws < sentences.length; iws++) {
       WordSentence ws = sentences[iws];
       String cleaned = removeDuplicateMainWord(ws.l2);
       if (cleaned != ws.l2) {

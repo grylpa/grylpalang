@@ -34,9 +34,10 @@ class BookLibraryService {
     }
     final dest = await _bookFile(book.id);
     if (await dest.exists()) return dest.path;
-    final resp = await http.get(Uri.parse(book.epubUrl), headers: const {
-      'User-Agent': 'Katalaveno/1.0 (Android; Flutter)',
-    });
+    final resp = await http.get(
+      Uri.parse(book.epubUrl),
+      headers: const {'User-Agent': 'Katalaveno/1.0 (Android; Flutter)'},
+    );
     if (resp.statusCode != 200) {
       throw Exception('EPUB download failed (HTTP ${resp.statusCode}).');
     }
@@ -92,11 +93,7 @@ class BookLibraryService {
   Future<void> saveAudioPosition(String bookId, int chapterIndex, int ordinal) async {
     final map = await _loadPositionsMap();
     final entry = _entryFor(map, bookId);
-    entry['audio'] = {
-      'chapter': chapterIndex,
-      'ordinal': ordinal,
-      'at': DateTime.now().millisecondsSinceEpoch,
-    };
+    entry['audio'] = {'chapter': chapterIndex, 'ordinal': ordinal, 'at': DateTime.now().millisecondsSinceEpoch};
     map[bookId] = entry;
     await _prefs.setString(_kPositionsKey, jsonEncode(map));
   }
@@ -113,11 +110,7 @@ class BookLibraryService {
         final audio = entry['audio'];
         if (audio is Map && audio['chapter'] is int && audio['ordinal'] is int) {
           final at = (audio['at'] is int) ? audio['at'] as int : 0;
-          out[e.key] = (
-            chapter: audio['chapter'] as int,
-            ordinal: audio['ordinal'] as int,
-            at: at,
-          );
+          out[e.key] = (chapter: audio['chapter'] as int, ordinal: audio['ordinal'] as int, at: at);
         }
       }
     }
@@ -197,11 +190,7 @@ class BookLibraryService {
   static List<String> _splitOnInnerPunctuation(String sentence) {
     // Keep the delimiter with the preceding text by splitting on the whitespace
     // that follows an inner punctuation mark.
-    final raw = sentence
-        .split(RegExp(r'(?<=[,;:…—–])\s+'))
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
+    final raw = sentence.split(RegExp(r'(?<=[,;:…—–])\s+')).map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
     if (raw.length <= 1) return [sentence];
     final merged = <String>[];
     for (final piece in raw) {
@@ -294,8 +283,7 @@ class BookLibraryService {
 
     // spine: list of idrefs in reading order.
     final spineIds = <String>[
-      for (final m in RegExp(r'<itemref\b[^>]*\bidref="([^"]+)"', caseSensitive: false).allMatches(opfXml))
-        m.group(1)!,
+      for (final m in RegExp(r'<itemref\b[^>]*\bidref="([^"]+)"', caseSensitive: false).allMatches(opfXml)) m.group(1)!,
     ];
 
     final chapters = <BookChapter>[];
@@ -322,8 +310,7 @@ class BookLibraryService {
 
   static String? _chapterTitle(String xhtml) {
     for (final tag in const ['h1', 'h2', 'title']) {
-      final m = RegExp('<$tag\\b[^>]*>(.*?)</$tag>', caseSensitive: false, dotAll: true)
-          .firstMatch(xhtml);
+      final m = RegExp('<$tag\\b[^>]*>(.*?)</$tag>', caseSensitive: false, dotAll: true).firstMatch(xhtml);
       if (m != null) {
         final t = _stripTagsAndDecode(m.group(1)!);
         if (t.isNotEmpty) return t;
@@ -333,10 +320,8 @@ class BookLibraryService {
   }
 
   static String _xhtmlToText(String xhtml) {
-    final body = RegExp(r'<body\b[^>]*>(.*?)</body>', caseSensitive: false, dotAll: true)
-            .firstMatch(xhtml)
-            ?.group(1) ??
-        xhtml;
+    final body =
+        RegExp(r'<body\b[^>]*>(.*?)</body>', caseSensitive: false, dotAll: true).firstMatch(xhtml)?.group(1) ?? xhtml;
     // Preserve paragraph boundaries before stripping tags.
     final withBreaks = body
         .replaceAll(RegExp(r'</p\s*>', caseSensitive: false), '\n\n')

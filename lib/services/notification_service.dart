@@ -1,10 +1,14 @@
 // import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb, debugPrint, defaultTargetPlatform;  //kDebugMode
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint, defaultTargetPlatform; //kDebugMode
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
 
-bool get _supportsNotifications => !kIsWeb && (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.linux);
+bool get _supportsNotifications =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.linux);
 
 class NotificationService {
   NotificationService._();
@@ -196,12 +200,6 @@ class NotificationService {
 
     final details = NotificationDetails(android: androidDetails, linux: linuxDetails);
 
-    await _plugin.show(
-      id: id,
-      title: title,
-      body: body,
-      notificationDetails: details,
-      payload: payload,
-    );
+    await _plugin.show(id: id, title: title, body: body, notificationDetails: details, payload: payload);
   }
 }

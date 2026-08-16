@@ -88,9 +88,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // languages stayed there as an app-wide setting.
   Widget _buildMenuButton() {
     PopupMenuItem<String> item(String value, IconData icon, String label) => PopupMenuItem<String>(
-          value: value,
-          child: Row(children: [Icon(icon, size: 20), const SizedBox(width: 12), Text(label)]),
-        );
+      value: value,
+      child: Row(children: [Icon(icon, size: 20), const SizedBox(width: 12), Text(label)]),
+    );
     return PopupMenuButton<String>(
       tooltip: 'Options',
       position: PopupMenuPosition.under,
@@ -316,12 +316,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   try {
                                     final cur = state.settings;
                                     final total = max(
-                                        3, int.tryParse(numCtrl.text.trim()) ?? cur.conjugatedCount + cur.simpleCount);
-                                    await state.updateSettings(cur.copyWith(
-                                      interval: intervalFromFields(),
-                                      simpleCount: 3,
-                                      conjugatedCount: total - 3,
-                                    ));
+                                      3,
+                                      int.tryParse(numCtrl.text.trim()) ?? cur.conjugatedCount + cur.simpleCount,
+                                    );
+                                    await state.updateSettings(
+                                      cur.copyWith(
+                                        interval: intervalFromFields(),
+                                        simpleCount: 3,
+                                        conjugatedCount: total - 3,
+                                      ),
+                                    );
                                     if (ctx.mounted) Navigator.pop(ctx);
                                     if (mounted) lpSnack(context, 'Saved and notifications rescheduled', 4000);
                                   } catch (e) {
@@ -434,8 +438,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     const SizedBox(height: 4),
                     Center(child: Text('${s.knownLanguage} ⮕ ${s.targetLanguage}')),
                     Center(
-                        child: Text('Active words (${active.length})',
-                            style: Theme.of(context).textTheme.titleMedium)),
+                      child: Text('Active words (${active.length})', style: Theme.of(context).textTheme.titleMedium),
+                    ),
                   ],
                 ),
                 Positioned(top: 0, right: 0, child: _buildMenuButton()),
@@ -468,9 +472,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
                             ),
                             onPressed: isLoading ? null : () => _onAddSentencesForWord(context, w),
-                            icon: isLoading ? const SizedBox(width: 18, height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ) : const Icon(Icons.add),
+                            icon: isLoading
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.add),
                           ),
                           // SizedBox(width: 4,),
                           IconButton(
@@ -502,7 +510,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Opacity(
                     opacity: canAddMoreWords ? 1 : 0.2,
                     // child: AbsorbPointer(absorbing: false, child: const AddWordPanel()),
-                    child: AbsorbPointer(absorbing: !canAddMoreWords, child: AddWordPanel(canAddMoreWords:canAddMoreWords)),
+                    child: AbsorbPointer(
+                      absorbing: !canAddMoreWords,
+                      child: AddWordPanel(canAddMoreWords: canAddMoreWords),
+                    ),
                   ),
                   if (!canAddMoreWords)
                     Positioned.fill(

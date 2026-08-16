@@ -137,8 +137,11 @@ class LocalBooksService {
     }
     String? tag(String name) {
       // Matches <dc:title>…</dc:title> or <title>…</title> across namespaces.
-      final re = RegExp('<(?:[a-zA-Z0-9]+:)?$name\\b[^>]*>(.*?)</(?:[a-zA-Z0-9]+:)?$name>',
-          dotAll: true, caseSensitive: false);
+      final re = RegExp(
+        '<(?:[a-zA-Z0-9]+:)?$name\\b[^>]*>(.*?)</(?:[a-zA-Z0-9]+:)?$name>',
+        dotAll: true,
+        caseSensitive: false,
+      );
       final m = re.firstMatch(opfXml!);
       final inner = m?.group(1)?.trim();
       if (inner == null || inner.isEmpty) return null;
@@ -146,11 +149,7 @@ class LocalBooksService {
       return inner.replaceAll(RegExp(r'<[^>]+>'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
     }
 
-    return (
-      title: tag('title') ?? fallbackTitle,
-      author: tag('creator') ?? '',
-      language: tag('language') ?? '',
-    );
+    return (title: tag('title') ?? fallbackTitle, author: tag('creator') ?? '', language: tag('language') ?? '');
   }
 
   static String? _readUtf8(Archive zip, String path) {

@@ -27,8 +27,8 @@ class PoliciesScreen extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               child: SelectableText(
                 'Failed to load policies.\n\n'
-                    'Asset: $_assetPath\n\n'
-                    'Error: ${snapshot.error}',
+                'Asset: $_assetPath\n\n'
+                'Error: ${snapshot.error}',
               ),
             );
           }
@@ -36,12 +36,7 @@ class PoliciesScreen extends StatelessWidget {
           final md = snapshot.data ?? '';
           return Padding(
             padding: const EdgeInsets.all(16),
-            child: SingleChildScrollView(
-              child: MarkdownBody(
-                data: md,
-                selectable: true,
-              ),
-            ),
+            child: SingleChildScrollView(child: MarkdownBody(data: md, selectable: true)),
           );
         },
       ),

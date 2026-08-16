@@ -71,8 +71,7 @@ class GutenbergService {
     return state;
   }
 
-  String _firstPageUrl(int authorYearStart) =>
-      '$_kBase?languages=en&sort=popular&author_year_start=$authorYearStart';
+  String _firstPageUrl(int authorYearStart) => '$_kBase?languages=en&sort=popular&author_year_start=$authorYearStart';
 
   /// Read-only cache access — never touches the network. Returns null if no
   /// catalog has ever been fetched for [authorYearStart].
@@ -96,10 +95,10 @@ class GutenbergService {
     required List<BookEntry> existing,
     required String url,
   }) async {
-    final resp = await http.get(Uri.parse(url), headers: const {
-      'Accept': 'application/json',
-      'User-Agent': 'Katalaveno/1.0 (Android; Flutter)',
-    });
+    final resp = await http.get(
+      Uri.parse(url),
+      headers: const {'Accept': 'application/json', 'User-Agent': 'Katalaveno/1.0 (Android; Flutter)'},
+    );
     if (resp.statusCode != 200) {
       throw Exception('Gutendex HTTP ${resp.statusCode}');
     }
@@ -122,9 +121,7 @@ class GutenbergService {
       final decoded = jsonDecode(raw) as Map<String, dynamic>;
       final books = (decoded['books'] as List?) ?? const [];
       return CatalogState(
-        books: [
-          for (final e in books) BookEntry.fromJson((e as Map).cast<String, dynamic>())
-        ],
+        books: [for (final e in books) BookEntry.fromJson((e as Map).cast<String, dynamic>())],
         nextUrl: decoded['next'] as String?,
       );
     } catch (_) {
@@ -206,10 +203,8 @@ class GutenbergService {
   }
 
   // Strip PG's noisy bookshelf wrappers — leading "Browsing:" or "Category…"
-  static final RegExp _wrapperPrefix =
-      RegExp(r'^(browsing|category)\b[:\s]*', caseSensitive: false);
-  static String _cleanTag(String raw) =>
-      raw.trim().replaceFirst(_wrapperPrefix, '').trim();
+  static final RegExp _wrapperPrefix = RegExp(r'^(browsing|category)\b[:\s]*', caseSensitive: false);
+  static String _cleanTag(String raw) => raw.trim().replaceFirst(_wrapperPrefix, '').trim();
 
   static String _computeDifficulty(int? pubYear) {
     if (pubYear == null) return 'medium';

@@ -37,14 +37,16 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
     Future<void> Function()? onSkipPrev,
   }) {
     _stack.removeWhere((b) => identical(b.owner, owner));
-    _stack.add(_Binding(
-      owner: owner,
-      onPlay: onPlay,
-      onPause: onPause,
-      onStop: onStop,
-      onSkipNext: onSkipNext,
-      onSkipPrev: onSkipPrev,
-    ));
+    _stack.add(
+      _Binding(
+        owner: owner,
+        onPlay: onPlay,
+        onPause: onPause,
+        onStop: onStop,
+        onSkipNext: onSkipNext,
+        onSkipPrev: onSkipPrev,
+      ),
+    );
   }
 
   /// Removes [owner]'s binding from the stack. The previous one becomes active
@@ -95,21 +97,23 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
   // ── Playback state mirroring ─────────────────────────────────────────────
 
   void _emitPlaybackState(ja.PlaybackEvent event) {
-    playbackState.add(playbackState.value.copyWith(
-      controls: [
-        MediaControl.skipToPrevious,
-        if (player.playing) MediaControl.pause else MediaControl.play,
-        MediaControl.stop,
-        MediaControl.skipToNext,
-      ],
-      systemActions: const {MediaAction.seek},
-      processingState: _mapProcessingState(event.processingState),
-      playing: player.playing,
-      updatePosition: event.updatePosition,
-      bufferedPosition: event.bufferedPosition,
-      speed: player.speed,
-      queueIndex: event.currentIndex,
-    ));
+    playbackState.add(
+      playbackState.value.copyWith(
+        controls: [
+          MediaControl.skipToPrevious,
+          if (player.playing) MediaControl.pause else MediaControl.play,
+          MediaControl.stop,
+          MediaControl.skipToNext,
+        ],
+        systemActions: const {MediaAction.seek},
+        processingState: _mapProcessingState(event.processingState),
+        playing: player.playing,
+        updatePosition: event.updatePosition,
+        bufferedPosition: event.bufferedPosition,
+        speed: player.speed,
+        queueIndex: event.currentIndex,
+      ),
+    );
   }
 
   AudioProcessingState _mapProcessingState(ja.ProcessingState s) {
@@ -135,14 +139,7 @@ class _Binding {
   final Future<void> Function()? onStop;
   final Future<void> Function()? onSkipNext;
   final Future<void> Function()? onSkipPrev;
-  _Binding({
-    required this.owner,
-    this.onPlay,
-    this.onPause,
-    this.onStop,
-    this.onSkipNext,
-    this.onSkipPrev,
-  });
+  _Binding({required this.owner, this.onPlay, this.onPause, this.onStop, this.onSkipNext, this.onSkipPrev});
 }
 
 /// Global handler — set once in [main] after [AudioService.init], then read

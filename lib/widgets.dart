@@ -147,7 +147,7 @@ String removeDuplicateMainWord(String sentence) {
   int end = sentence.indexOf("]]");
   if (start >= 0 && end > start) {
     String lcsentence = sentence.toLowerCase();
-    String mainw = lcsentence.substring(start+2, end);
+    String mainw = lcsentence.substring(start + 2, end);
     int i = lcsentence.indexOf(mainw);
     //debugPrint("hack $lcsentence , $mainw , $i");
     if (i >= 0 && i < start) {
@@ -157,7 +157,7 @@ String removeDuplicateMainWord(String sentence) {
   ret = ret.trim();
   start = ret.indexOf("[[");
   if (start == 0 && ret.length > 2) {
-    ret = ret.replaceRange(2, 3, ret.substring(2,3).toUpperCase());
+    ret = ret.replaceRange(2, 3, ret.substring(2, 3).toUpperCase());
   }
   return ret;
 }
@@ -192,47 +192,48 @@ String fingerprintSentences(List<WordSentence> sentences) {
 }
 
 void lpSnack(BuildContext context, String text, int ms, {bool center = true}) {
-  Color bkcolor = Color.fromARGB(255,255,255,176);
+  Color bkcolor = Color.fromARGB(255, 255, 255, 176);
   ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.only(
-            topLeft: Radius.circular(24),
-            topRight: Radius.circular(24),
-            // bottomLeft: Radius.circular(4),
-            // bottomRight: Radius.circular(4),
-          ),
+    SnackBar(
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(24),
+          topRight: Radius.circular(24),
+          // bottomLeft: Radius.circular(4),
+          // bottomRight: Radius.circular(4),
         ),
-        backgroundColor: bkcolor,
-        // backgroundColor: Color.fromARGB(200,255,239,156),
-        duration: Duration(milliseconds: ms),
-        // behavior: SnackBarBehavior.floating,
-        behavior: SnackBarBehavior.fixed,
-        padding: EdgeInsets.zero,
-        // margin: EdgeInsets.symmetric(horizontal: 16, vertical: 00),
-        //content: Text(text, textAlign: center ? TextAlign.center : TextAlign.left,),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(0,8,0,4),
-              child: Text(text, textAlign: center ? TextAlign.center : TextAlign.left,),
-            ),
-            // The narrow gradient line
-            Container(
-              height: 8.0, // Thickness of the narrow line
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.bottomCenter,
-                  end: Alignment.topCenter,
-                  colors: [
-                    Theme.of(context).bottomNavigationBarTheme.backgroundColor ?? Colors.black, // Nav Bar Color
-                    bkcolor,
-                  ],
-                ),
+      ),
+      backgroundColor: bkcolor,
+      // backgroundColor: Color.fromARGB(200,255,239,156),
+      duration: Duration(milliseconds: ms),
+      // behavior: SnackBarBehavior.floating,
+      behavior: SnackBarBehavior.fixed,
+      padding: EdgeInsets.zero,
+      // margin: EdgeInsets.symmetric(horizontal: 16, vertical: 00),
+      //content: Text(text, textAlign: center ? TextAlign.center : TextAlign.left,),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(0, 8, 0, 4),
+            child: Text(text, textAlign: center ? TextAlign.center : TextAlign.left),
+          ),
+          // The narrow gradient line
+          Container(
+            height: 8.0, // Thickness of the narrow line
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.bottomCenter,
+                end: Alignment.topCenter,
+                colors: [
+                  Theme.of(context).bottomNavigationBarTheme.backgroundColor ?? Colors.black, // Nav Bar Color
+                  bkcolor,
+                ],
               ),
             ),
-          ],
-        ),
-      ));
+          ),
+        ],
+      ),
+    ),
+  );
 }

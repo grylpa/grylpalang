@@ -74,7 +74,7 @@ class _PredictionTabState extends State<PredictionTab> {
   Future<void> _speakAnswer() async {
     if (!_ttsSupported()) {
       if (!mounted) return;
-        lpSnack(context, 'Text-to-speech is not available on this platform.', 4000);
+      lpSnack(context, 'Text-to-speech is not available on this platform.', 4000);
       return;
     }
 
@@ -183,9 +183,9 @@ class _PredictionTabState extends State<PredictionTab> {
                             const SizedBox(height: 10),
                             Text(
                               hintText,
-                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                              ),
+                              style: Theme.of(
+                                context,
+                              ).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
                             ),
                           ],
                         ),
@@ -256,10 +256,7 @@ class _PredictionTabState extends State<PredictionTab> {
                         elevation: 0,
                         child: Padding(
                           padding: const EdgeInsets.all(12),
-                          child: Text(
-                            _feedback,
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
+                          child: Text(_feedback, style: Theme.of(context).textTheme.bodyMedium),
                         ),
                       ),
                   ],

@@ -4,11 +4,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Sentence Bank foreground service (keeps auto mode alive when screen is off) -->
+    <!-- audio_service media session: what keeps Sentence Bank / Books audio
+         playing with the screen off, and drives the lockscreen controls. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:label="Katalaveno"
@@ -43,18 +43,7 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- Notification icon for the Sentence Bank foreground service. -->
-        <meta-data
-            android:name="katalaveno.foreground_service.notification_icon"
-            android:resource="@mipmap/notif_launcher" />
-
-        <!-- Warning: Do not change service name. -->
-        <service
-            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
-            android:foregroundServiceType="mediaPlayback"
-            android:exported="false" />
-
-        <!-- just_audio_background: native media session that survives screen lock. -->
+        <!-- audio_service: native media session that survives screen lock. -->
         <service
             android:name="com.ryanheise.audioservice.AudioService"
             android:foregroundServiceType="mediaPlayback"

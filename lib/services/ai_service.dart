@@ -17,8 +17,10 @@ class AiException implements Exception {
 }
 
 class AiService {
-  static const String _fallbackModelEndpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent';
-  static const String _modelEndpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+  static const String _fallbackModelEndpoint =
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent';
+  static const String _modelEndpoint =
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
   // static Future<http.Response> queryModel(String apiKey, body) async {
   //   try {
@@ -74,9 +76,11 @@ class AiService {
     return false;
   }
 
-  static Future<http.Response> _post(String endpoint, String apiKey, body) =>
-      http.post(Uri.parse('$endpoint?key=$apiKey'),
-          headers: {'Content-Type': 'application/json'}, body: jsonEncode(body));
+  static Future<http.Response> _post(String endpoint, String apiKey, body) => http.post(
+    Uri.parse('$endpoint?key=$apiKey'),
+    headers: {'Content-Type': 'application/json'},
+    body: jsonEncode(body),
+  );
 
   static Future<http.Response> queryModel(String apiKey, body, {int maxRetries = 3, bool allowFallback = true}) async {
     try {
@@ -112,7 +116,6 @@ class AiService {
     }
   }
 
-
   /// Evaluate a user's "prediction" answer using the AI model.
   ///
   /// The evaluator should be *meaning-aware* and forgiving about:
@@ -142,7 +145,8 @@ class AiService {
       throw Exception('AI API key is empty (set it in Settings).');
     }
 
-    final prompt = '''
+    final prompt =
+        '''
 You are a strict-but-kind language tutor and evaluator.
 
 KNOWN LANGUAGE: $knownLanguage
@@ -248,8 +252,12 @@ Guidance for score:
     return out.cast<String, dynamic>();
   }
 
-  static ({String wordL2, String wordL1, List<WordSentence> sentences}) _parseWordAndSentencesJson(
-      {required String jsonString, required String fallbackWord, required String fallbackKnownWord, required List<String> connectorWords}) {
+  static ({String wordL2, String wordL1, List<WordSentence> sentences}) _parseWordAndSentencesJson({
+    required String jsonString,
+    required String fallbackWord,
+    required String fallbackKnownWord,
+    required List<String> connectorWords,
+  }) {
     final decoded = jsonDecode(jsonString);
     if (decoded is! Map) throw Exception('AI returned non-object JSON for combined word+sentences.');
 
@@ -275,18 +283,15 @@ Guidance for score:
 
     return (wordL2: outWord, wordL1: outKnownWord, sentences: result);
   }
+
   /// Normalize a user-typed language name to a canonical English name
   /// (e.g. "ellinika", "Ελληνικά", "gr" -> "Greek").
   /// If anything goes wrong, just return the original input trimmed.
   static String _normKey(String s) {
     final lower = s.trim().toLowerCase();
-    final cleaned = lower
-        .replaceAll(RegExp(r"[_\-.,/\\()\[\]{}:;'|]+"),' ',)
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
+    final cleaned = lower.replaceAll(RegExp(r"[_\-.,/\\()\[\]{}:;'|]+"), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
     return cleaned;
   }
-
 
   static String? _commonLanguageLookup(String input) {
     final k = _normKey(input);
@@ -422,7 +427,8 @@ Guidance for score:
     final keyTrimmed = apiKey.trim();
     if (keyTrimmed.isEmpty) return input;
 
-    final prompt = '''
+    final prompt =
+        '''
 You normalize language names.
 
 The user types something that *means* a language:
@@ -481,69 +487,68 @@ USER INPUT: "$input"
     }
   }
 
-
-//   // Translate a single word from known language (L1) into target language (L2).
-//   static Future<String> translateSingleWordToTarget({
-//     required String apiKey,
-//     required String input,
-//     required String knownLanguage,
-//     required String targetLanguage,
-//   }) async {
-//     if (apiKey.trim().isEmpty) {
-//       throw Exception('AI API key is empty (set it in Settings).');
-//     }
-//
-//     final prompt = '''
-// You translate a *single word* into the TARGET LANGUAGE.
-//
-// KNOWN LANGUAGE (L1): $knownLanguage
-// TARGET LANGUAGE (L2): $targetLanguage
-//
-// USER INPUT (L1): "$input"
-//
-// Rules:
-// 1. Translate this into ONE common, natural word in $targetLanguage.
-// 2. Use the correct native script of $targetLanguage (e.g. Greek letters for Greek).
-// 3. If the input already looks like a correct $targetLanguage word, return it unchanged.
-// 4. Return ONLY the final L2 word, no quotes, no explanation, no extra text.
-// ''';
-//
-//     final body = {
-//       'contents': [
-//         {
-//           'parts': [
-//             {'text': prompt},
-//           ],
-//         },
-//       ],
-//     };
-//
-//     final resp = await queryModel(apiKey, body);
-//
-//     if (resp.statusCode != 200) {
-//       // throw Exception('AI error ${resp.statusCode}: ${resp.body}');
-//       _throwAiError(resp, 'translateSingleWordToTarget');
-//     }
-//
-//     final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-//     final candidates = decoded['candidates'] as List?;
-//     if (candidates == null || candidates.isEmpty) {
-//       throw Exception('AI returned no candidates for translateSingleWordToTarget');
-//     }
-//
-//     final content = candidates.first['content'] as Map<String, dynamic>?;
-//     final parts = content?['parts'] as List?;
-//     if (parts == null || parts.isEmpty) {
-//       throw Exception('AI returned empty content for translateSingleWordToTarget');
-//     }
-//
-//     final text = (parts.first['text'] as String? ?? '').trim();
-//     if (text.isEmpty) {
-//       throw Exception('AI returned empty text for translateSingleWordToTarget');
-//     }
-//
-//     return text.split('\n').first.trim();
-//   }
+  //   // Translate a single word from known language (L1) into target language (L2).
+  //   static Future<String> translateSingleWordToTarget({
+  //     required String apiKey,
+  //     required String input,
+  //     required String knownLanguage,
+  //     required String targetLanguage,
+  //   }) async {
+  //     if (apiKey.trim().isEmpty) {
+  //       throw Exception('AI API key is empty (set it in Settings).');
+  //     }
+  //
+  //     final prompt = '''
+  // You translate a *single word* into the TARGET LANGUAGE.
+  //
+  // KNOWN LANGUAGE (L1): $knownLanguage
+  // TARGET LANGUAGE (L2): $targetLanguage
+  //
+  // USER INPUT (L1): "$input"
+  //
+  // Rules:
+  // 1. Translate this into ONE common, natural word in $targetLanguage.
+  // 2. Use the correct native script of $targetLanguage (e.g. Greek letters for Greek).
+  // 3. If the input already looks like a correct $targetLanguage word, return it unchanged.
+  // 4. Return ONLY the final L2 word, no quotes, no explanation, no extra text.
+  // ''';
+  //
+  //     final body = {
+  //       'contents': [
+  //         {
+  //           'parts': [
+  //             {'text': prompt},
+  //           ],
+  //         },
+  //       ],
+  //     };
+  //
+  //     final resp = await queryModel(apiKey, body);
+  //
+  //     if (resp.statusCode != 200) {
+  //       // throw Exception('AI error ${resp.statusCode}: ${resp.body}');
+  //       _throwAiError(resp, 'translateSingleWordToTarget');
+  //     }
+  //
+  //     final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
+  //     final candidates = decoded['candidates'] as List?;
+  //     if (candidates == null || candidates.isEmpty) {
+  //       throw Exception('AI returned no candidates for translateSingleWordToTarget');
+  //     }
+  //
+  //     final content = candidates.first['content'] as Map<String, dynamic>?;
+  //     final parts = content?['parts'] as List?;
+  //     if (parts == null || parts.isEmpty) {
+  //       throw Exception('AI returned empty content for translateSingleWordToTarget');
+  //     }
+  //
+  //     final text = (parts.first['text'] as String? ?? '').trim();
+  //     if (text.isEmpty) {
+  //       throw Exception('AI returned empty text for translateSingleWordToTarget');
+  //     }
+  //
+  //     return text.split('\n').first.trim();
+  //   }
 
   /// Option A: one request that (a) produces/normalizes the final L2 word and (b) generates the sentences.
   /// This is used when adding a new word, to avoid doing two back-to-back Gemini calls.
@@ -560,7 +565,10 @@ USER INPUT: "$input"
   }) async {
     var sc = simpleCount;
     var cc = conjugatedCount;
-    if (defaultTargetPlatform == TargetPlatform.linux) { sc = min(1, sc); cc = min(5, cc); }
+    if (defaultTargetPlatform == TargetPlatform.linux) {
+      sc = min(1, sc);
+      cc = min(5, cc);
+    }
     if (apiKey.trim().isEmpty) throw Exception('AI API key is empty (set it in Settings).');
 
     final l1 = (wordL1 ?? '').trim();
@@ -569,7 +577,11 @@ USER INPUT: "$input"
     if (l1.isNotEmpty && l2.isNotEmpty) throw Exception('Please fill only one of the two fields, not both.');
 
     final total = sc + cc;
-    final typeText = switch (type) { WordType.verb => 'verb (action)', WordType.noun => 'noun (thing)', WordType.other => 'other word type', };
+    final typeText = switch (type) {
+      WordType.verb => 'verb (action)',
+      WordType.noun => 'noun (thing)',
+      WordType.other => 'other word type',
+    };
     final connectorsList = connectorWords.where((w) => w.trim().isNotEmpty).toList();
     final connectorsText = connectorsList.isEmpty ? '[]' : '[${connectorsList.map((w) => '"$w"').join(', ')}]';
 
@@ -595,7 +607,8 @@ TASK A (translate to L2):
 7. If the input L1 is not in $knownLanguage, translate it to $knownLanguage and output as WORD_L1
 ''';
 
-    final prompt = '''
+    final prompt =
+        '''
 You are an expert language generator.
 
 TARGET LANGUAGE (L2): $targetLanguage
@@ -674,7 +687,10 @@ The JSON object must be:
               'items': {
                 'type': 'object',
                 'properties': {
-                  'l2': {'type': 'string', 'description': 'L2 sentence. MUST contain exactly one [[...]] around the word form.'},
+                  'l2': {
+                    'type': 'string',
+                    'description': 'L2 sentence. MUST contain exactly one [[...]] around the word form.',
+                  },
                   'l1': {'type': 'string', 'description': 'L1 translation.'},
                 },
                 'required': ['l2', 'l1'],
@@ -700,7 +716,12 @@ The JSON object must be:
     final text = (parts.first['text'] as String? ?? '').trim();
     if (text.isEmpty) throw Exception('AI returned empty text');
 
-    final parsed = _parseWordAndSentencesJson(jsonString: text, fallbackWord: l2.isNotEmpty ? l2 : l1, fallbackKnownWord: l1, connectorWords: connectorWords);
+    final parsed = _parseWordAndSentencesJson(
+      jsonString: text,
+      fallbackWord: l2.isNotEmpty ? l2 : l1,
+      fallbackKnownWord: l1,
+      connectorWords: connectorWords,
+    );
     var sentences = parsed.sentences;
     if (sentences.length > total) sentences = sentences.take(total).toList();
     if (sentences.isEmpty) throw Exception('AI returned empty sentences list');
@@ -737,7 +758,8 @@ The JSON object must be:
     final connectorsList = connectorWords.where((w) => w.trim().isNotEmpty).toList();
     final connectorsText = connectorsList.isEmpty ? '[]' : '[${connectorsList.map((w) => '"$w"').join(', ')}]';
 
-    final prompt = '''
+    final prompt =
+        '''
 You are an expert language generator.
 
 TARGET LANGUAGE (L2): $targetLanguage
@@ -810,9 +832,12 @@ Example of the format (structure only):
           'items': {
             'type': 'object',
             'properties': {
-              'l2': {'type': 'string', 'description': 'L2 sentence. MUST contain exactly one [[...]] around the main word form.'},
+              'l2': {
+                'type': 'string',
+                'description': 'L2 sentence. MUST contain exactly one [[...]] around the main word form.',
+              },
               'l1': {'type': 'string', 'description': 'L1 translation.'},
-              'l1conj':  {'type': 'string', 'description': 'conjugated main word in L1.'},
+              'l1conj': {'type': 'string', 'description': 'conjugated main word in L1.'},
             },
             'required': ['l2', 'l1', 'l1conj'],
           },
@@ -886,7 +911,8 @@ Example of the format (structure only):
       throw Exception('AI API key is empty (set it in Settings).');
     }
 
-    final prompt = '''
+    final prompt =
+        '''
 You are a transliteration helper.
 
 TARGET LANGUAGE: $targetLanguage
@@ -967,20 +993,21 @@ TASK:
     // Fast path: handle common cases without assuming JSON.
     if (resp.statusCode == 429) {
       final d = _retryAfterDuration(resp);
-      if (d != null && d > Duration.zero) throw AiException('Gemini API quota exceeded. ${_formatRetryAfterMessage(d)}');
+      if (d != null && d > Duration.zero)
+        throw AiException('Gemini API quota exceeded. ${_formatRetryAfterMessage(d)}');
       final d2 = _retryDelayFromGeminiBody(resp.body);
-      if (d2 != null && d2 > Duration.zero) throw AiException('Gemini API quota exceeded. ${_formatRetryAfterMessage(d2)}');
+      if (d2 != null && d2 > Duration.zero)
+        throw AiException('Gemini API quota exceeded. ${_formatRetryAfterMessage(d2)}');
       throw AiException('Gemini API quota exceeded. Please try again in a bit.');
     }
     if (resp.statusCode == 503 || resp.statusCode == 502) {
       final d = _retryAfterDuration(resp);
-      if (d != null && d > Duration.zero) throw AiException('AI service is temporarily busy. ${_formatRetryAfterMessage(d)}');
+      if (d != null && d > Duration.zero)
+        throw AiException('AI service is temporarily busy. ${_formatRetryAfterMessage(d)}');
       throw AiException('AI service is temporarily busy. Please try again in a bit.');
     }
     if (resp.statusCode == 401 || resp.statusCode == 403) {
-      throw AiException(
-        'Gemini API key seems invalid or unauthorized. Check it in Settings.',
-      );
+      throw AiException('Gemini API key seems invalid or unauthorized. Check it in Settings.');
     }
 
     // Now *optionally* parse JSON for nicer messages.
@@ -993,9 +1020,7 @@ TASK:
 
         // Some Gemini responses use RESOURCE_EXHAUSTED even if code != 429.
         if (status == 'RESOURCE_EXHAUSTED') {
-          throw AiException(
-            'Gemini API quota exceeded. Please wait a bit or reduce usage.',
-          );
+          throw AiException('Gemini API quota exceeded. Please wait a bit or reduce usage.');
         }
 
         // Generic, but still short
@@ -1012,7 +1037,10 @@ TASK:
   }
 
   static Duration? _retryAfterDuration(http.Response resp) {
-    final v = resp.headers.entries.firstWhere((e) => e.key.toLowerCase() == 'retry-after', orElse: () => const MapEntry('', '')).value.trim();
+    final v = resp.headers.entries
+        .firstWhere((e) => e.key.toLowerCase() == 'retry-after', orElse: () => const MapEntry('', ''))
+        .value
+        .trim();
     if (v.isEmpty) return null;
 
     final seconds = int.tryParse(v);
@@ -1041,9 +1069,13 @@ TASK:
     final whenLocal = nowLocal.add(d);
 
     String rel;
-    if (d.inSeconds < 60) { rel = '${d.inSeconds}s'; }
-    else if (d.inMinutes < 60) { rel = '${d.inMinutes} min'; }
-    else { rel = '${d.inHours} h'; }
+    if (d.inSeconds < 60) {
+      rel = '${d.inSeconds}s';
+    } else if (d.inMinutes < 60) {
+      rel = '${d.inMinutes} min';
+    } else {
+      rel = '${d.inHours} h';
+    }
 
     final hh = whenLocal.hour.toString().padLeft(2, '0');
     final mm = whenLocal.minute.toString().padLeft(2, '0');
@@ -1084,5 +1116,4 @@ TASK:
     }
     return null;
   }
-
 }

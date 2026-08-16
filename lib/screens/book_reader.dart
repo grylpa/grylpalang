@@ -49,9 +49,20 @@ String _bookLocale(String raw) {
   if (lower.isEmpty) return 'en-US';
   if (lower.contains('-') || lower.contains('_')) return raw.replaceAll('_', '-');
   const map = {
-    'en': 'en-US', 'el': 'el-GR', 'he': 'he-IL', 'de': 'de-DE', 'fr': 'fr-FR',
-    'es': 'es-ES', 'it': 'it-IT', 'pt': 'pt-PT', 'ru': 'ru-RU', 'tr': 'tr-TR',
-    'ar': 'ar-SA', 'zh': 'zh-CN', 'ja': 'ja-JP', 'ko': 'ko-KR',
+    'en': 'en-US',
+    'el': 'el-GR',
+    'he': 'he-IL',
+    'de': 'de-DE',
+    'fr': 'fr-FR',
+    'es': 'es-ES',
+    'it': 'it-IT',
+    'pt': 'pt-PT',
+    'ru': 'ru-RU',
+    'tr': 'tr-TR',
+    'ar': 'ar-SA',
+    'zh': 'zh-CN',
+    'ja': 'ja-JP',
+    'ko': 'ko-KR',
   };
   return map[lower] ?? lower;
 }
@@ -61,19 +72,16 @@ String _bookLocale(String raw) {
 /// per book. Audio mode comes in Phase 3.
 class BookReader extends StatefulWidget {
   final BookEntry book;
+
   /// If set, opens at this chapter rather than the saved chapter index — used
   /// by the Books tab's per-book Resume action so it lands in the chapter the
   /// audio was paused in even if the user has since navigated elsewhere.
   final int? initialChapterIndex;
+
   /// If true, starts the audio session automatically after the book loads,
   /// jumping to the saved resume ordinal if there is one.
   final bool autoStartAudio;
-  const BookReader({
-    super.key,
-    required this.book,
-    this.initialChapterIndex,
-    this.autoStartAudio = false,
-  });
+  const BookReader({super.key, required this.book, this.initialChapterIndex, this.autoStartAudio = false});
 
   @override
   State<BookReader> createState() => _BookReaderState();
@@ -429,9 +437,7 @@ class _BookReaderState extends State<BookReader> {
       final sourceLocale = _bookLocale(widget.book.language);
       final targetLocale = _localeForLanguage(settings.targetLanguage) ?? 'en-US';
       final src = _chunks[_currentOrdinal];
-      final tr = (_currentOrdinal < _translations.length)
-          ? _translations[_currentOrdinal]
-          : null;
+      final tr = (_currentOrdinal < _translations.length) ? _translations[_currentOrdinal] : null;
 
       await _speakLive(src, sourceLocale);
       if (!mounted || mySession != _replaySession) return;
@@ -598,11 +604,11 @@ class _BookReaderState extends State<BookReader> {
         final i = regionPrefs.indexOf(parts.length > 1 ? parts[1] : '');
         return i >= 0 ? i : regionPrefs.length;
       }
-      return g.keys.toList()
-        ..sort((a, b) {
-          final r = rank(a).compareTo(rank(b));
-          return r != 0 ? r : a.compareTo(b);
-        });
+
+      return g.keys.toList()..sort((a, b) {
+        final r = rank(a).compareTo(rank(b));
+        return r != 0 ? r : a.compareTo(b);
+      });
     }
 
     final sourceGroups = groupVoicesFor(sourceLookup);
@@ -620,9 +626,7 @@ class _BookReaderState extends State<BookReader> {
 
             Future<void> pick(String lookupLocale, String voiceVal) async {
               picks[lookupLocale] = voiceVal;
-              await state.saveSettingsOnly(
-                state.settings.copyWith(booksVoiceByLocale: picks),
-              );
+              await state.saveSettingsOnly(state.settings.copyWith(booksVoiceByLocale: picks));
               if (sheetCtx.mounted) setSheet(() {});
             }
 
@@ -680,16 +684,12 @@ class _BookReaderState extends State<BookReader> {
                   ),
                   automaticTile(lookupLocale),
                   if (groups.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Text('No installed voices for this language.'),
-                    ),
+                    const Padding(padding: EdgeInsets.all(16), child: Text('No installed voices for this language.')),
                   for (final loc in orderedLocales)
                     ExpansionTile(
                       title: Text('$loc  (${groups[loc]!.length})'),
                       children: [
-                        for (var i = 0; i < groups[loc]!.length; i++)
-                          voiceTile(groups[loc]![i], lookupLocale, i),
+                        for (var i = 0; i < groups[loc]!.length; i++) voiceTile(groups[loc]![i], lookupLocale, i),
                       ],
                     ),
                 ],
@@ -759,7 +759,9 @@ class _BookReaderState extends State<BookReader> {
     // otherwise replay as permanent silence.
     if (await file.exists()) {
       if (await file.length() >= 1024) return file.path;
-      try { await file.delete(); } catch (_) {}
+      try {
+        await file.delete();
+      } catch (_) {}
     }
 
     await _audioTts.stop();
@@ -776,12 +778,18 @@ class _BookReaderState extends State<BookReader> {
     try {
       await _audioTts.synthesizeToFile(text, file.path, true).timeout(const Duration(seconds: 30));
     } on TimeoutException {
-      try { await _audioTts.stop(); } catch (_) {}
-      try { if (await file.exists()) await file.delete(); } catch (_) {}
+      try {
+        await _audioTts.stop();
+      } catch (_) {}
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
       throw Exception('TTS synthesis timed out for "$locale".');
     }
     if (!await file.exists() || await file.length() < 1024) {
-      try { if (await file.exists()) await file.delete(); } catch (_) {}
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
       throw Exception('TTS produced no audio for "$locale".');
     }
     return file.path;
@@ -837,8 +845,7 @@ class _BookReaderState extends State<BookReader> {
         ],
       ),
       body: _buildBody(),
-      bottomNavigationBar:
-          (_chapters == null || _chapters!.isEmpty) ? null : _buildNavBar(),
+      bottomNavigationBar: (_chapters == null || _chapters!.isEmpty) ? null : _buildNavBar(),
     );
   }
 
@@ -847,9 +854,7 @@ class _BookReaderState extends State<BookReader> {
   /// chunk, plus pause/stop controls.
   Widget _buildAudioScaffold() {
     final src = (_currentOrdinal < _chunks.length) ? _chunks[_currentOrdinal] : '';
-    final tr = (_currentOrdinal < _translations.length)
-        ? (_translations[_currentOrdinal] ?? '')
-        : '';
+    final tr = (_currentOrdinal < _translations.length) ? (_translations[_currentOrdinal] ?? '') : '';
     final theme = Theme.of(context);
     return Scaffold(
       body: SafeArea(
@@ -863,9 +868,7 @@ class _BookReaderState extends State<BookReader> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    _audioPrep
-                        ? 'Preparing first clip…'
-                        : '${_currentOrdinal + 1} / ${_chunks.length}',
+                    _audioPrep ? 'Preparing first clip…' : '${_currentOrdinal + 1} / ${_chunks.length}',
                     style: theme.textTheme.labelMedium,
                   ),
                   FilledButton.tonalIcon(
@@ -925,9 +928,7 @@ class _BookReaderState extends State<BookReader> {
                                 // session token bump in _replayCurrentChunk
                                 // cuts off the in-flight speech before the new
                                 // one starts — no overlap, no toggle state.
-                                onPressed: (!_audioPrep && _audioPaused)
-                                    ? _replayCurrentChunk
-                                    : null,
+                                onPressed: (!_audioPrep && _audioPaused) ? _replayCurrentChunk : null,
                                 icon: const Icon(Icons.replay),
                                 label: const Text('Replay this chunk'),
                               ),
@@ -1128,8 +1129,7 @@ class _BookReaderState extends State<BookReader> {
           controller: ctrl,
           itemCount: chapters.length,
           itemBuilder: (_, i) => ListTile(
-            leading: Text('${i + 1}',
-                style: Theme.of(ctx).textTheme.labelSmall),
+            leading: Text('${i + 1}', style: Theme.of(ctx).textTheme.labelSmall),
             title: Text(chapters[i].title, overflow: TextOverflow.ellipsis),
             selected: i == _chapterIndex,
             onTap: () => Navigator.of(ctx).pop(i),

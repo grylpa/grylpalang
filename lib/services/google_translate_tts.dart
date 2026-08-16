@@ -30,8 +30,7 @@ class GoogleTranslateTts {
   /// Returns true if [text] fits in a single endpoint request.
   bool canSpeak(String text) => text.length <= _kMaxLen;
 
-  static String _hashKey(String text, String langCode) =>
-      sha1.convert(utf8.encode('$langCode|$text')).toString();
+  static String _hashKey(String text, String langCode) => sha1.convert(utf8.encode('$langCode|$text')).toString();
 
   Future<Directory> _ensureDiskDir() {
     return _diskDirInit ??= () async {
@@ -81,19 +80,19 @@ class GoogleTranslateTts {
   static const _kRetryDelaysMs = [400, 900, 2000];
 
   Future<Uint8List> _downloadBytes(String text, String langCode) async {
-    final uri = Uri.https(_kHost, _kPath, {
-      'ie': 'UTF-8',
-      'q': text,
-      'tl': langCode,
-      'client': 'tw-ob',
-    });
-    for (var attempt = 0;; attempt++) {
-      final resp = await http.get(uri, headers: {
-        // The endpoint refuses requests without a browser-like UA.
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-        'Accept': '*/*',
-        'Referer': 'https://translate.google.com/',
-      }).timeout(const Duration(seconds: 8));
+    final uri = Uri.https(_kHost, _kPath, {'ie': 'UTF-8', 'q': text, 'tl': langCode, 'client': 'tw-ob'});
+    for (var attempt = 0; ; attempt++) {
+      final resp = await http
+          .get(
+            uri,
+            headers: {
+              // The endpoint refuses requests without a browser-like UA.
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+              'Accept': '*/*',
+              'Referer': 'https://translate.google.com/',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
 
       if (resp.statusCode == 200) return resp.bodyBytes;
       if (resp.statusCode == 429 && attempt < _kRetryDelaysMs.length) {
