@@ -1,12 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/app_settings.dart';
 import '../models/book_entry.dart';
 import '../services/book_library_service.dart';
 import '../services/gutenberg_service.dart';
 import '../services/local_books_service.dart';
+import '../state/app_state.dart';
 import 'book_reader.dart';
 
 /// Phase 1: browse a popular slice of the Project Gutenberg catalog (via the
@@ -383,23 +386,15 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Expanded(child: _searchField()),
-              const SizedBox(width: 8),
-              _yearField(),
-              const SizedBox(width: 8),
-              PopupMenuButton<String>(
-                tooltip: 'Import book from phone',
-                onSelected: _importLocal,
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'epub', child: Text('Import EPUB')),
-                  PopupMenuItem(value: 'txt', child: Text('Import TXT')),
-                ],
-                icon: const Icon(Icons.file_upload_outlined),
-              ),
+              const SizedBox(width: 4),
+              _overflowMenu(),
             ],
           ),
-          const SizedBox(height: 8),
-          _filterRows(),
+          const SizedBox(height: 4),
+          // The two ways to get a book in are peers: fetch the public catalogue,
+          // or bring your own file. Same width, same treatment, no hierarchy.
           _gutenbergButton(),
+          _importButton(),
           const SizedBox(height: 8),
           if (_error != null)
             Container(
@@ -465,50 +460,304 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     );
   }
 
-  /// Two compact rows of dropdowns: [Genre, Length] then [Difficulty, Sort].
-  /// Each dropdown is `Expanded` so they share the row evenly.
-  Widget _filterRows() {
-    return Column(
-      children: [
-        Row(
-          children: [
-            Expanded(child: _genreDropdown()),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _enumDropdown('Length', _length, const [
-                'any',
-                'short',
-                'medium',
-                'long',
-              ], (v) => setState(() => _length = v)),
-            ),
-          ],
+  // ── Overflow menu / filter sheet ──────────────────────────────────────────
+
+  /// Filters that actually narrow the list (sort doesn't, and the year is a
+  /// catalogue setting rather than a filter — see [_showFilterSheet]).
+  int get _activeFilterCount => (_genre != null ? 1 : 0) + (_length != 'any' ? 1 : 0) + (_difficulty != 'any' ? 1 : 0);
+
+  /// Everything that isn't "get me a book": filtering, sorting and the Books
+  /// audio-mode settings. The import and Gutenberg buttons deliberately stay
+  /// out on the screen itself.
+  Widget _overflowMenu() {
+    final active = _activeFilterCount;
+    final button = PopupMenuButton<String>(
+      tooltip: 'Books options',
+      icon: const Icon(Icons.more_vert),
+      onSelected: (v) {
+        switch (v) {
+          case 'filter':
+            _showFilterSheet();
+          case 'reset':
+            _resetFilters();
+          case 'audio':
+            _showBooksAudioSheet();
+        }
+      },
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          value: 'filter',
+          child: Row(
+            children: [
+              const Icon(Icons.filter_list, size: 20),
+              const SizedBox(width: 12),
+              const Text('Filter & sort'),
+              if (active > 0) ...[
+                const Spacer(),
+                Text('$active active', style: Theme.of(context).textTheme.labelSmall),
+              ],
+            ],
+          ),
         ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: _enumDropdown('Difficulty', _difficulty, const [
-                'any',
-                'easy',
-                'medium',
-                'hard',
-              ], (v) => setState(() => _difficulty = v)),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _enumDropdown('Sort', _sort, const [
-                'newest',
-                'oldest',
-                'title',
-                'author',
-                'shortest',
-                'longest',
-              ], (v) => setState(() => _sort = v)),
-            ),
-          ],
+        PopupMenuItem(
+          value: 'reset',
+          enabled: active > 0,
+          child: const Row(
+            children: [Icon(Icons.filter_alt_off_outlined, size: 20), SizedBox(width: 12), Text('Clear filters')],
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'audio',
+          child: Row(
+            children: [Icon(Icons.headphones_outlined, size: 20), SizedBox(width: 12), Text('Audio mode settings')],
+          ),
         ),
       ],
+    );
+    // A dot on the ⋮ is the only hint left that filters are on, now that the
+    // dropdowns no longer sit on screen.
+    return active > 0 ? Badge(label: Text('$active'), child: button) : button;
+  }
+
+  void _resetFilters() {
+    // The year is left alone on purpose: it drives the Gutendex query and its
+    // per-year cache, so clearing it would silently throw away a fetched
+    // catalogue. It lives under "Catalogue" in the sheet for the same reason.
+    setState(() {
+      _genre = null;
+      _length = 'any';
+      _difficulty = 'any';
+      _sort = 'newest';
+    });
+  }
+
+  /// All the filtering/sorting controls that used to occupy two rows on screen.
+  /// Changes apply live to the list behind the sheet.
+  Future<void> _showFilterSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          // Every control mutates the tab's state; setSheet then re-renders the
+          // sheet's own copy of it, since setState alone rebuilds only the tab.
+          void pick(VoidCallback fn) {
+            setState(fn);
+            setSheet(() {});
+          }
+
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Text('Filter & sort', style: Theme.of(ctx).textTheme.titleMedium),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: _activeFilterCount == 0
+                            ? null
+                            : () => pick(() {
+                                _genre = null;
+                                _length = 'any';
+                                _difficulty = 'any';
+                                _sort = 'newest';
+                              }),
+                        child: const Text('Clear'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  _genreDropdown((v) => pick(() => _genre = v)),
+                  const SizedBox(height: 12),
+                  _enumDropdown('Length', _length, const [
+                    'any',
+                    'short',
+                    'medium',
+                    'long',
+                  ], (v) => pick(() => _length = v)),
+                  const SizedBox(height: 12),
+                  _enumDropdown('Difficulty', _difficulty, const [
+                    'any',
+                    'easy',
+                    'medium',
+                    'hard',
+                  ], (v) => pick(() => _difficulty = v)),
+                  const SizedBox(height: 12),
+                  _enumDropdown('Sort', _sort, const [
+                    'newest',
+                    'oldest',
+                    'title',
+                    'author',
+                    'shortest',
+                    'longest',
+                  ], (v) => pick(() => _sort = v)),
+                  const SizedBox(height: 20),
+                  Text('Catalogue', style: Theme.of(ctx).textTheme.titleMedium),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Earliest author year. Unlike the filters above this changes what '
+                    'is fetched from Gutenberg, and each year keeps its own cache.',
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Align(alignment: Alignment.centerLeft, child: _yearField()),
+                  const SizedBox(height: 16),
+                  FilledButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Done')),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Books audio-mode settings — moved off the Settings screen so everything
+  /// that shapes Books playback lives on the tab that uses it (the Sentence
+  /// Bank tab does the same with its own ⋮ → Settings).
+  Future<void> _showBooksAudioSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Consumer<AppState>(
+          builder: (ctx, state, _) {
+            final s = state.settings;
+            final textStyle = Theme.of(ctx).textTheme.bodyMedium;
+            return SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Audio mode', style: Theme.of(ctx).textTheme.titleMedium),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Drives the auto-playback in the Books tab. Each chunk is read in '
+                    "the book's language, paused, then read in your target language, "
+                    'with both sides repeated.',
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Text('Chunk by', style: textStyle),
+                      const SizedBox(width: 12),
+                      _filledDropdownBox(
+                        child: DropdownButton<String>(
+                          focusColor: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+                          dropdownColor: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+                          value: s.booksChunkUnit,
+                          items: const [
+                            DropdownMenuItem(value: 'sentence', child: Text('Sentence')),
+                            DropdownMenuItem(value: 'paragraph', child: Text('Paragraph')),
+                          ],
+                          onChanged: (v) {
+                            if (v != null) state.saveSettingsOnly(s.copyWith(booksChunkUnit: v));
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _booksStepper(
+                    ctx,
+                    label: 'Repeat each side',
+                    suffix: '\u00d7',
+                    current: s.booksRepeatCount,
+                    defaultValue: AppSettings.kBooksRepeatCountDefault,
+                    min: 1,
+                    max: 10,
+                    onSet: (v) => state.saveSettingsOnly(s.copyWith(booksRepeatCount: v)),
+                  ),
+                  _booksStepper(
+                    ctx,
+                    label: 'Pause between source and target',
+                    suffix: 's',
+                    current: s.booksSourcePauseSec,
+                    defaultValue: AppSettings.kBooksSourcePauseSecDefault,
+                    min: 0,
+                    onSet: (v) => state.saveSettingsOnly(s.copyWith(booksSourcePauseSec: v)),
+                  ),
+                  _booksStepper(
+                    ctx,
+                    label: 'Delay between repeats',
+                    suffix: 's',
+                    current: s.booksRepeatDelaySec,
+                    defaultValue: AppSettings.kBooksRepeatDelaySecDefault,
+                    min: 0,
+                    onSet: (v) => state.saveSettingsOnly(s.copyWith(booksRepeatDelaySec: v)),
+                  ),
+                  _booksStepper(
+                    ctx,
+                    label: 'Pause between chunks',
+                    suffix: 's',
+                    current: s.booksBetweenChunksPauseSec,
+                    defaultValue: AppSettings.kBooksBetweenChunksPauseSecDefault,
+                    min: 0,
+                    onSet: (v) => state.saveSettingsOnly(s.copyWith(booksBetweenChunksPauseSec: v)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Force short sentences', style: textStyle),
+                    subtitle: Text(
+                      'Split on commas/clauses so each chunk is as short as possible',
+                      style: Theme.of(ctx).textTheme.bodySmall,
+                    ),
+                    value: s.booksForceShortSentences,
+                    onChanged: s.booksChunkUnit == 'sentence'
+                        ? (v) => state.saveSettingsOnly(s.copyWith(booksForceShortSentences: v))
+                        : null,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  /// −/value/+ row with a reset-to-default affordance, mirroring the Sentence
+  /// Bank settings sheet so both tabs' settings read the same.
+  Widget _booksStepper(
+    BuildContext ctx, {
+    required String label,
+    required String suffix,
+    required int current,
+    required int defaultValue,
+    required int min,
+    int? max,
+    required void Function(int) onSet,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: Theme.of(ctx).textTheme.bodyMedium)),
+          IconButton(icon: const Icon(Icons.remove), onPressed: current <= min ? null : () => onSet(current - 1)),
+          SizedBox(
+            width: 40,
+            child: Text('$current$suffix', textAlign: TextAlign.center, style: Theme.of(ctx).textTheme.titleMedium),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: (max != null && current >= max) ? null : () => onSet(current + 1),
+          ),
+          IconButton(
+            icon: const Icon(Icons.restart_alt),
+            tooltip: 'Reset to default ($defaultValue$suffix)',
+            onPressed: current == defaultValue ? null : () => onSet(defaultValue),
+          ),
+        ],
+      ),
     );
   }
 
@@ -525,7 +774,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     );
   }
 
-  Widget _genreDropdown() {
+  Widget _genreDropdown(ValueChanged<String?> onPick) {
     final genres = _allGenres();
     // Stale selection (e.g. genre dropped out after a filter change) is included
     // as a "(no match)" item so the widget doesn't assert.
@@ -537,7 +786,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
         value: _genre,
         isExpanded: true,
         hint: const Text('Genre: any'),
-        onChanged: (v) => setState(() => _genre = v),
+        onChanged: onPick,
         items: [
           const DropdownMenuItem<String?>(value: null, child: Text('Genre: any')),
           if (stale) DropdownMenuItem<String?>(value: _genre, child: Text('${_genre!} (no match)')),
@@ -688,7 +937,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
     }
     final hasBooks = _remoteBooks.isNotEmpty;
     return Padding(
-      padding: const EdgeInsets.only(top: 4, bottom: 4),
+      padding: const EdgeInsets.only(top: 4, bottom: 2),
       child: SizedBox(
         width: double.infinity,
         child: OutlinedButton.icon(
@@ -698,6 +947,51 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
         ),
       ),
     );
+  }
+
+  /// Peer of [_gutenbergButton] — the other way to get a book into the app, so
+  /// it gets the same width and the same button style rather than being demoted
+  /// to an icon in the corner (or hidden in the ⋮ menu).
+  Widget _importButton() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, bottom: 4),
+      child: SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: _pickImportFormat,
+          icon: const Icon(Icons.file_upload_outlined),
+          label: const Text('Import a book from this phone'),
+        ),
+      ),
+    );
+  }
+
+  /// EPUB or TXT. A sheet rather than a popup menu so the choice is anchored to
+  /// the full-width button instead of a corner icon.
+  Future<void> _pickImportFormat() async {
+    final format = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.menu_book_outlined),
+              title: const Text('Import EPUB'),
+              onTap: () => Navigator.of(ctx).pop('epub'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.description_outlined),
+              title: const Text('Import TXT'),
+              onTap: () => Navigator.of(ctx).pop('txt'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (format != null) await _importLocal(format);
   }
 
   /// Footer at the bottom of the book list — shows a spinner with progress

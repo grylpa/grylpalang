@@ -4,7 +4,6 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../models/app_settings.dart';
 import '../services/ai_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
@@ -127,114 +126,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  /// A `−  value  +` stepper row matching the Sentence Bank controls (instead of
-  /// a slider). [suffix] is appended to the value (e.g. 's' or '×'). When
-  /// [defaultValue] is given, a reset button restores it (disabled when already
-  /// at the default), mirroring the Sentence Bank rows.
-  Widget _stepperRow({
-    required String label,
-    required int value,
-    required String suffix,
-    required int min,
-    int? max,
-    int? defaultValue,
-    required ValueChanged<int> onChanged,
-  }) {
-    final textStyle = Theme.of(context).textTheme.bodyMedium;
-    return Row(
-      children: [
-        Expanded(child: Text(label, style: textStyle)),
-        const SizedBox(width: 8),
-        IconButton(icon: const Icon(Icons.remove), onPressed: value <= min ? null : () => onChanged(value - 1)),
-        SizedBox(
-          width: 36,
-          child: Text('$value$suffix', textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
-        ),
-        IconButton(
-          icon: const Icon(Icons.add),
-          onPressed: (max != null && value >= max) ? null : () => onChanged(value + 1),
-        ),
-        if (defaultValue != null)
-          IconButton(
-            icon: const Icon(Icons.restart_alt),
-            tooltip: 'Reset to default ($defaultValue$suffix)',
-            onPressed: value == defaultValue ? null : () => onChanged(defaultValue),
-          ),
-      ],
-    );
-  }
-
-  /// Wraps a classic [DropdownButton] so it reads as a filled, borderless M3
-  /// field (no underline), matching the app's text inputs.
-  Widget _filledDropdown({required Widget child}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: DropdownButtonHideUnderline(child: child),
-    );
-  }
-
-  /// Commits the known/target language fields (normalizing them via the AI) and
-  /// reschedules. These are the only deferred fields left on the Settings screen;
-  /// everything else moved to the Dashboard's ⋮ menu.
+  /// Applies the two language fields together, since changing either one
+  /// invalidates every generated sentence. Disabled until something actually
+  /// differs from the saved settings, so an accidental tap can't kick off a
+  /// reschedule for nothing.
   Widget _applyLanguagesButton(AppState state) {
     final s = state.settings;
+    final known = _knownCtrl.text.trim();
+    final target = _targetCtrl.text.trim();
+    final changed = known.isNotEmpty && target.isNotEmpty && (known != s.knownLanguage || target != s.targetLanguage);
+
     return SizedBox(
       width: double.infinity,
-      child: ElevatedButton.icon(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-          foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
-          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 24),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          elevation: 1,
-        ),
-        icon: _savingSettings ? tinyCenteredSpinner(scale: 0.8) : const Icon(Icons.save),
-        label: const Text('Save languages'),
-        onPressed: _savingSettings
+      child: FilledButton.icon(
+        onPressed: !changed || _savingSettings
             ? null
             : () async {
-                FocusScope.of(context).unfocus();
                 setState(() => _savingSettings = true);
                 try {
-                  String newKnown = _knownCtrl.text.trim();
-                  String newTarget = _targetCtrl.text.trim();
-                  final langCache = Map<String, String>.from(s.languageNameCache);
-                  // The API key field auto-saves on change; read the controller so a
-                  // just-typed key is used for normalization.
-                  final apiKey = _apiKeyCtrl.text.trim();
-                  try {
-                    if (newKnown.isNotEmpty) {
-                      newKnown = await AiService.normalizeLanguageName(
-                        apiKey: apiKey,
-                        userInput: newKnown,
-                        cache: langCache,
-                      );
-                    }
-                    if (newTarget.isNotEmpty) {
-                      newTarget = await AiService.normalizeLanguageName(
-                        apiKey: apiKey,
-                        userInput: newTarget,
-                        cache: langCache,
-                      );
-                    }
-                  } catch (_) {}
-                  _knownCtrl.text = newKnown;
-                  _targetCtrl.text = newTarget;
-                  final newSettings = s.copyWith(
-                    knownLanguage: newKnown.isEmpty ? s.knownLanguage : newKnown,
-                    targetLanguage: newTarget.isEmpty ? s.targetLanguage : newTarget,
-                    languageNameCache: langCache,
-                  );
-                  await state.updateSettings(newSettings);
-                  if (mounted) lpSnack(context, 'Languages saved', 4000);
+                  // updateSettings (not saveSettingsOnly): the notification
+                  // schedule has to be rebuilt for the new languages.
+                  await state.updateSettings(s.copyWith(knownLanguage: known, targetLanguage: target));
                 } finally {
                   if (mounted) setState(() => _savingSettings = false);
                 }
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Languages set: $known → $target')));
               },
+        icon: const Icon(Icons.check),
+        label: const Text('Apply languages'),
       ),
     );
   }
@@ -243,7 +163,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final s = state.settings;
-    final textStyle = Theme.of(context).textTheme.bodyMedium;
     final titleStyle = Theme.of(context).textTheme.titleMedium;
 
     // Startup "no API key" flow asked us to reveal the AI-engine card.
@@ -362,86 +281,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               sectionKey: _aiSectionKey,
               controller: _aiExpansion,
             ),
-
-            // ── Books — Audio mode ──────────────────────────────────────
-            _section('Books — Audio mode', [
-              Text(
-                'Drives the auto-playback in the Books tab. Each chunk is read in '
-                'the book\'s language, paused, then read in your target language, '
-                'with both sides repeated.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Text('Chunk by', style: textStyle),
-                  const SizedBox(width: 12),
-                  _filledDropdown(
-                    child: DropdownButton<String>(
-                      focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                      dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                      value: s.booksChunkUnit,
-                      items: const [
-                        DropdownMenuItem(value: 'sentence', child: Text('Sentence')),
-                        DropdownMenuItem(value: 'paragraph', child: Text('Paragraph')),
-                      ],
-                      onChanged: (v) {
-                        if (v != null) state.saveSettingsOnly(s.copyWith(booksChunkUnit: v));
-                      },
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              _stepperRow(
-                label: 'Repeat each side',
-                value: s.booksRepeatCount,
-                suffix: '×',
-                min: 1,
-                max: 10,
-                defaultValue: AppSettings.kBooksRepeatCountDefault,
-                onChanged: (v) => state.saveSettingsOnly(s.copyWith(booksRepeatCount: v)),
-              ),
-              const SizedBox(height: 12),
-              _stepperRow(
-                label: 'Pause between source and target',
-                value: s.booksSourcePauseSec,
-                suffix: 's',
-                min: 0,
-                defaultValue: AppSettings.kBooksSourcePauseSecDefault,
-                onChanged: (v) => state.saveSettingsOnly(s.copyWith(booksSourcePauseSec: v)),
-              ),
-              const SizedBox(height: 12),
-              _stepperRow(
-                label: 'Delay between repeats',
-                value: s.booksRepeatDelaySec,
-                suffix: 's',
-                min: 0,
-                defaultValue: AppSettings.kBooksRepeatDelaySecDefault,
-                onChanged: (v) => state.saveSettingsOnly(s.copyWith(booksRepeatDelaySec: v)),
-              ),
-              const SizedBox(height: 12),
-              _stepperRow(
-                label: 'Pause between chunks',
-                value: s.booksBetweenChunksPauseSec,
-                suffix: 's',
-                min: 0,
-                defaultValue: AppSettings.kBooksBetweenChunksPauseSecDefault,
-                onChanged: (v) => state.saveSettingsOnly(s.copyWith(booksBetweenChunksPauseSec: v)),
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text('Force short sentences', style: textStyle),
-                subtitle: Text(
-                  'Split on commas/clauses so each chunk is as short as possible',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                value: s.booksForceShortSentences,
-                onChanged: s.booksChunkUnit == 'sentence'
-                    ? (v) => state.saveSettingsOnly(s.copyWith(booksForceShortSentences: v))
-                    : null,
-              ),
-            ]),
 
             // ── Maintenance ─────────────────────────────────────────────
             _section('Maintenance', [
