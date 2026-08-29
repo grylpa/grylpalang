@@ -76,6 +76,10 @@ class AutoPlaylistController {
     required int repeatCount,
     int sourceRepeatCount = 1,
     required int sourcePauseSec,
+    // Pause after the 2nd+ source clip in [alternate] mode. Null = same as
+    // [sourcePauseSec]; ignored entirely when not alternating, since there is
+    // only ever one source clip per sentence then.
+    int? nextSourcePauseSec,
     required int repeatDelaySec,
     required int postDelaySec,
     int startOrdinal = 0,
@@ -133,15 +137,19 @@ class AutoPlaylistController {
         // (source → sourcePause → target) repeated `reps` times, then postDelay.
         // Flipped, the pair becomes (target → sourcePause → source).
         for (var r = 0; r < reps; r++) {
+          // The first pair keeps the "pause after source" the user set; the
+          // repeats get their own (usually shorter) gap, since by then they've
+          // already heard the sentence and need less thinking time.
+          final gap = r == 0 ? sourcePauseSec : (nextSourcePauseSec ?? sourcePauseSec);
           if (src != null && !flip) {
             sources.add(_fileSource(src, 'src-$ord-$r', text));
             clipToOrdinal.add(ord);
-            await addSilence(sourcePauseSec, ord);
+            await addSilence(gap, ord);
           }
           sources.add(_fileSource(path, 't-$ord-$r', text));
           clipToOrdinal.add(ord);
           if (src != null && flip) {
-            await addSilence(sourcePauseSec, ord);
+            await addSilence(gap, ord);
             sources.add(_fileSource(src, 'src-$ord-$r', text));
             clipToOrdinal.add(ord);
           }

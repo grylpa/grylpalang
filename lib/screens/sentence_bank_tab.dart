@@ -16,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/app_settings.dart';
 import '../models/sentence_bank.dart';
 import 'markdown_doc_screen.dart';
 import '../services/audio_utils.dart';
@@ -1631,6 +1632,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       settings.sentenceBankTtsRepeatDelayOverride ?? _bank?.ttsRepeatDelay,
       _bank?.autoPostTtsDelay,
       settings.sentenceBankRepeatSourceBetween,
+      settings.sentenceBankNextSourcePauseSec,
       settings.sentenceBankTargetFirst,
     ].join('¦');
 
@@ -1784,6 +1786,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         sourcePaths: sourcePaths,
         repeatCount: state.sentenceBankResolvedTtsRepeatCount,
         sourcePauseSec: settings.sentenceBankSourcePauseOverride ?? _bank?.autoSourcePause ?? 1,
+        nextSourcePauseSec: settings.sentenceBankNextSourcePauseSec,
         repeatDelaySec: settings.sentenceBankTtsRepeatDelayOverride ?? _bank?.ttsRepeatDelay ?? 1,
         postDelaySec: _bank?.autoPostTtsDelay ?? 2,
         startOrdinal: _sentenceIndex,
@@ -2100,6 +2103,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         s.settings.sentenceBankSourcePauseOverride,
         s.settings.sentenceBankTtsRepeatDelayOverride,
         s.settings.sentenceBankRepeatSourceBetween,
+        s.settings.sentenceBankNextSourcePauseSec,
         s.settings.sentenceBankTargetFirst,
       ].join('¦'),
     );
@@ -2343,6 +2347,22 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                         ? (v) => state.saveSettingsOnly(s.copyWith(sentenceBankRepeatSourceBetween: v))
                         : null,
                   ),
+                  // Only meaningful while the source repeats, so it appears
+                  // with the switch that creates those extra source plays.
+                  if (s.sentenceBankSpeakSource && s.sentenceBankRepeatSourceBetween)
+                    _sbStepper(
+                      ctx,
+                      label: 'Pause after next sources',
+                      suffix: 's',
+                      min: 0,
+                      current: s.sentenceBankNextSourcePauseSec,
+                      yamlValue: AppSettings.kSbNextSourcePauseSecDefault,
+                      resetLabel: 'default',
+                      onSet: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankNextSourcePauseSec: v)),
+                      onReset: () => state.saveSettingsOnly(
+                        s.copyWith(sentenceBankNextSourcePauseSec: AppSettings.kSbNextSourcePauseSecDefault),
+                      ),
+                    ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: Text('Sometimes ${s.targetLanguage} first', style: textStyle),
@@ -2433,6 +2453,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     required int yamlValue,
     required int min,
     int? max,
+    // What the reset button restores — a YAML bank value for most rows, a
+    // built-in default for the settings that have no YAML key.
+    String resetLabel = 'YAML value',
     required void Function(int) onSet,
     required VoidCallback onReset,
   }) {
@@ -2452,7 +2475,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           ),
           IconButton(
             icon: const Icon(Icons.restart_alt),
-            tooltip: 'Reset to YAML value ($yamlValue$suffix)',
+            tooltip: 'Reset to $resetLabel ($yamlValue$suffix)',
             onPressed: current == yamlValue ? null : onReset,
           ),
         ],
