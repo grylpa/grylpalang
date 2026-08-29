@@ -8,6 +8,11 @@ class AppSettings {
   static const int kBooksRepeatDelaySecDefault = 3;
   static const int kBooksBetweenChunksPauseSecDefault = 3;
 
+  // Sentence Bank — pause after every source repeat *except the first*, used
+  // only while "repeat source between translations" is on. Its own default,
+  // since the YAML bank has no key for it.
+  static const int kSbNextSourcePauseSecDefault = 2;
+
   String knownLanguage;
   String targetLanguage;
   Duration interval;
@@ -35,6 +40,7 @@ class AppSettings {
   int? sentenceBankTtsRepeatDelayOverride; // overrides tts_repeat_delay from YAML (null = use YAML value)
   bool sentenceBankShuffle; // randomize sentence order within subject
   bool sentenceBankRepeatSourceBetween; // also replay the source before every target repeat (off by default)
+  int sentenceBankNextSourcePauseSec; // pause after the 2nd+ source repeat (only with the above on)
   bool sentenceBankTargetFirst; // for ~half the sentences, play the target language before the source
   bool sentenceBankPrepareAudio; // pre-build audio clips after loading, so Play is instant (on by default)
 
@@ -75,6 +81,7 @@ class AppSettings {
     this.sentenceBankTtsRepeatDelayOverride,
     required this.sentenceBankShuffle,
     this.sentenceBankRepeatSourceBetween = false,
+    this.sentenceBankNextSourcePauseSec = kSbNextSourcePauseSecDefault,
     this.sentenceBankTargetFirst = false,
     this.sentenceBankPrepareAudio = true,
     this.booksChunkUnit = 'sentence',
@@ -112,6 +119,7 @@ class AppSettings {
     Object? sentenceBankTtsRepeatDelayOverride = _keep,
     bool? sentenceBankShuffle,
     bool? sentenceBankRepeatSourceBetween,
+    int? sentenceBankNextSourcePauseSec,
     bool? sentenceBankTargetFirst,
     bool? sentenceBankPrepareAudio,
     String? booksChunkUnit,
@@ -154,6 +162,7 @@ class AppSettings {
           : sentenceBankTtsRepeatDelayOverride as int?,
       sentenceBankShuffle: sentenceBankShuffle ?? this.sentenceBankShuffle,
       sentenceBankRepeatSourceBetween: sentenceBankRepeatSourceBetween ?? this.sentenceBankRepeatSourceBetween,
+      sentenceBankNextSourcePauseSec: sentenceBankNextSourcePauseSec ?? this.sentenceBankNextSourcePauseSec,
       sentenceBankTargetFirst: sentenceBankTargetFirst ?? this.sentenceBankTargetFirst,
       sentenceBankPrepareAudio: sentenceBankPrepareAudio ?? this.sentenceBankPrepareAudio,
       booksChunkUnit: booksChunkUnit ?? this.booksChunkUnit,
@@ -194,6 +203,7 @@ class AppSettings {
     'sentenceBankTtsRepeatDelayOverride': sentenceBankTtsRepeatDelayOverride,
     'sentenceBankShuffle': sentenceBankShuffle,
     'sentenceBankRepeatSourceBetween': sentenceBankRepeatSourceBetween,
+    'sentenceBankNextSourcePauseSec': sentenceBankNextSourcePauseSec,
     'sentenceBankTargetFirst': sentenceBankTargetFirst,
     'sentenceBankPrepareAudio': sentenceBankPrepareAudio,
     'booksChunkUnit': booksChunkUnit,
@@ -241,6 +251,7 @@ class AppSettings {
       sentenceBankTtsRepeatDelayOverride: json['sentenceBankTtsRepeatDelayOverride'] as int?,
       sentenceBankShuffle: json['sentenceBankShuffle'] as bool? ?? true,
       sentenceBankRepeatSourceBetween: json['sentenceBankRepeatSourceBetween'] as bool? ?? false,
+      sentenceBankNextSourcePauseSec: (json['sentenceBankNextSourcePauseSec'] as int?) ?? kSbNextSourcePauseSecDefault,
       sentenceBankTargetFirst: json['sentenceBankTargetFirst'] as bool? ?? false,
       sentenceBankPrepareAudio: json['sentenceBankPrepareAudio'] as bool? ?? true,
       booksChunkUnit: json['booksChunkUnit'] as String? ?? 'sentence',
