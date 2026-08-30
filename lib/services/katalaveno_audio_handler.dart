@@ -28,6 +28,13 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
 
   /// Pushes a binding onto the stack. If [owner] already has one, it's
   /// replaced in place. The newest binding handles incoming media events.
+  ///
+  /// Binding is also how a screen claims the shared player, so the owner it
+  /// displaces is told via [_Binding.onSessionLost]. There is exactly one
+  /// player: the incoming session is about to replace the queue, and without
+  /// that signal the displaced screen keeps a live index subscription on it —
+  /// mapping someone else's clip indices through its own map — and goes on
+  /// showing itself as playing.
   void bind({
     required Object owner,
     Future<void> Function()? onPlay,
@@ -35,7 +42,9 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
     Future<void> Function()? onStop,
     Future<void> Function()? onSkipNext,
     Future<void> Function()? onSkipPrev,
+    void Function()? onSessionLost,
   }) {
+    final displaced = _top;
     _stack.removeWhere((b) => identical(b.owner, owner));
     _stack.add(
       _Binding(
@@ -45,8 +54,11 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
         onStop: onStop,
         onSkipNext: onSkipNext,
         onSkipPrev: onSkipPrev,
+        onSessionLost: onSessionLost,
       ),
     );
+    // Re-binding your own session (every play does) displaces nobody.
+    if (displaced != null && !identical(displaced.owner, owner)) displaced.onSessionLost?.call();
   }
 
   /// Removes [owner]'s binding from the stack. The previous one becomes active
@@ -56,6 +68,12 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   _Binding? get _top => _stack.isEmpty ? null : _stack.last;
+
+  /// True when [owner] holds the top binding — i.e. it is the session the
+  /// shared player is currently serving. Since every screen re-binds when it
+  /// starts playing, this is how a tab tells "the player is playing *my*
+  /// playlist" from "another tab is using it".
+  bool isActiveSession(Object owner) => identical(_top?.owner, owner);
 
   // ── AudioHandler overrides — system → app ────────────────────────────────
 
@@ -139,7 +157,19 @@ class _Binding {
   final Future<void> Function()? onStop;
   final Future<void> Function()? onSkipNext;
   final Future<void> Function()? onSkipPrev;
-  _Binding({required this.owner, this.onPlay, this.onPause, this.onStop, this.onSkipNext, this.onSkipPrev});
+
+  /// Called when another screen claims the shared player. Must reset local
+  /// state only — never touch the player, which now belongs to someone else.
+  final void Function()? onSessionLost;
+  _Binding({
+    required this.owner,
+    this.onPlay,
+    this.onPause,
+    this.onStop,
+    this.onSkipNext,
+    this.onSkipPrev,
+    this.onSessionLost,
+  });
 }
 
 /// Global handler — set once in [main] after [AudioService.init], then read

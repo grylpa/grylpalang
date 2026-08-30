@@ -3,9 +3,11 @@ import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/app_tab.dart';
 import '../state/app_state.dart';
 import 'books_tab.dart';
 import 'dashboard_screen.dart';
+import 'listen_tab.dart';
 import 'notification_history_tab.dart';
 import 'sentence_bank_tab.dart';
 import 'settings_screen.dart';
@@ -22,7 +24,14 @@ class _MainScaffoldState extends State<MainScaffold> {
   // Default to Settings so a fresh install (no saved tab, no API key) shows it
   // behind the intro popup with no visible tab flip. A returning user's saved
   // tab is restored over this in initState.
-  int _index = _kSettingsTab;
+  //
+  // The *tab*, not its position, is the source of truth: the user can hide
+  // destinations, so an index is only ever derived from `_tabs` at build time.
+  AppTab _current = AppTab.settings;
+  // The visible destinations, recomputed from settings on every build. Kept as
+  // a field because the scroll callbacks (which run outside build) need to map
+  // pixel offsets to tabs.
+  List<AppTab> _tabs = AppTab.values;
   int _seenNotificationTapToken = 0;
   late final AppLifecycleListener _listener;
 
@@ -42,37 +51,50 @@ class _MainScaffoldState extends State<MainScaffold> {
   // neighbor tab. Set from drag details on scroll start/update, cleared on end.
   bool _userDragged = false;
 
-  late final List<Widget> _pages = const [
-    _KeepAlive(child: DashboardScreen()),
-    _KeepAlive(child: NotificationHistoryTab()),
-    _KeepAlive(child: PredictionTab()),
-    _KeepAlive(child: SentenceBankTab()),
-    _KeepAlive(child: BooksTab()),
-    _KeepAlive(child: SettingsScreen()),
-  ];
+  // One widget instance per destination, built once. Hiding a tab drops it from
+  // the pager (disposing that screen); showing it again re-creates it. Held in
+  // a map rather than a list so the visible set can change without any index
+  // arithmetic.
+  static const Map<AppTab, Widget> _pages = {
+    AppTab.dashboard: _KeepAlive(child: DashboardScreen()),
+    AppTab.history: _KeepAlive(child: NotificationHistoryTab()),
+    AppTab.predict: _KeepAlive(child: PredictionTab()),
+    AppTab.sentences: _KeepAlive(child: SentenceBankTab()),
+    AppTab.books: _KeepAlive(child: BooksTab()),
+    AppTab.listen: _KeepAlive(child: ListenTab()),
+    AppTab.settings: _KeepAlive(child: SettingsScreen()),
+  };
 
-  static const _kTabKey = 'lastTabIndex';
-  static const _kSettingsTab = 5; // Settings is the last bottom-nav tab.
+  // Current key holds an AppTab id; the legacy one held a raw index into the
+  // pre-hideable-tabs order, and is read once to migrate it.
+  static const _kTabIdKey = 'lastTabId';
+  static const _kLegacyTabKey = 'lastTabIndex';
 
   // Once-per-process guard: the "AI is imperfect / set an API key" intro is
   // shown at most once each app run (only while no key is set — see
   // _maybeShowApiKeyIntro), never persisted.
   bool _apiKeyIntroHandled = false;
 
-  void _persistTab(int i) => SharedPreferencesAsync().setInt(_kTabKey, i);
+  void _persistTab(AppTab t) => SharedPreferencesAsync().setString(_kTabIdKey, t.id);
 
-  /// Pixel offset that puts page [i] at the top of the viewport, clamped.
+  /// Position of the selected tab among the *visible* ones. Never negative:
+  /// build keeps `_current` inside `_tabs`.
+  int get _index => _tabs.indexOf(_current).clamp(0, _tabs.length - 1);
+
+  /// Pixel offset that puts page [i] at the left of the viewport, clamped.
   double _offsetFor(int i) =>
       (i * _pageWidth).clamp(0.0, _hScroll.hasClients ? _hScroll.position.maxScrollExtent : double.infinity);
 
-  /// Nav-bar tap. Slides for an *adjacent* page (250ms); **jumps** for a
-  /// non-adjacent one so the transition doesn't scroll through — and briefly
-  /// flash — the tabs in between. Swipes are handled by the ListView itself.
+  /// Nav-bar tap on the [i]th *visible* tab. Slides for an adjacent page
+  /// (250ms); **jumps** for a non-adjacent one so the transition doesn't scroll
+  /// through — and briefly flash — the tabs in between. Swipes are handled by
+  /// the ListView itself.
   void _goToTab(int i) {
-    if (i < 0 || i >= _pages.length || i == _index) return;
+    if (i < 0 || i >= _tabs.length || i == _index) return;
     final adjacent = (i - _index).abs() == 1;
-    _persistTab(i);
-    setState(() => _index = i);
+    final tab = _tabs[i];
+    _persistTab(tab);
+    setState(() => _current = tab);
     if (!_hScroll.hasClients || _pageWidth <= 0) return; // pin will place it on layout
     if (adjacent) {
       _hScroll.animateTo(_offsetFor(i), duration: const Duration(milliseconds: 250), curve: Curves.easeOutCubic);
@@ -81,21 +103,24 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
-  /// A swipe settled on page [i]. Update the nav-bar selection + remember it.
+  /// A swipe settled on the [i]th visible page. Update the nav-bar selection
+  /// + remember it.
   void _onPageSettled(int i) {
-    if (i == _index) return;
-    _persistTab(i);
-    setState(() => _index = i);
+    if (i < 0 || i >= _tabs.length || _tabs[i] == _current) return;
+    final tab = _tabs[i];
+    _persistTab(tab);
+    setState(() => _current = tab);
   }
 
-  /// Moves to [i] without animating (restore last tab, a notification opening
-  /// History). Safe before layout: sets the index and the build-time "pin"
-  /// places the ListView on that page once it's laid out.
-  void _jumpToTab(int i) {
-    if (i < 0 || i >= _pages.length) return;
-    _persistTab(i);
-    setState(() => _index = i);
-    if (_hScroll.hasClients && _pageWidth > 0) _hScroll.jumpTo(_offsetFor(i));
+  /// Moves to [tab] without animating (restore last tab, a notification opening
+  /// History). A hidden tab is ignored — the user switched it off, so nothing
+  /// should drag them back to it. Safe before layout: sets the tab and the
+  /// build-time "pin" places the ListView on it once laid out.
+  void _jumpToTab(AppTab tab) {
+    if (!_tabs.contains(tab)) return;
+    _persistTab(tab);
+    setState(() => _current = tab);
+    if (_hScroll.hasClients && _pageWidth > 0) _hScroll.jumpTo(_offsetFor(_tabs.indexOf(tab)));
   }
 
   /// On the first launch where no Gemini API key is set: route the user to the
@@ -110,7 +135,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     _apiKeyIntroHandled = true;
 
     // Land the user on Settings with the AI-engine card open behind the intro.
-    _jumpToTab(_kSettingsTab);
+    _jumpToTab(AppTab.settings);
     appState.requestAiEngineFocus();
 
     if (!mounted) return;
@@ -150,17 +175,30 @@ class _MainScaffoldState extends State<MainScaffold> {
     );
   }
 
+  /// Restores the tab the user was last on. Reads the id key first; falls back
+  /// once to the legacy raw index, translated through the tab order as it was
+  /// before tabs became hideable.
+  Future<void> _restoreLastTab() async {
+    final prefs = SharedPreferencesAsync();
+    var tab = AppTab.byId(await prefs.getString(_kTabIdKey) ?? '');
+    if (tab == null) {
+      final legacy = await prefs.getInt(_kLegacyTabKey);
+      if (legacy != null && legacy >= 0 && legacy < AppTab.legacyOrder.length) {
+        tab = AppTab.legacyOrder[legacy];
+      }
+    }
+    // The intro may have routed us to Settings while this was in flight; that
+    // takes precedence.
+    if (tab == null || _apiKeyIntroHandled || !mounted) return;
+    _jumpToTab(tab);
+  }
+
   @override
   void initState() {
     super.initState();
     // Restore last active tab — unless the no-API-key intro has already routed
     // us to Settings (in which case that takes precedence).
-    SharedPreferencesAsync().getInt(_kTabKey).then((saved) {
-      if (_apiKeyIntroHandled) return;
-      if (saved != null && saved >= 0 && saved < _pages.length && mounted) {
-        _jumpToTab(saved);
-      }
-    });
+    _restoreLastTab();
     _listener = AppLifecycleListener(
       onStateChange: (AppLifecycleState state) {
         final s = context.read<AppState>();
@@ -182,7 +220,7 @@ class _MainScaffoldState extends State<MainScaffold> {
       final token = appState.notificationTapToken;
       if (token != _seenNotificationTapToken) {
         _seenNotificationTapToken = token;
-        _jumpToTab(1); // <-- your History tab index
+        _jumpToTab(AppTab.history);
       }
     });
   }
@@ -198,10 +236,18 @@ class _MainScaffoldState extends State<MainScaffold> {
   @override
   Widget build(BuildContext context) {
     final appState = context.read<AppState>();
-    return Selector<AppState, (int, bool)>(
-      selector: (_, s) => (s.notificationTapToken, s.initialized),
+    // The hidden-tab set is joined into a string so the record stays cheaply
+    // comparable — Selector rebuilds on `!=`, which a List would fail.
+    return Selector<AppState, (int, bool, String)>(
+      selector: (_, s) => (s.notificationTapToken, s.initialized, s.settings.hiddenTabIds.join(',')),
       builder: (context, data, child) {
-        final (tapToken, isInitialized) = data;
+        final (tapToken, isInitialized, hiddenSig) = data;
+        _tabs = AppTab.visibleFrom(hiddenSig.isEmpty ? const [] : hiddenSig.split(','));
+        // The selected tab was just switched off (it can only have been done
+        // from Settings, which is where we land). Assigned straight rather than
+        // via setState: we're already building with the new value, and the
+        // post-frame pin will move the pager onto it.
+        if (!_tabs.contains(_current)) _current = AppTab.settings;
         // if (!isInitialized) {
         //   return const InitializingOverlay(); // Show your loading screen
         // }
@@ -213,10 +259,10 @@ class _MainScaffoldState extends State<MainScaffold> {
         if (tapToken != _seenNotificationTapToken) {
           debugPrint("hack got new tap token");
           _seenNotificationTapToken = tapToken;
-          if (_index != 1) {
+          if (_current != AppTab.history) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (!mounted) return;
-              _jumpToTab(1);
+              _jumpToTab(AppTab.history);
             });
           }
         }
@@ -237,7 +283,7 @@ class _MainScaffoldState extends State<MainScaffold> {
                 // Only a user-driven settle changes the tab; a rotation's layout
                 // correction (no drag) must not, or it snaps to a neighbor.
                 if (_userDragged) {
-                  final page = (_hScroll.offset / _pageWidth).round().clamp(0, _pages.length - 1);
+                  final page = (_hScroll.offset / _pageWidth).round().clamp(0, _tabs.length - 1);
                   _onPageSettled(page);
                 }
                 _userDragged = false;
@@ -272,9 +318,18 @@ class _MainScaffoldState extends State<MainScaffold> {
                 physics: const _SnapPageScrollPhysics(),
                 // Full-width cache so every page is built at first layout and
                 // never disposed (eager init + kept alive).
-                scrollCacheExtent: ScrollCacheExtent.pixels(w * _pages.length),
-                itemCount: _pages.length,
-                itemBuilder: (context, i) => SizedBox(width: w, child: _pages[i]),
+                scrollCacheExtent: ScrollCacheExtent.pixels(w * _tabs.length),
+                itemCount: _tabs.length,
+                // Hiding a tab shifts every page after it. The key identifies a
+                // page by tab, and findChildIndexCallback tells the sliver where
+                // that key moved to — without it the shifted pages would be torn
+                // down and rebuilt from scratch, losing their state.
+                findChildIndexCallback: (key) {
+                  if (key is! ValueKey<AppTab>) return null;
+                  final i = _tabs.indexOf(key.value);
+                  return i < 0 ? null : i;
+                },
+                itemBuilder: (context, i) => SizedBox(key: ValueKey(_tabs[i]), width: w, child: _pages[_tabs[i]]),
               );
             },
           ),
@@ -291,50 +346,26 @@ class _MainScaffoldState extends State<MainScaffold> {
             : Scaffold(
                 appBar: AppBar(title: const Text('Katalaveno'), centerTitle: true, titleSpacing: 8),
                 body: body,
-                bottomNavigationBar: BottomNavigationBar(
-                  currentIndex: _index.clamp(0, _pages.length - 1),
-                  onTap: _goToTab,
-                  type: BottomNavigationBarType.fixed,
-                  selectedItemColor: Theme.of(context).colorScheme.primary,
-                  unselectedItemColor: Theme.of(context).colorScheme.onSurfaceVariant,
-                  selectedFontSize: 12,
-                  unselectedFontSize: 12,
-                  // <- same size, no “jump”
-                  showUnselectedLabels: true,
-                  // or false if you prefer
-                  items: const [
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.spellcheck_outlined),
-                      activeIcon: Icon(Icons.spellcheck),
-                      label: 'Active',
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.history_outlined),
-                      activeIcon: Icon(Icons.history),
-                      label: 'History',
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.psychology_outlined),
-                      activeIcon: Icon(Icons.psychology),
-                      label: 'Predict',
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.menu_book_outlined),
-                      activeIcon: Icon(Icons.menu_book),
-                      label: 'Sentences',
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.auto_stories_outlined),
-                      activeIcon: Icon(Icons.auto_stories),
-                      label: 'Books',
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.settings_outlined),
-                      activeIcon: Icon(Icons.settings),
-                      label: 'Settings',
-                    ),
-                  ],
-                ),
+                // A single visible destination needs no bar (and BottomNavigationBar
+                // asserts on fewer than two items). Settings can't be hidden, so
+                // there is always a way back to the tab switches.
+                bottomNavigationBar: _tabs.length < 2
+                    ? null
+                    : BottomNavigationBar(
+                        currentIndex: _index,
+                        onTap: _goToTab,
+                        type: BottomNavigationBarType.fixed,
+                        selectedItemColor: Theme.of(context).colorScheme.primary,
+                        unselectedItemColor: Theme.of(context).colorScheme.onSurfaceVariant,
+                        // Same size selected or not, so the bar doesn't "jump".
+                        selectedFontSize: 12,
+                        unselectedFontSize: 12,
+                        showUnselectedLabels: true,
+                        items: [
+                          for (final t in _tabs)
+                            BottomNavigationBarItem(icon: Icon(t.icon), activeIcon: Icon(t.activeIcon), label: t.label),
+                        ],
+                      ),
               );
       },
     );

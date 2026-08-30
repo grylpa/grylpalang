@@ -165,7 +165,7 @@ IMPORTANT RULES:
 - Be meaning-aware. If the learner wrote an equivalent sentence that conveys the same meaning, count it as correct.
 - Be forgiving about word order if meaning is preserved.
 - Be forgiving about missing tonos/diacritics.
-- If the learner used Latin transliteration (Greeklish) or phonetics, treat it as an attempt to write the target language and map it mentally to the target script.
+- If the learner used Latin transliteration or phonetics, treat it as an attempt to write the target language and map it mentally to the target script.
 - If the learner mixed some known-language words, don't fail them automatically; judge whether they correctly produced the key target-language parts and meaning.
 - Prefer encouragement. If it's correct, be HAPPY.
 
@@ -508,7 +508,7 @@ USER INPUT: "$input"
   //
   // Rules:
   // 1. Translate this into ONE common, natural word in $targetLanguage.
-  // 2. Use the correct native script of $targetLanguage (e.g. Greek letters for Greek).
+  // 2. Use the correct native script of $targetLanguage (e.g. Greek letters for Greek, Cyrillic for Russian).
   // 3. If the input already looks like a correct $targetLanguage word, return it unchanged.
   // 4. Return ONLY the final L2 word, no quotes, no explanation, no extra text.
   // ''';
@@ -600,7 +600,7 @@ USER INPUT WORD (L1): "$l1"
 
 TASK A (translate to L2):
 1. Translate this into ONE common, natural word in $targetLanguage.
-2. Use the correct native script of $targetLanguage (e.g. Greek letters for Greek).
+2. Use the correct native script of $targetLanguage (e.g. Greek letters for Greek, Cyrillic for Russian).
 3. If the input already looks like a correct $targetLanguage word, return it unchanged.
 4. Output the final L2 word as: WORD_L2
 5. Output the final L1 word as: WORD_L1 in $knownLanguage
@@ -901,6 +901,137 @@ Example of the format (structure only):
     return result;
   }
 
+  /// Generates listening-comprehension texts across a set of bank subjects:
+  /// long sentences or micro-stories in L2, each with its L1 translation.
+  ///
+  /// The subjects are a single pool, not a loop — one text may weave several of
+  /// them together, which is what makes the material feel like real speech
+  /// rather than topic drills. Unlike the Sentence Bank's material (built to
+  /// drill one word), these are longer and connected: the point is following
+  /// continuous speech, not recognising vocabulary. [examplesBySubject] carries
+  /// a few of each subject's own bank sentences, passed only to pin down what
+  /// that subject is about.
+  static Future<List<({String l2, String l1})>> generateListeningTexts({
+    required String apiKey,
+    required Map<String, List<String>> examplesBySubject,
+    required String knownLanguage,
+    required String targetLanguage,
+    required int count,
+    required int sentencesPerText,
+  }) async {
+    if (apiKey.trim().isEmpty) {
+      throw Exception('AI API key is empty (set it in Settings).');
+    }
+    if (examplesBySubject.isEmpty) return const [];
+
+    final topics = examplesBySubject.entries
+        .map((e) {
+          final sample = e.value.take(5).map((x) => '    - $x').join('\n');
+          return '  * ${e.key}${sample.isEmpty ? '' : '\n$sample'}';
+        })
+        .join('\n');
+    final names = examplesBySubject.keys.join(', ');
+
+    final prompt =
+        '''
+You are writing listening-comprehension practice material for a language learner.
+
+TARGET LANGUAGE (L2): $targetLanguage
+KNOWN LANGUAGE (L1): $knownLanguage
+
+TOPICS the learner is studying. The sample phrases under each one are material
+they have ALREADY LEARNED — they are there to show you what the topic covers and
+what language the learner is comfortable with, not to be reproduced:
+$topics
+
+Write $count separate texts in L2.
+
+Rules:
+1. Each text is a self-contained micro-story or one long, rich sentence —
+   about $sentencesPerText sentences of natural connected speech.
+2. Treat the topics as ONE pool, not a checklist. The goal is listenable short
+   content, not topic drills, so any text may freely combine several topics
+   into a single natural situation (for example a scene that touches
+   $names). A topic with only two or three sample phrases is still a perfectly
+   good ingredient — never pad or stretch a text just to cover one, and never
+   announce or name the topics.
+3. Do not quote or lightly reword the sample phrases. Build fresh sentences on
+   the familiar ground they represent.
+4. This trains LISTENING, not vocabulary. Use ordinary everyday language and
+   normal sentence flow. Do not gloss over, define, or highlight any word.
+5. Vary the texts: different situations, speakers, tenses and moods across the
+   set. Do not reuse the same opening twice.
+6. Write for the ear — text that sounds natural read aloud. No headings, no
+   bullet points, no emoji, no quotation marks around the whole text, and no
+   parentheses or bracketed asides.
+7. Keep it concrete and easy to picture, at an upper-beginner / intermediate
+   level.
+8. "l1" must be a faithful, natural translation of "l2" — not a summary.
+
+RETURN FORMAT (VERY IMPORTANT):
+Return ONLY a JSON array and nothing else. No explanations, no markdown.
+
+[
+  {"l2": "text in $targetLanguage", "l1": "translation in $knownLanguage"}
+]
+''';
+
+    final body = {
+      'contents': [
+        {
+          'parts': [
+            {'text': prompt},
+          ],
+        },
+      ],
+      'generationConfig': {
+        'responseMimeType': 'application/json',
+        'responseSchema': {
+          'type': 'array',
+          'items': {
+            'type': 'object',
+            'properties': {
+              'l2': {'type': 'string', 'description': 'The listening text, in L2.'},
+              'l1': {'type': 'string', 'description': 'Full translation of l2 into L1.'},
+            },
+            'required': ['l2', 'l1'],
+          },
+        },
+      },
+    };
+
+    final resp = await queryModel(apiKey, body);
+    if (resp.statusCode != 200) _throwAiError(resp, 'generateListeningTexts');
+
+    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
+    final parts =
+        ((decoded['candidates'] as List?)?.firstOrNull?['content'] as Map<String, dynamic>?)?['parts'] as List?;
+    final text = (parts?.firstOrNull?['text'] as String? ?? '').trim();
+    if (text.isEmpty) throw Exception('AI returned no listening texts');
+
+    late List<dynamic> list;
+    try {
+      list = jsonDecode(text) as List<dynamic>;
+    } catch (e) {
+      throw Exception('JSON decode failed: $e');
+    }
+
+    final out = <({String l2, String l1})>[];
+    for (final item in list.take(count)) {
+      final m = (item as Map).cast<String, dynamic>();
+      final l2 = (m['l2'] as String? ?? '').trim();
+      final l1 = (m['l1'] as String? ?? '').trim();
+      if (l2.isEmpty) continue;
+      out.add((l2: l2, l1: l1));
+    }
+    return out;
+  }
+
+  /// The few-shot examples below are written in Greek script, so they only help
+  /// when Greek is what's being learned — shown to a German learner they'd just
+  /// be noise (or a nudge toward the wrong alphabet).
+  static bool _isGreek(String language) => language.trim().toLowerCase().startsWith('greek');
+
   // Convert a single word from phonetic Latin to proper target-language script.
   static Future<String> normalizeWordToTargetScript({
     required String apiKey,
@@ -919,11 +1050,12 @@ TARGET LANGUAGE: $targetLanguage
 USER INPUT WORD: "$word"
 
 The user might type the word in phonetic LATIN characters that approximate a $targetLanguage word.
-Example for Greek:
+${_isGreek(targetLanguage) ? '''Examples:
 - "thelo" -> "θέλω"
 - "kalispera" -> "καλησπέρα"
 - "gia" -> "για"
 - "apo" -> "από"
+''' : 'For example, a learner may spell out the sounds of the word using the Latin alphabet.'}
 
 TASK:
 1. If the word is phonetic Latin, convert it into the correct native $targetLanguage script.

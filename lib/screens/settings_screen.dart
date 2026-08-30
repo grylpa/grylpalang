@@ -4,6 +4,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../models/app_tab.dart';
 import '../services/ai_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
@@ -159,6 +160,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// One row of the Tabs card. Settings is shown but locked on — it holds
+  /// these switches — and the last two visible tabs lock as well, so the bottom
+  /// bar can never be left with nothing to switch between.
+  Widget _tabSwitch(AppState state, AppTab tab) {
+    final hidden = state.settings.hiddenTabIds;
+    final visible = !hidden.contains(tab.id);
+    final visibleCount = AppTab.visibleFrom(hidden).length;
+    final locked = !tab.canHide || (visible && visibleCount <= 2);
+
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      secondary: Icon(visible ? tab.activeIcon : tab.icon),
+      title: Text(tab.label, style: Theme.of(context).textTheme.titleMedium),
+      subtitle: tab.canHide ? null : Text('Always available', style: Theme.of(context).textTheme.bodySmall),
+      value: visible,
+      onChanged: locked ? null : (v) => _setTabVisible(state, tab, v),
+    );
+  }
+
+  void _setTabVisible(AppState state, AppTab tab, bool visible) {
+    final hidden = [...state.settings.hiddenTabIds];
+    if (visible) {
+      hidden.remove(tab.id);
+    } else if (!hidden.contains(tab.id)) {
+      hidden.add(tab.id);
+    }
+    // saveSettingsOnly, not updateSettings: the nav layout has nothing to do
+    // with the notification schedule, so there's no reason to rebuild it.
+    state.saveSettingsOnly(state.settings.copyWith(hiddenTabIds: hidden));
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
@@ -219,6 +251,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: s.useDarkMode,
                 onChanged: (v) => state.updateSettings(s.copyWith(useDarkMode: v)),
               ),
+            ]),
+
+            // ── Tabs ────────────────────────────────────────────────────
+            // Which bottom-nav destinations exist at all. Hiding one removes it
+            // from the bar *and* from the swipe order, and disposes its screen.
+            _section('Tabs', [
+              Text(
+                'Choose which tabs appear in the bottom bar. A hidden tab is also '
+                'skipped when you swipe, and its screen stops running.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 4),
+              for (final t in AppTab.values) _tabSwitch(state, t),
             ]),
 
             // ── AI Engine ───────────────────────────────────────────────

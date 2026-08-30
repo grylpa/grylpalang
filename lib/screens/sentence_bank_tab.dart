@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
@@ -19,11 +18,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/app_settings.dart';
 import '../models/sentence_bank.dart';
 import 'markdown_doc_screen.dart';
-import '../services/audio_utils.dart';
 import '../services/auto_playlist_controller.dart';
 import '../services/katalaveno_audio_handler.dart';
 import '../services/google_translate_tts.dart';
 import '../services/sentence_bank_service.dart';
+import '../services/tts_synth_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
 
@@ -35,43 +34,12 @@ import '../widgets.dart';
 /// 0.5 ask the engine to time-stretch, which can add artefacts on some voices.
 /// Adjust here while experimenting; the synth cache invalidates automatically
 /// when this value changes.
-const double kSourceSpeechRate = 0.5;
 
 /// Name of the auto-generated subject that mirrors the active-words notification
 /// history into the Sentence Bank.
 const String kActiveWordsSubject = 'Active words';
 
 /// Maps a canonical English language name to a BCP-47 locale code for TTS.
-String? _localeForLanguage(String languageName) {
-  const map = <String, String>{
-    'English': 'en-US',
-    'Greek': 'el-GR',
-    'Hebrew': 'he-IL',
-    'German': 'de-DE',
-    'French': 'fr-FR',
-    'Spanish': 'es-ES',
-    'Italian': 'it-IT',
-    'Portuguese': 'pt-PT',
-    'Russian': 'ru-RU',
-    'Turkish': 'tr-TR',
-    'Arabic': 'ar-SA',
-    'Chinese': 'zh-CN',
-    'Japanese': 'ja-JP',
-    'Korean': 'ko-KR',
-  };
-  return map[languageName];
-}
-
-bool _ttsSupported() {
-  if (kIsWeb) return false;
-  return switch (defaultTargetPlatform) {
-    TargetPlatform.android => true,
-    TargetPlatform.iOS => true,
-    TargetPlatform.macOS => true,
-    TargetPlatform.windows => true,
-    _ => false,
-  };
-}
 
 class SentenceBankTab extends StatefulWidget {
   const SentenceBankTab({super.key});
@@ -88,7 +56,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   final _googleTts = GoogleTranslateTts();
   final _autoPlaylist = AutoPlaylistController();
   StreamSubscription<int>? _autoOrdinalSub;
-  Directory? _synthDir;
   List<String> _autoTranslations = [];
   bool _autoPreparing = false;
   int _prepDone = 0;
@@ -158,6 +125,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   // mode is running we rebuild the playlist so the change takes effect live.
   String _lastAutoCfg = '';
   bool _initialized = false;
+  // Bumped to abandon an in-flight streaming playlist build; a build that finds
+  // the token changed stops appending and leaves the UI alone.
+  int _buildToken = 0;
 
   // When shuffle is on, this holds the permuted sentence indices.
   // _sentenceIndex is then a position within this list, not a raw sentence index.
@@ -182,6 +152,15 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     // life of the State so Bluetooth play/pause/skip work whether or not auto
     // mode is currently running. Book Reader's session binds on top of this
     // while it's active and pops off when it ends, restoring this fallback.
+    _bindMediaControls();
+  }
+
+  /// Registers this tab's media-control handlers. Called at init (so Bluetooth
+  /// Play can start auto mode from cold) and again whenever playback starts —
+  /// `bind` moves an existing owner to the top of the handler's stack, which is
+  /// how "the session that last started playing owns the buttons" is enforced
+  /// once another tab (Listen, Book Reader) has bound too.
+  void _bindMediaControls() {
     katalavenoAudio.bind(
       owner: this,
       onPlay: () async {
@@ -199,7 +178,27 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       onSkipPrev: () async {
         if (_autoMode) _autoPrevious();
       },
+      onSessionLost: _onSessionLost,
     );
+  }
+
+  /// Another screen claimed the shared player. Stand down locally — the queue
+  /// in the player is theirs now — but never call stop() here: that would kill
+  /// the audio they just started.
+  void _onSessionLost() {
+    // Abandon any in-flight streaming render; it would append into their queue.
+    _buildToken++;
+    _autoOrdinalSub?.cancel();
+    _autoOrdinalSub = null;
+    _autoPlaylist.detach();
+    if (_autoMode) _saveAutoPosition();
+    _preparedSig = null; // our playlist is no longer the one loaded
+    if (!mounted) return;
+    setState(() {
+      _autoMode = false;
+      _autoPreparing = false;
+      _ttsPlaying = false;
+    });
   }
 
   // Completion of the manual single-sentence speaker button (flutter_tts).
@@ -1428,7 +1427,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   // ── TTS ───────────────────────────────────────────────────────────────────
 
   Future<void> _speakTranslation() async {
-    if (!_ttsSupported()) {
+    if (!ttsSupported()) {
       lpSnack(context, 'TTS is not available on this platform.', 4000);
       return;
     }
@@ -1451,119 +1450,14 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
   }
 
-  /// Tries to select a voice matching [gender] for [locale].
-  /// Returns true if a matching voice was found and set, false otherwise.
-  Future<bool> _applyGenderedVoice(String? locale, String gender) async {
-    try {
-      final raw = await _tts.getVoices;
-      if (raw is! List || raw.isEmpty) return false;
-
-      final langPrefix = locale?.substring(0, 2).toLowerCase();
-
-      // Region preference: the device's own region first (if it speaks the
-      // source language — e.g. an en-GB phone), otherwise US → UK(GB) → AU.
-      final regionPrefs = <String>[];
-      final dev = WidgetsBinding.instance.platformDispatcher.locale;
-      if (langPrefix != null && dev.languageCode.toLowerCase() == langPrefix) {
-        final c = (dev.countryCode ?? '').toLowerCase();
-        if (c.isNotEmpty) regionPrefs.add(c);
-      }
-      for (final r in const ['us', 'gb', 'au']) {
-        if (!regionPrefs.contains(r)) regionPrefs.add(r);
-      }
-
-      // Score each voice: higher = better match.
-      Map? best;
-      int bestScore = -1;
-
-      for (final v in raw) {
-        final m = v as Map;
-        final vLocale = (m['locale'] as String? ?? '').toLowerCase();
-        final vGender = (m['gender'] as String? ?? '').toLowerCase();
-        final vName = (m['name'] as String? ?? '').toLowerCase();
-
-        // Must match the target language.
-        if (langPrefix != null && !vLocale.startsWith(langPrefix)) continue;
-
-        int score = 1; // any matching-language voice is a valid candidate
-
-        // Region preference dominates (×100) so accent wins over the gender
-        // heuristic, which only breaks ties within the same region.
-        final rp = vLocale.split(RegExp('[-_]'));
-        final vRegion = rp.length > 1 ? rp[1] : '';
-        final ri = regionPrefs.indexOf(vRegion);
-        if (ri >= 0) score += (regionPrefs.length - ri) * 100;
-
-        // Explicit gender field (most reliable).
-        if (vGender == gender) score += 10;
-
-        // Android Google TTS: names like "el-gr-x-elm-local" (m=male, a=female)
-        // or "en-us-x-sfg#male_1-local" / "#female".
-        if (gender == 'male') {
-          if (vName.contains('#male') || vName.contains('male_')) score += 8;
-          if (RegExp(r'-x-\w*m\w*-').hasMatch(vName)) score += 5;
-          if (vName.contains('male')) score += 4;
-          // iOS: known male voice names (heuristic — male voices are usually men's names).
-          if (vName.contains('nikos') ||
-              vName.contains('jorge') ||
-              vName.contains('thomas') ||
-              vName.contains('daniel') ||
-              vName.contains('alex') ||
-              vName.contains('fred'))
-            score += 6;
-          // Penalise obvious female names.
-          if (vName.contains('female') ||
-              vName.contains('#f') ||
-              vName.contains('melina') ||
-              vName.contains('anna') ||
-              vName.contains('samantha') ||
-              vName.contains('victoria'))
-            score -= 20;
-        } else {
-          if (vName.contains('#female') || vName.contains('female_')) score += 8;
-          if (RegExp(r'-x-\w*a\w*-').hasMatch(vName)) score += 5;
-          if (vName.contains('female')) score += 4;
-          // iOS known female voice names.
-          if (vName.contains('melina') ||
-              vName.contains('anna') ||
-              vName.contains('samantha') ||
-              vName.contains('victoria') ||
-              vName.contains('karen') ||
-              vName.contains('moira'))
-            score += 6;
-          // Penalise obvious male names.
-          if (vName.contains('#male') ||
-              vName.contains('male_') ||
-              vName.contains('nikos') ||
-              vName.contains('daniel') ||
-              vName.contains('thomas'))
-            score -= 20;
-        }
-
-        if (score > bestScore) {
-          bestScore = score;
-          best = m;
-        }
-      }
-
-      // Only apply if we found something with a positive gender-match score.
-      if (best != null && bestScore > 0) {
-        await _tts.setVoice({'name': best['name'] as String, 'locale': (best['locale'] as String?) ?? ''});
-        return true;
-      }
-      return false;
-    } catch (_) {
-      return false;
-    }
-  }
-
   // ── Auto mode ─────────────────────────────────────────────────────────────
 
   Future<void> _startAuto() async {
     if (_currentSentences().isEmpty) return;
     setState(() => _autoMode = true);
-    // Media-control bindings live on the handler stack for the whole tab
-    // lifetime (set up in initState), so we don't (re)bind here.
+    // Re-push this tab's binding so the lockscreen/Bluetooth buttons drive
+    // *this* session, even if Listen or the Book Reader played more recently.
+    _bindMediaControls();
     await _buildOrResumePlaylist(play: true);
   }
 
@@ -1581,6 +1475,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   Future<void>? _playlistBuild;
 
   Future<void> _buildOrResumePlaylist({required bool play}) async {
+    // Tell any in-flight streaming build to stand down *before* awaiting it,
+    // so a settings or subject change doesn't sit through the whole render of
+    // the playlist it just invalidated.
+    _buildToken++;
     final inFlight = _playlistBuild;
     if (inFlight != null) {
       // A failed warm-up must not fail the user's Play — swallow and continue,
@@ -1608,6 +1506,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   static bool _isTargetFirst(String spoken) => sha1.convert(utf8.encode(spoken)).bytes.last.isEven;
 
   Future<void> _runPlaylistBuild({required bool play}) async {
+    final token = _buildToken;
     final sents = _currentSentences();
     if (sents.isEmpty) return;
     final state = context.read<AppState>();
@@ -1636,7 +1535,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       settings.sentenceBankTargetFirst,
     ].join('¦');
 
-    if (sig == _preparedSig && _autoPlaylist.isLoaded) {
+    // `isLoaded` only says *this* controller built a playlist — the player is
+    // shared, so after another tab (Listen, Book Reader) has played, the queue
+    // in the player is theirs and our clip indices point into it. Seeking into
+    // that produced silence, which is what "I can't hear Sentences any more"
+    // was. Ownership is the missing half of the check.
+    if (sig == _preparedSig && _autoPlaylist.isLoaded && katalavenoAudio.isActiveSession(this)) {
       _autoOrdinalSub ??= _autoPlaylist.currentOrdinalStream.listen(_onAutoOrdinal);
       // `_autoMode` is re-checked (as the full build does via `autoPlay:`)
       // because this call may have waited on an in-flight build — the user could
@@ -1730,72 +1634,107 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             if (sourcePaths[o] == null) o,
       ];
 
+      // The cache probe only sizes the progress bar now; the clips themselves
+      // are rendered inside the streaming loop below, in play order.
       if (mounted) setState(() => _prepTotal = needsWork.length + sourceMissing.length);
-      int failureCount = 0;
-
-      for (final o in needsWork) {
-        if (!mounted) return;
-        final failed = translations[o].trim() == orderedSpoken[o].trim();
-        final clipLang = failed ? _bank!.language : settings.targetLanguage;
-        try {
-          translationPaths[o] = await _ensureClipFile(
-            translations[o],
-            clipLang,
-            gender,
-            preferVoice: failed ? sourceVoice : '',
-          );
-        } catch (_) {
-          // Even after Google→local fallback this one couldn't be produced —
-          // leave the path empty so the playlist controller skips this
-          // ordinal entirely (no silence wait, no aborted prep).
-          translationPaths[o] = '';
-          failureCount++;
-        }
-        if (mounted) setState(() => _prepDone = _prepDone + 1);
-      }
-      for (final o in sourceMissing) {
-        if (!mounted) return;
-        sourcePaths[o] = await _ensureClipFileOrNull(
-          orderedSpoken[o],
-          _bank!.language,
-          gender,
-          preferVoice: sourceVoice,
-        );
-        if (mounted) setState(() => _prepDone = _prepDone + 1);
-      }
-      if (!mounted) return;
-      if (failureCount > 0 && mounted) {
-        lpSnack(context, '$failureCount sentence(s) could not be synthesized — skipping them.', 4000);
-      }
+      var failureCount = 0;
+      if (!mounted || token != _buildToken) return;
 
       _autoOrdinalSub?.cancel();
       _autoOrdinalSub = _autoPlaylist.currentOrdinalStream.listen(_onAutoOrdinal);
 
-      // Synthesizing source clips drives the flutter_tts engine, which holds
-      // Android audio focus. If it isn't released before the playlist player
-      // starts (e.g. prep finished while the screen was locked), playback
-      // begins silently — the symptom that "stop then play" used to clear.
-      // Release it explicitly so the player wins focus on the first try.
-      try {
-        await _tts.stop();
-      } catch (_) {}
-
-      await _autoPlaylist.start(
-        translations: translations,
-        translationPaths: translationPaths,
-        sourcePaths: sourcePaths,
+      // Streamed, not built up front. Rendering every clip before the first
+      // sound meant a long silence in which nothing is playing — so there is no
+      // media foreground service and no wakelock, and locking the screen
+      // suspends the isolate and stalls the build indefinitely. Playing the
+      // first sentence as soon as it's ready starts the service that keeps the
+      // isolate rendering the rest, which is what makes a pocketed phone work.
+      await _autoPlaylist.beginDynamic(
+        ordinalCount: translations.length,
         repeatCount: state.sentenceBankResolvedTtsRepeatCount,
         sourcePauseSec: settings.sentenceBankSourcePauseOverride ?? _bank?.autoSourcePause ?? 1,
         nextSourcePauseSec: settings.sentenceBankNextSourcePauseSec,
         repeatDelaySec: settings.sentenceBankTtsRepeatDelayOverride ?? _bank?.ttsRepeatDelay ?? 1,
         postDelaySec: _bank?.autoPostTtsDelay ?? 2,
-        startOrdinal: _sentenceIndex,
-        autoPlay: play && _autoMode,
         // When on, replay the source before every target repeat (source between
         // targets) instead of speaking the source once up front.
         alternate: settings.sentenceBankSpeakSource && settings.sentenceBankRepeatSourceBetween,
-        targetFirst: settings.sentenceBankTargetFirst ? [for (final t in orderedSpoken) _isTargetFirst(t)] : null,
+        loop: true,
       );
+
+      final flips = settings.sentenceBankTargetFirst ? [for (final t in orderedSpoken) _isTargetFirst(t)] : null;
+      var started = false;
+      final from = _sentenceIndex.clamp(0, translations.length - 1);
+      for (var k = 0; k < translations.length; k++) {
+        if (!mounted || token != _buildToken) return;
+        // Built from the resume position and wrapping around, so playback can
+        // start on the sentence the user left off at rather than at the top.
+        // appendChunk records the ordinal per clip, so next/previous don't care
+        // that the queue was assembled out of order.
+        final o = (from + k) % translations.length;
+        final failed = translations[o].trim() == orderedSpoken[o].trim();
+        final clipLang = failed ? _bank!.language : settings.targetLanguage;
+
+        if (translationPaths[o].isEmpty) {
+          try {
+            translationPaths[o] = await _ensureClipFile(
+              translations[o],
+              clipLang,
+              gender,
+              preferVoice: failed ? sourceVoice : '',
+            );
+          } catch (_) {
+            // Even after Google→local fallback this one couldn't be produced —
+            // leave the path empty so the ordinal is skipped entirely.
+            translationPaths[o] = '';
+            failureCount++;
+          }
+          if (mounted && token == _buildToken) setState(() => _prepDone = _prepDone + 1);
+        }
+        if (speakSource && sourcePaths[o] == null) {
+          sourcePaths[o] = await _ensureClipFileOrNull(
+            orderedSpoken[o],
+            _bank!.language,
+            gender,
+            preferVoice: sourceVoice,
+          );
+          if (mounted && token == _buildToken) setState(() => _prepDone = _prepDone + 1);
+        }
+        if (!mounted || token != _buildToken) return;
+
+        await _autoPlaylist.appendChunk(
+          ord: o,
+          text: translations[o],
+          sourcePath: sourcePaths[o],
+          translationPath: translationPaths[o],
+          flip: flips != null && o < flips.length && flips[o],
+        );
+
+        if (!started && translationPaths[o].isNotEmpty) {
+          // Synthesizing source clips drives the flutter_tts engine, which
+          // holds Android audio focus. If it isn't released before the playlist
+          // player starts (e.g. prep finished while the screen was locked),
+          // playback begins silently — the symptom that "stop then play" used
+          // to clear. Release it explicitly so the player wins focus first try.
+          try {
+            await _tts.stop();
+          } catch (_) {}
+          if (play && _autoMode) await _autoPlaylist.playDynamic();
+          started = true;
+        }
+        // The user pressed Stop mid-render. Unlike Listen's pause, this calls
+        // player.stop(), so appending into the queue afterwards is not
+        // something to rely on — abandon the build and let the next Play
+        // rebuild. The clips rendered so far stay cached, so that is cheap.
+        if (play && started && !_autoMode) return;
+      }
+
+      if (!mounted || token != _buildToken) return;
+      if (failureCount > 0) {
+        lpSnack(context, '$failureCount sentence(s) could not be synthesized — skipping them.', 4000);
+      }
+      // Only now, with every ordinal appended: marking it resumable earlier
+      // would let a later Play pick up a partial queue whose tail never renders.
       _preparedSig = sig;
       if (mounted) setState(() => _autoPreparing = false);
     } catch (e) {
@@ -1845,17 +1784,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   }
 
   String _ttsLangCode(String languageName) {
-    final locale = _localeForLanguage(languageName);
+    final locale = localeForLanguage(languageName);
     return (locale ?? 'en').toLowerCase().split(RegExp('[-_]')).first;
-  }
-
-  Future<Directory> _ensureSynthDir() async {
-    if (_synthDir != null) return _synthDir!;
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory('${base.path}/tts_synth_cache');
-    if (!await dir.exists()) await dir.create(recursive: true);
-    _synthDir = dir;
-    return dir;
   }
 
   /// Produces a playable audio file for [text] in [languageName]. Greek-class
@@ -1873,7 +1803,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         // Fall through to local synthesis below.
       }
     }
-    return _synthToFile(text, _localeForLanguage(languageName), code, gender, preferVoice);
+    return TtsSynthService.instance.synthToFile(
+      text,
+      langCode: code,
+      locale: localeForLanguage(languageName),
+      voiceId: preferVoice,
+      gender: gender,
+    );
   }
 
   /// Like [_ensureClipFile] but returns null instead of throwing — used for the
@@ -1903,141 +1839,22 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         // escaping as an unhandled async error.
         return await _googleTts.cachedFile(text, code);
       }
-      final dir = await _ensureSynthDir();
-      final voiceKey = preferVoice.isNotEmpty ? preferVoice : gender;
-      final key = sha1.convert(utf8.encode('$code|$voiceKey|p7|r$kSourceSpeechRate|$text')).toString();
-      final file = File('${dir.path}/$key.wav');
-      return await file.exists() ? file.path : null;
+      return await TtsSynthService.instance.cachedPath(text, langCode: code, voiceId: preferVoice, gender: gender);
     } catch (_) {
       return null;
     }
   }
 
-  /// Renders [text] to a WAV via flutter_tts, cached on disk so it's only
-  /// synthesized once per (voice/gender, text). When [preferVoice] is a chosen
-  /// voice ("name__SEP__locale"), that exact voice is used; otherwise it falls
-  /// back to picking a voice by [gender].
-  Future<String> _synthToFile(String text, String? locale, String code, String gender, String preferVoice) async {
-    final dir = await _ensureSynthDir();
-    final voiceKey = preferVoice.isNotEmpty ? preferVoice : gender;
-    // Version token; bump to force re-synthesis (p1 = leading silence,
-    // p2 = region-first Automatic voice, p3 = 500ms lead, p5 = 24kHz cap,
-    // p6 = native rate, no downsampling, p7 = no pitch-shift fallback). The
-    // current kSourceSpeechRate is folded into the key so changing it
-    // auto-invalidates clips that were synthesised at a different rate.
-    final key = sha1.convert(utf8.encode('$code|$voiceKey|p7|r$kSourceSpeechRate|$text')).toString();
-    final file = File('${dir.path}/$key.wav');
-    // Reuse a cached clip only if it's a plausibly-real WAV. A previously
-    // failed/timed-out synthesis can leave a 0-byte or header-only file; a valid
-    // clip is always >20 KB (the 500ms silence pad alone is that big). Serving
-    // the tiny one would replay as permanent silence, so delete + re-synth.
-    if (await file.exists()) {
-      if (await _isUsableClip(file)) return file.path;
-      try {
-        await file.delete();
-      } catch (_) {}
-    }
-    await _evictSynthIfFull(dir);
-
-    await _tts.stop();
-    final parts = preferVoice.split('__SEP__');
-    if (preferVoice.isNotEmpty && parts.length == 2) {
-      if (parts[1].isNotEmpty) await _tts.setLanguage(parts[1]);
-      await _tts.setVoice({'name': parts[0], 'locale': parts[1]});
-      await _tts.setSpeechRate(kSourceSpeechRate);
-      await _tts.setPitch(1.0);
-    } else {
-      if (locale != null) await _tts.setLanguage(locale);
-      await _tts.setSpeechRate(kSourceSpeechRate);
-      // Pick a gendered voice if one exists, but never pitch-shift to fake one:
-      // the engine's pitch-shift adds grainy artefacts to every clip.
-      await _applyGenderedVoice(locale, gender);
-      await _tts.setPitch(1.0);
-    }
-    await _tts.awaitSynthCompletion(true);
-    // flutter_tts.synthesizeToFile occasionally hangs on Android (the engine's
-    // completion callback never fires), which would leave the whole prep stuck
-    // with no way for the per-item catch to kick in. Wrap it in a hard timeout
-    // so a hung synthesis becomes a normal per-item failure that gets skipped.
-    try {
-      await _tts.synthesizeToFile(text, file.path, true).timeout(const Duration(seconds: 30));
-    } on TimeoutException {
-      // Best-effort: cancel any in-flight engine work so the next call starts
-      // clean, and delete any partial file so it isn't cached as a silent clip.
-      try {
-        await _tts.stop();
-      } catch (_) {}
-      try {
-        if (await file.exists()) await file.delete();
-      } catch (_) {}
-      throw Exception('TTS synthesis timed out');
-    }
-    if (!await file.exists()) throw Exception('TTS synthesis produced no file');
-    // Prepend 500ms silence — the audio path drops the first frames at a clip
-    // boundary / cold start. Keeps the engine's native rate (mono).
-    await _normalizeSynthWav(file);
-    // Guard against a "successful" synth that produced an empty/broken clip:
-    // don't cache silence — delete it so it retries next time.
-    if (!await _isUsableClip(file)) {
-      try {
-        await file.delete();
-      } catch (_) {}
-      throw Exception('TTS synthesis produced an empty clip');
-    }
-    return file.path;
-  }
-
-  /// A synthesized clip is only usable if it holds real audio. Failed/timed-out
-  /// synthesis leaves a 0-byte or header-only (~44-byte) WAV; a genuine clip is
-  /// always far larger (the 500ms silence pad alone is >20 KB), so a small file
-  /// is treated as a failure to be retried rather than replayed as silence.
-  static const int _kMinUsableClipBytes = 1024;
-  Future<bool> _isUsableClip(File file) async {
-    try {
-      return await file.length() >= _kMinUsableClipBytes;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Prepends [padMs] of silence to a synthesized WAV (the audio path drops the
-  /// first frames at a clip boundary / cold start). Keeps the engine's native
-  /// sample rate — `parseWavPcm16` already collapses to one (mono) channel, and
-  /// downsampling here used naive decimation (no anti-alias filter), which made
-  /// the voice sound coarse. Best-effort: untouched if unparseable.
-  Future<void> _normalizeSynthWav(File f, {int padMs = 500}) async {
-    try {
-      final parsed = parseWavPcm16(await f.readAsBytes());
-      if (parsed == null) return;
-      final sil = silencePcm16(parsed.rate, padMs);
-      final combined = Int16List(sil.length + parsed.samples.length)
-        ..setAll(0, sil)
-        ..setAll(sil.length, parsed.samples);
-      await f.writeAsBytes(pcm16MonoToWav(combined, parsed.rate), flush: true);
-    } catch (_) {}
-  }
-
-  /// Same 10k cap + LRU eviction the Google/Gemini caches use, for the device
-  /// synthesis cache.
-  Future<void> _evictSynthIfFull(Directory dir, {int cap = 10000, int batch = 200}) async {
-    try {
-      final files = (await dir.list(followLinks: false).toList()).whereType<File>().toList();
-      if (files.length < cap) return;
-      files.sort((a, b) => a.statSync().modified.compareTo(b.statSync().modified));
-      var deleted = 0;
-      for (final fi in files) {
-        if (deleted >= batch) break;
-        try {
-          await fi.delete();
-          deleted++;
-        } catch (_) {}
-      }
-    } catch (_) {}
-  }
-
   @override
   void dispose() {
     katalavenoAudio.unbind(this);
+    // The tab can be disposed mid-playback — the user hid it in Settings → Tabs
+    // — and the player is the shared handler's, so it would otherwise keep
+    // playing this subject with nobody left to control it.
+    if (_autoMode) {
+      _saveAutoPosition();
+      _autoPlaylist.stop();
+    }
     _tts.stop();
     _autoOrdinalSub?.cancel();
     _autoPlaylist.dispose();
@@ -2236,7 +2053,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         }
       },
       itemBuilder: (ctx) => [
-        if (_ttsSupported()) item('voice', Icons.record_voice_over_outlined, 'Voice'),
+        if (ttsSupported()) item('voice', Icons.record_voice_over_outlined, 'Voice'),
         item('settings', Icons.tune, 'Settings'),
         item('url', Icons.link, 'Sentence bank URL'),
         item('load', Icons.upload_file, 'Load file from device'),
@@ -2933,7 +2750,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   }
 
   Widget _buildControls(int repeatCount) {
-    final ttsOk = _ttsSupported();
+    final ttsOk = ttsSupported();
 
     final navRow = Row(
       children: [

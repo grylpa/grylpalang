@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
 import '../models/word_sentence.dart';
+import '../services/tts_synth_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
 
@@ -82,9 +83,10 @@ class _PredictionTabState extends State<PredictionTab> {
       final sent = _current;
       if (sent == null) return;
 
-      // Pick a language: if your target is Greek, this is fine.
-      // If you support multiple targets, you can map based on settings.targetLanguage.
-      await _tts.setLanguage('el-GR');
+      // Follows the configured target language. This used to be pinned to
+      // 'el-GR', which read every other target language in a Greek voice.
+      final locale = localeForLanguage(context.read<AppState>().settings.targetLanguage);
+      if (locale != null) await _tts.setLanguage(locale);
       await _tts.setSpeechRate(0.45);
 
       // Speak the clean target-language sentence (strip [[...]] markers)

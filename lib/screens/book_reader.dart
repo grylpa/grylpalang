@@ -16,30 +16,9 @@ import '../widgets.dart';
 import '../services/auto_playlist_controller.dart';
 import '../services/book_library_service.dart';
 import '../services/katalaveno_audio_handler.dart';
+import '../services/tts_synth_service.dart';
 import '../services/sentence_bank_service.dart';
 import '../state/app_state.dart';
-
-/// Friendly language name → BCP-47 locale, for the target voice. Mirrors the
-/// map in sentence_bank_tab so the same languages "just work" here.
-String? _localeForLanguage(String name) {
-  const map = <String, String>{
-    'English': 'en-US',
-    'Greek': 'el-GR',
-    'Hebrew': 'he-IL',
-    'German': 'de-DE',
-    'French': 'fr-FR',
-    'Spanish': 'es-ES',
-    'Italian': 'it-IT',
-    'Portuguese': 'pt-PT',
-    'Russian': 'ru-RU',
-    'Turkish': 'tr-TR',
-    'Arabic': 'ar-SA',
-    'Chinese': 'zh-CN',
-    'Japanese': 'ja-JP',
-    'Korean': 'ko-KR',
-  };
-  return map[name];
-}
 
 /// Best-effort mapping from a book's `language` field (often a 2-letter ISO
 /// code from the EPUB OPF, e.g. "en" / "el") to a BCP-47 locale flutter_tts
@@ -251,7 +230,7 @@ class _BookReaderState extends State<BookReader> {
 
     try {
       final sourceLocale = _bookLocale(widget.book.language);
-      final targetLocale = _localeForLanguage(settings.targetLanguage) ?? 'en-US';
+      final targetLocale = localeForLanguage(settings.targetLanguage) ?? 'en-US';
 
       await _audioPlaylist.beginDynamic(
         ordinalCount: chunks.length,
@@ -309,6 +288,7 @@ class _BookReaderState extends State<BookReader> {
             onStop: _stopAudio,
             onSkipNext: _skipForward,
             onSkipPrev: _skipBack,
+            onSessionLost: _onSessionLost,
           );
           setState(() {
             _audioPrep = false;
@@ -435,7 +415,7 @@ class _BookReaderState extends State<BookReader> {
       final state = context.read<AppState>();
       final settings = state.settings;
       final sourceLocale = _bookLocale(widget.book.language);
-      final targetLocale = _localeForLanguage(settings.targetLanguage) ?? 'en-US';
+      final targetLocale = localeForLanguage(settings.targetLanguage) ?? 'en-US';
       final src = _chunks[_currentOrdinal];
       final tr = (_currentOrdinal < _translations.length) ? _translations[_currentOrdinal] : null;
 
@@ -521,6 +501,25 @@ class _BookReaderState extends State<BookReader> {
     }
   }
 
+  /// Another screen claimed the shared player. Ends this reading session
+  /// locally — position saved, streaming loop stopped — without touching the
+  /// player, which is now serving their queue.
+  void _onSessionLost() {
+    ++_replaySession;
+    _audioTts.stop();
+    if (_audioMode) _library.saveAudioPosition(widget.book.id, _chapterIndex, _currentOrdinal);
+    _ordinalSub?.cancel();
+    _ordinalSub = null;
+    _playerStateSub?.cancel();
+    _playerStateSub = null;
+    _audioPlaylist.detach();
+    if (!mounted) return;
+    setState(() {
+      _audioMode = false;
+      _audioPrep = false;
+    });
+  }
+
   Future<void> _stopAudio() async {
     // First: invalidate any in-flight replay and kill the live TTS so a stale
     // _speakLive await can't continue talking after the session ends.
@@ -563,7 +562,7 @@ class _BookReaderState extends State<BookReader> {
   Future<void> _showVoicePicker() async {
     final state = context.read<AppState>();
     final sourceLookup = _bookLocale(widget.book.language); // e.g. 'en-US'
-    final targetLookup = _localeForLanguage(state.settings.targetLanguage) ?? 'en-US';
+    final targetLookup = localeForLanguage(state.settings.targetLanguage) ?? 'en-US';
     final sourceLang = widget.book.language.isEmpty ? 'English' : widget.book.language;
     final targetLang = state.settings.targetLanguage;
 
