@@ -690,7 +690,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
             ],
           ),
           const SizedBox(height: 20),
-          Expanded(child: SingleChildScrollView(child: _statusCard(s))),
+          Expanded(child: _statusCard(s)),
           const SizedBox(height: 10),
           _generateButton(s),
           const SizedBox(height: 16),
@@ -757,64 +757,84 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     );
   }
 
-  /// Progress / position only — never the text itself. Seeing the words would
-  /// turn a listening exercise into a reading one.
+  /// The reading pane: a compact header line, then the current text and its
+  /// translation, scrollable in whatever height is left.
+  ///
+  /// The text is shown rather than hidden — you're meant to be able to stop
+  /// mid-walk, glance down and check yourself. It just isn't the *point* of the
+  /// screen, so it sits below the position line rather than dominating it.
   Widget _statusCard(AppSettings s) {
-    final stories = _playable;
-    final theme = Theme.of(context);
-
     // Nothing else on this screen matters if the phone can't speak the language.
-    if (_targetSpeechOk == false) return _noSpeechNotice(s.targetLanguage);
+    if (_targetSpeechOk == false) return _scrollable(_noSpeechNotice(s.targetLanguage));
 
+    final stories = _playable;
     if (_selectedSubjects.isEmpty) {
-      return _placeholder(Icons.hearing_outlined, 'Pick one or more subjects to listen to.');
+      return _scrollable(_placeholder(Icons.hearing_outlined, 'Pick one or more subjects to listen to.'));
     }
     if (stories.isEmpty) {
-      return _placeholder(
-        Icons.auto_awesome_outlined,
-        'No texts for these subjects yet.\nTap "Generate texts" to create some.',
+      return _scrollable(
+        _placeholder(
+          Icons.auto_awesome_outlined,
+          'No texts for these subjects yet.\nTap "Generate texts" to create some.',
+        ),
       );
     }
 
+    final theme = Theme.of(context);
+    final story = stories[_index.clamp(0, stories.length - 1)];
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // No subject names: a text is written from the whole selected pool, so
-        // naming one or two of them would misrepresent it — and the position is
-        // all you need while listening anyway.
-        Text('Text ${_index + 1} of ${stories.length}', style: theme.textTheme.bodySmall),
-        const SizedBox(height: 24),
-        Icon(
-          _playing ? Icons.graphic_eq : Icons.hearing_outlined,
-          size: 56,
-          color: _playing ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
+        // Header: position on the left, the playing indicator on the right —
+        // side by side rather than stacked, which buys the text its height.
+        Row(
+          children: [
+            Expanded(child: Text('Text ${_index + 1} of ${stories.length}', style: theme.textTheme.bodySmall)),
+            Icon(
+              _playing ? Icons.graphic_eq : Icons.hearing_outlined,
+              color: _playing ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
+            ),
+          ],
         ),
-        const SizedBox(height: 16),
-        Text(
-          _knownSpeechOk
-              ? '${s.targetLanguage} at ${s.listenSlowRatePct}% → ${s.listenMediumRatePct}% '
-                    '→ ${s.knownLanguage} → ${s.listenFullRatePct}%'
-              : '${s.targetLanguage} at ${s.listenSlowRatePct}% → ${s.listenMediumRatePct}% '
-                    '→ ${s.listenFullRatePct}%',
-          textAlign: TextAlign.center,
-          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-        ),
-        if (!_knownSpeechOk) ...[
-          const SizedBox(height: 4),
+        if (!_knownSpeechOk)
           // Not a blocking notice like the target language — the exercise still
           // works without the translation — but it gets the same instructions,
           // one tap away, so it's fixable rather than merely reported.
-          TextButton.icon(
-            onPressed: () => _showMissingVoiceDialog(s.knownLanguage),
-            icon: Icon(Icons.info_outline, size: 18, color: theme.colorScheme.error),
-            label: Text(
-              'No ${s.knownLanguage} voice — translation skipped',
-              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              style: TextButton.styleFrom(padding: EdgeInsets.zero, visualDensity: VisualDensity.compact),
+              onPressed: () => _showMissingVoiceDialog(s.knownLanguage),
+              icon: Icon(Icons.info_outline, size: 18, color: theme.colorScheme.error),
+              label: Text(
+                'No ${s.knownLanguage} voice — translation skipped',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+              ),
             ),
           ),
-        ],
+        const Divider(height: 16),
+        Expanded(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SelectableText(story.l2, style: theme.textTheme.titleMedium?.copyWith(height: 1.4)),
+                const SizedBox(height: 16),
+                SelectableText(
+                  story.l1,
+                  style: theme.textTheme.bodyMedium?.copyWith(height: 1.4, color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }
+
+  /// Wraps a fixed placeholder so it still behaves inside the Expanded slot the
+  /// reading pane normally fills.
+  Widget _scrollable(Widget child) => SingleChildScrollView(child: child);
 
   /// Where to install a missing voice. One string for both languages — the
   /// steps are identical, only the severity differs, so they must not drift
