@@ -13,6 +13,17 @@ class AppSettings {
   // since the YAML bank has no key for it.
   static const int kSbNextSourcePauseSecDefault = 2;
 
+  // Listen mode defaults (single source of truth: constructor, JSON fallback
+  // and the tab's reset buttons all read these).
+  static const int kListenSlowRatePctDefault = 60;
+  static const int kListenMediumRatePctDefault = 80;
+  static const int kListenFullRatePctDefault = 100;
+  static const int kListenPauseAfterSlowSecDefault = 2;
+  static const int kListenPauseAfterMediumSecDefault = 3;
+  static const int kListenPauseBeforeNextSecDefault = 3;
+  static const int kListenTextsPerRunDefault = 8;
+  static const int kListenSentencesPerTextDefault = 3;
+
   String knownLanguage;
   String targetLanguage;
   Duration interval;
@@ -29,6 +40,24 @@ class AppSettings {
   bool modeClean; // show full L2 sentence
   bool modeCloze; // show L2 with target word blanked
   bool modeReverse; // show L1 sentence as title
+
+  // Listen mode. Rates are a percentage of the app's normal speech rate
+  // (kSourceSpeechRate), so 100 = the same pace the other modes speak at.
+  int listenSlowRatePct; // 1st pass — deliberately slow
+  int listenMediumRatePct; // 2nd pass — closer to natural
+  int listenFullRatePct; // final pass, after the translation
+  int listenPauseAfterSlowSec; // gap after the slow pass
+  int listenPauseAfterMediumSec; // gap after the faster pass (thinking time)
+  int listenPauseBeforeNextSec; // gap before the next story
+  int listenTextsPerRun; // how many texts one "Generate texts" press asks for, across all selected subjects
+  int listenSentencesPerText; // rough length of each generated text
+  List<String> listenVoiceIds; // target-language voices to rotate through (empty = all installed)
+  String listenKnownVoice; // known-language voice for the translation pass ('' = automatic)
+
+  // Bottom-nav destinations the user has switched off (AppTab ids). Stored as
+  // the *hidden* set, not the visible one, so a tab added in a later version
+  // shows up by default instead of silently missing.
+  List<String> hiddenTabIds;
 
   // Sentence Bank settings
   String sentenceBankUrl; // URL to fetch sentence_bank.yaml (empty = use bundled asset)
@@ -82,6 +111,17 @@ class AppSettings {
     required this.sentenceBankShuffle,
     this.sentenceBankRepeatSourceBetween = false,
     this.sentenceBankNextSourcePauseSec = kSbNextSourcePauseSecDefault,
+    this.listenSlowRatePct = kListenSlowRatePctDefault,
+    this.listenMediumRatePct = kListenMediumRatePctDefault,
+    this.listenFullRatePct = kListenFullRatePctDefault,
+    this.listenPauseAfterSlowSec = kListenPauseAfterSlowSecDefault,
+    this.listenPauseAfterMediumSec = kListenPauseAfterMediumSecDefault,
+    this.listenPauseBeforeNextSec = kListenPauseBeforeNextSecDefault,
+    this.listenTextsPerRun = kListenTextsPerRunDefault,
+    this.listenSentencesPerText = kListenSentencesPerTextDefault,
+    this.listenVoiceIds = const [],
+    this.listenKnownVoice = '',
+    this.hiddenTabIds = const [],
     this.sentenceBankTargetFirst = false,
     this.sentenceBankPrepareAudio = true,
     this.booksChunkUnit = 'sentence',
@@ -120,6 +160,17 @@ class AppSettings {
     bool? sentenceBankShuffle,
     bool? sentenceBankRepeatSourceBetween,
     int? sentenceBankNextSourcePauseSec,
+    int? listenSlowRatePct,
+    int? listenMediumRatePct,
+    int? listenFullRatePct,
+    int? listenPauseAfterSlowSec,
+    int? listenPauseAfterMediumSec,
+    int? listenPauseBeforeNextSec,
+    int? listenTextsPerRun,
+    int? listenSentencesPerText,
+    List<String>? listenVoiceIds,
+    String? listenKnownVoice,
+    List<String>? hiddenTabIds,
     bool? sentenceBankTargetFirst,
     bool? sentenceBankPrepareAudio,
     String? booksChunkUnit,
@@ -163,6 +214,17 @@ class AppSettings {
       sentenceBankShuffle: sentenceBankShuffle ?? this.sentenceBankShuffle,
       sentenceBankRepeatSourceBetween: sentenceBankRepeatSourceBetween ?? this.sentenceBankRepeatSourceBetween,
       sentenceBankNextSourcePauseSec: sentenceBankNextSourcePauseSec ?? this.sentenceBankNextSourcePauseSec,
+      listenSlowRatePct: listenSlowRatePct ?? this.listenSlowRatePct,
+      listenMediumRatePct: listenMediumRatePct ?? this.listenMediumRatePct,
+      listenFullRatePct: listenFullRatePct ?? this.listenFullRatePct,
+      listenPauseAfterSlowSec: listenPauseAfterSlowSec ?? this.listenPauseAfterSlowSec,
+      listenPauseAfterMediumSec: listenPauseAfterMediumSec ?? this.listenPauseAfterMediumSec,
+      listenPauseBeforeNextSec: listenPauseBeforeNextSec ?? this.listenPauseBeforeNextSec,
+      listenTextsPerRun: listenTextsPerRun ?? this.listenTextsPerRun,
+      listenSentencesPerText: listenSentencesPerText ?? this.listenSentencesPerText,
+      listenVoiceIds: listenVoiceIds ?? this.listenVoiceIds,
+      listenKnownVoice: listenKnownVoice ?? this.listenKnownVoice,
+      hiddenTabIds: hiddenTabIds ?? this.hiddenTabIds,
       sentenceBankTargetFirst: sentenceBankTargetFirst ?? this.sentenceBankTargetFirst,
       sentenceBankPrepareAudio: sentenceBankPrepareAudio ?? this.sentenceBankPrepareAudio,
       booksChunkUnit: booksChunkUnit ?? this.booksChunkUnit,
@@ -204,6 +266,17 @@ class AppSettings {
     'sentenceBankShuffle': sentenceBankShuffle,
     'sentenceBankRepeatSourceBetween': sentenceBankRepeatSourceBetween,
     'sentenceBankNextSourcePauseSec': sentenceBankNextSourcePauseSec,
+    'listenSlowRatePct': listenSlowRatePct,
+    'listenMediumRatePct': listenMediumRatePct,
+    'listenFullRatePct': listenFullRatePct,
+    'listenPauseAfterSlowSec': listenPauseAfterSlowSec,
+    'listenPauseAfterMediumSec': listenPauseAfterMediumSec,
+    'listenPauseBeforeNextSec': listenPauseBeforeNextSec,
+    'listenTextsPerRun': listenTextsPerRun,
+    'listenSentencesPerText': listenSentencesPerText,
+    'listenVoiceIds': listenVoiceIds,
+    'listenKnownVoice': listenKnownVoice,
+    'hiddenTabIds': hiddenTabIds,
     'sentenceBankTargetFirst': sentenceBankTargetFirst,
     'sentenceBankPrepareAudio': sentenceBankPrepareAudio,
     'booksChunkUnit': booksChunkUnit,
@@ -252,6 +325,20 @@ class AppSettings {
       sentenceBankShuffle: json['sentenceBankShuffle'] as bool? ?? true,
       sentenceBankRepeatSourceBetween: json['sentenceBankRepeatSourceBetween'] as bool? ?? false,
       sentenceBankNextSourcePauseSec: (json['sentenceBankNextSourcePauseSec'] as int?) ?? kSbNextSourcePauseSecDefault,
+      listenSlowRatePct: (json['listenSlowRatePct'] as int?) ?? kListenSlowRatePctDefault,
+      listenMediumRatePct: (json['listenMediumRatePct'] as int?) ?? kListenMediumRatePctDefault,
+      listenFullRatePct: (json['listenFullRatePct'] as int?) ?? kListenFullRatePctDefault,
+      listenPauseAfterSlowSec: (json['listenPauseAfterSlowSec'] as int?) ?? kListenPauseAfterSlowSecDefault,
+      listenPauseAfterMediumSec: (json['listenPauseAfterMediumSec'] as int?) ?? kListenPauseAfterMediumSecDefault,
+      listenPauseBeforeNextSec: (json['listenPauseBeforeNextSec'] as int?) ?? kListenPauseBeforeNextSecDefault,
+      // `listenTextsPerSubject` was the per-subject count before one run
+      // started covering every selected subject at once.
+      listenTextsPerRun:
+          (json['listenTextsPerRun'] as int?) ?? (json['listenTextsPerSubject'] as int?) ?? kListenTextsPerRunDefault,
+      listenSentencesPerText: (json['listenSentencesPerText'] as int?) ?? kListenSentencesPerTextDefault,
+      listenVoiceIds: (json['listenVoiceIds'] as List?)?.cast<String>() ?? const [],
+      listenKnownVoice: json['listenKnownVoice'] as String? ?? '',
+      hiddenTabIds: (json['hiddenTabIds'] as List?)?.cast<String>() ?? const [],
       sentenceBankTargetFirst: json['sentenceBankTargetFirst'] as bool? ?? false,
       sentenceBankPrepareAudio: json['sentenceBankPrepareAudio'] as bool? ?? true,
       booksChunkUnit: json['booksChunkUnit'] as String? ?? 'sentence',
