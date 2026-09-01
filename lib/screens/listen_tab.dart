@@ -1180,8 +1180,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                     onSet: (v) => set(s.copyWith(listenSentencesPerText: v)),
                   ),
                   Text(
-                    'Roughly how long each micro-story runs. Bank sentences are only '
-                    'seeds — stories are written fresh, never assembled from them.',
+                    'Roughly how many sentences long each story runs, at about the '
+                    'length of your bank sentences — so 3 is about three of them. '
+                    'Bank sentences are only seeds for vocabulary and level; the '
+                    'stories are written fresh, never assembled from them.',
                     style: Theme.of(ctx).textTheme.bodySmall,
                   ),
                 ],
