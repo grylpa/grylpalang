@@ -924,49 +924,66 @@ Example of the format (structure only):
     }
     if (examplesBySubject.isEmpty) return const [];
 
+    // A few seeds per subject, shuffled so repeated runs don't keep staring at
+    // the same phrases and producing variations of the same scene.
     final topics = examplesBySubject.entries
         .map((e) {
-          final sample = e.value.take(5).map((x) => '    - $x').join('\n');
+          final pool = [...e.value]..shuffle();
+          final sample = pool.take(4).map((x) => '    - $x').join('\n');
           return '  * ${e.key}${sample.isEmpty ? '' : '\n$sample'}';
         })
         .join('\n');
-    final names = examplesBySubject.keys.join(', ');
 
     final prompt =
         '''
-You are writing listening-comprehension practice material for a language learner.
+You are writing short listening-comprehension texts for a language learner.
 
 TARGET LANGUAGE (L2): $targetLanguage
 KNOWN LANGUAGE (L1): $knownLanguage
 
-TOPICS the learner is studying. The sample phrases under each one are material
-they have ALREADY LEARNED — they are there to show you what the topic covers and
-what language the learner is comfortable with, not to be reproduced:
+VOCABULARY AND REGISTER REFERENCE
+The learner has already studied the phrases below. They exist to tell you two
+things only: which everyday topics the learner is comfortable with, and roughly
+how complex their $targetLanguage is. They are NOT content. Never quote them,
+never lightly reword them, and never string several of them together into a
+text — that is the single most common way this task is done badly.
 $topics
 
-Write $count separate texts in L2.
+YOUR TASK
+Write $count different texts in $targetLanguage. Each one is a tiny, complete
+story.
 
-Rules:
-1. Each text is a self-contained micro-story or one long, rich sentence —
-   about $sentencesPerText sentences of natural connected speech.
-2. Treat the topics as ONE pool, not a checklist. The goal is listenable short
-   content, not topic drills, so any text may freely combine several topics
-   into a single natural situation (for example a scene that touches
-   $names). A topic with only two or three sample phrases is still a perfectly
-   good ingredient — never pad or stretch a text just to cover one, and never
-   announce or name the topics.
-3. Do not quote or lightly reword the sample phrases. Build fresh sentences on
-   the familiar ground they represent.
-4. This trains LISTENING, not vocabulary. Use ordinary everyday language and
-   normal sentence flow. Do not gloss over, define, or highlight any word.
-5. Vary the texts: different situations, speakers, tenses and moods across the
-   set. Do not reuse the same opening twice.
-6. Write for the ear — text that sounds natural read aloud. No headings, no
-   bullet points, no emoji, no quotation marks around the whole text, and no
-   parentheses or bracketed asides.
-7. Keep it concrete and easy to picture, at an upper-beginner / intermediate
-   level.
-8. "l1" must be a faithful, natural translation of "l2" — not a summary.
+WHAT MAKES A TEXT ACCEPTABLE
+1. ONE coherent scene. The same people, the same place, the same stretch of
+   time from beginning to end. Something actually happens: a small setup, a
+   development, and an outcome or a closing thought. A listener should be able
+   to retell what happened.
+2. Every sentence follows from the one before it. A set of true, unrelated
+   statements that merely share a topic is a FAILURE, even when every sentence
+   is perfectly correct on its own.
+3. Length: about $sentencesPerText sentences, each roughly as long as the
+   reference phrases above. Aim for that overall size, not an exact count.
+4. It stands alone. Never name, announce or allude to the topic list. Do not
+   write a title. Start straight into the scene.
+5. Treat the topics as one pool. A text may draw on several of them when that
+   makes a more natural situation, and a topic with only a couple of reference
+   phrases is a perfectly good ingredient — never pad a text just to cover one.
+6. Vary across the set: different people, places, moods, tenses and outcomes.
+   No two texts should open the same way or retell the same situation.
+7. Write for the ear: natural connected speech, at an upper-beginner to
+   intermediate level. No headings, bullet points, emoji, surrounding quotation
+   marks, or parenthetical asides.
+8. "l1" is a faithful, natural translation of the whole of "l2" — not a summary.
+
+THE SHAPE TO AIM FOR (shown in English so you can see the structure — write
+yours in $targetLanguage):
+  GOOD: "I got to the bakery ten minutes before closing. There was only one
+  loaf left, and the woman ahead of me was already reaching for it. She saw my
+  face, laughed, and cut it in half for us both."
+    → one scene, connected sentences, something happens, it resolves.
+  BAD: "I like bread. The bakery near my house opens at seven. My sister is a
+  doctor. Yesterday the weather was nice."
+    → correct sentences with no scene and no connection. Never produce this.
 
 RETURN FORMAT (VERY IMPORTANT):
 Return ONLY a JSON array and nothing else. No explanations, no markdown.
@@ -985,14 +1002,22 @@ Return ONLY a JSON array and nothing else. No explanations, no markdown.
         },
       ],
       'generationConfig': {
+        // Storytelling, not extraction: a little extra spread keeps the set of
+        // texts from collapsing into variations of one scene.
+        'temperature': 1.15,
         'responseMimeType': 'application/json',
         'responseSchema': {
           'type': 'array',
           'items': {
             'type': 'object',
             'properties': {
-              'l2': {'type': 'string', 'description': 'The listening text, in L2.'},
-              'l1': {'type': 'string', 'description': 'Full translation of l2 into L1.'},
+              'l2': {
+                'type': 'string',
+                'description':
+                    'One self-contained micro-story in L2: a single connected scene with a beginning, '
+                    'a development and an outcome. Never a list of unrelated sentences.',
+              },
+              'l1': {'type': 'string', 'description': 'Faithful full translation of l2 into L1.'},
             },
             'required': ['l2', 'l1'],
           },
