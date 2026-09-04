@@ -22,7 +22,7 @@ class AppSettings {
   static const int kListenPauseAfterMediumSecDefault = 3;
   static const int kListenPauseBeforeNextSecDefault = 3;
   static const int kListenTextsPerRunDefault = 8;
-  static const int kListenSentencesPerTextDefault = 3;
+  static const int kListenSentencesPerTextDefault = 2;
 
   String knownLanguage;
   String targetLanguage;

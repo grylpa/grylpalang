@@ -901,19 +901,24 @@ Example of the format (structure only):
     return result;
   }
 
-  /// Generates listening-comprehension texts across a set of bank subjects:
-  /// long sentences or micro-stories in L2, each with its L1 translation.
+  /// Maximum seed phrases fed to the generator, and the character budget they
+  /// share. The point is a broad picture of the learner's vocabulary, so more
+  /// is better — but not so much that the reference buries the instructions.
+  static const int _kMaxSeedPhrases = 400;
+  static const int _kMaxSeedChars = 20000;
+
+  /// Generates listening-comprehension texts: long sentences or micro-stories
+  /// in L2, each with its L1 translation.
   ///
-  /// The subjects are a single pool, not a loop — one text may weave several of
-  /// them together, which is what makes the material feel like real speech
-  /// rather than topic drills. Unlike the Sentence Bank's material (built to
-  /// drill one word), these are longer and connected: the point is following
-  /// continuous speech, not recognising vocabulary. [examplesBySubject] carries
-  /// a few of each subject's own bank sentences, passed only to pin down what
-  /// that subject is about.
+  /// [knownPhrases] is every sentence from the selected subjects, **flattened**
+  /// — no subject grouping, deliberately. Grouped, narrow seed lists made the
+  /// model build each story around two or three of them, which a learner who
+  /// already knows those phrases can simply recognise rather than decode. As
+  /// one large unlabelled pool the list stops steering the plot and does what
+  /// it should: describe the vocabulary and level the learner can follow.
   static Future<List<({String l2, String l1})>> generateListeningTexts({
     required String apiKey,
-    required Map<String, List<String>> examplesBySubject,
+    required List<String> knownPhrases,
     required String knownLanguage,
     required String targetLanguage,
     required int count,
@@ -922,17 +927,19 @@ Example of the format (structure only):
     if (apiKey.trim().isEmpty) {
       throw Exception('AI API key is empty (set it in Settings).');
     }
-    if (examplesBySubject.isEmpty) return const [];
+    if (knownPhrases.isEmpty) return const [];
 
-    // A few seeds per subject, shuffled so repeated runs don't keep staring at
-    // the same phrases and producing variations of the same scene.
-    final topics = examplesBySubject.entries
-        .map((e) {
-          final pool = [...e.value]..shuffle();
-          final sample = pool.take(4).map((x) => '    - $x').join('\n');
-          return '  * ${e.key}${sample.isEmpty ? '' : '\n$sample'}';
-        })
-        .join('\n');
+    // Shuffled, so a bank too large for the budget still shows the model a
+    // different cross-section on every run instead of always its first slice.
+    final pool = [...knownPhrases]..shuffle();
+    final seeds = <String>[];
+    var chars = 0;
+    for (final phrase in pool) {
+      if (seeds.length >= _kMaxSeedPhrases || chars + phrase.length > _kMaxSeedChars) break;
+      seeds.add(phrase);
+      chars += phrase.length;
+    }
+    final vocabulary = seeds.map((x) => '  - $x').join('\n');
 
     final prompt =
         '''
@@ -941,13 +948,22 @@ You are writing short listening-comprehension texts for a language learner.
 TARGET LANGUAGE (L2): $targetLanguage
 KNOWN LANGUAGE (L1): $knownLanguage
 
-VOCABULARY AND REGISTER REFERENCE
-The learner has already studied the phrases below. They exist to tell you two
-things only: which everyday topics the learner is comfortable with, and roughly
-how complex their $targetLanguage is. They are NOT content. Never quote them,
-never lightly reword them, and never string several of them together into a
-text — that is the single most common way this task is done badly.
-$topics
+THE LEARNER'S ACTIVE VOCABULARY
+Below is what this learner has studied, in one flat list with no topics or
+grouping — deliberately, so nothing steers you toward a particular theme. Read
+it as a picture of the words, structures, tenses and register they can follow.
+$vocabulary
+
+HOW TO USE THAT LIST — READ THIS TWICE
+The learner knows every one of those phrases by heart. So:
+* A text assembled from them, or recognisably built around two or three of
+  them, is guessed rather than understood, and is worthless as practice.
+* Never quote a phrase, never lightly reword one, never chain several together.
+* Invent situations that do NOT appear anywhere in the list. Recombine the
+  vocabulary into things the learner has never heard.
+* You have real freedom here: any everyday scene is fair game, whether or not
+  the list hints at it. Introducing a few new words the learner can infer from
+  context is welcome — that is what listening practice is for.
 
 YOUR TASK
 Write $count different texts in $targetLanguage. Each one is a tiny, complete
@@ -959,21 +975,18 @@ WHAT MAKES A TEXT ACCEPTABLE
    development, and an outcome or a closing thought. A listener should be able
    to retell what happened.
 2. Every sentence follows from the one before it. A set of true, unrelated
-   statements that merely share a topic is a FAILURE, even when every sentence
-   is perfectly correct on its own.
+   statements that merely share a subject is a FAILURE, even when every
+   sentence is perfectly correct on its own.
 3. Length: about $sentencesPerText sentences, each roughly as long as the
-   reference phrases above. Aim for that overall size, not an exact count.
-4. It stands alone. Never name, announce or allude to the topic list. Do not
-   write a title. Start straight into the scene.
-5. Treat the topics as one pool. A text may draw on several of them when that
-   makes a more natural situation, and a topic with only a couple of reference
-   phrases is a perfectly good ingredient — never pad a text just to cover one.
-6. Vary across the set: different people, places, moods, tenses and outcomes.
+   phrases in the list above. Aim for that overall size, not an exact count.
+4. It stands alone. No title, no preamble, no naming of themes. Start straight
+   into the scene.
+5. Vary across the set: different people, places, moods, tenses and outcomes.
    No two texts should open the same way or retell the same situation.
-7. Write for the ear: natural connected speech, at an upper-beginner to
+6. Write for the ear: natural connected speech, at an upper-beginner to
    intermediate level. No headings, bullet points, emoji, surrounding quotation
    marks, or parenthetical asides.
-8. "l1" is a faithful, natural translation of the whole of "l2" — not a summary.
+7. "l1" is a faithful, natural translation of the whole of "l2" — not a summary.
 
 THE SHAPE TO AIM FOR (shown in English so you can see the structure — write
 yours in $targetLanguage):
