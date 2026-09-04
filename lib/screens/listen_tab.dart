@@ -49,6 +49,18 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   SentenceBank? _bank;
   final Set<String> _selectedSubjects = {};
   List<ListenStory> _stories = [];
+  // Generated ahead and not yet handed out — see [_generate] — along with the
+  // subject selection it was written for. Material generated against a
+  // different pool isn't valid for the current one, so the reserve is only used
+  // while the signatures match (and survives on disk if you switch back).
+  List<ListenStory> _reserve = [];
+  String _reserveSig = '';
+
+  /// How many texts one API call asks for, regardless of how many the user
+  /// takes per press. The seed vocabulary dominates the prompt and is sent once
+  /// per request, so a request returning 24 costs little more than one
+  /// returning 8 — while three requests of 8 pay for that vocabulary 3 times.
+  static const int _kFetchBatch = 24;
 
   /// Position within [_playable]; the *text* is what gets persisted.
   int _index = 0;
@@ -131,18 +143,23 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       };
       final saved = await _service.loadSelectedSubjects();
       final stories = await _service.loadStories(state.settings.targetLanguage);
+      final reserve = await _service.loadReserve(state.settings.targetLanguage);
       final resume = await _service.loadPosition(state.settings.targetLanguage);
       if (!mounted) return;
+
+      // No default selection: generating costs API calls, so the first visit
+      // should wait for a deliberate choice rather than pick for you.
+      final selection = {...?saved}.where(available.contains).toSet();
 
       unawaited(_checkSpeechAvailability(state.settings));
       setState(() {
         _bank = bank;
         _stories = stories;
+        _reserve = reserve.stories;
+        _reserveSig = reserve.selectionSig;
         _selectedSubjects
           ..clear()
-          // No default selection: generating costs API calls, so the first
-          // visit should wait for a deliberate choice rather than pick for you.
-          ..addAll({...?saved}.where(available.contains));
+          ..addAll(selection);
         _loading = false;
         _index = 0;
       });
@@ -155,6 +172,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       });
     }
   }
+
+  /// Order-independent signature of a subject selection, used to tell whether
+  /// a stored reserve was generated for the subjects now in play.
+  static String _sigFor(Iterable<String> subjects) => (subjects.toList()..sort()).join('§');
 
   /// Every selectable subject — meta subjects are pure groups in the bank, so
   /// they're excluded here exactly as in the Sentences tab.
@@ -295,73 +316,99 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
 
   // ── Generation ────────────────────────────────────────────────────────────
 
-  /// Asks the AI for a fresh batch of texts covering the selected subjects.
+  /// Hands the user their next batch of texts, fetching more only when the
+  /// reserve can't cover it.
   ///
-  /// One call for the whole selection, not one per subject: a text is allowed
-  /// to weave several topics into a single scene, which is what makes it sound
-  /// like speech rather than a topic drill. Results are appended (duplicates
-  /// skipped), so pressing again is how you get *more* material and an existing
-  /// bank stays reusable across sessions for free.
+  /// One request that returns [_kFetchBatch] costs barely more than one
+  /// returning eight — the learner's whole vocabulary dominates the prompt and
+  /// is sent once per request either way, so three small requests pay for it
+  /// three times. We therefore over-fetch and keep the surplus, which also
+  /// makes later top-ups instant and usable with no signal.
+  ///
+  /// One call covers the whole selection rather than looping per subject: a
+  /// text is allowed to weave several topics into one scene.
   Future<void> _generate() async {
     final state = context.read<AppState>();
     final s = state.settings;
-    if (s.aiApiKey.trim().isEmpty) {
-      lpSnack(context, 'Set a Gemini API key in Settings first.', 4000);
-      return;
-    }
     final subjects = _selectableSubjects.where(_selectedSubjects.contains).toList();
     if (subjects.isEmpty) {
       lpSnack(context, 'Select at least one subject first.', 3000);
       return;
     }
+    final want = s.listenTextsPerRun;
+    final sig = _sigFor(subjects);
+    var reserve = sig == _reserveSig ? [..._reserve] : <ListenStory>[];
 
     _pause();
     setState(() => _generating = true);
 
-    final added = <ListenStory>[];
-    final existing = {for (final st in _stories) st.l2};
     String? error;
-    try {
-      final texts = await AiService.generateListeningTexts(
-        apiKey: s.aiApiKey,
-        examplesBySubject: {
-          for (final name in subjects)
-            name: [for (final raw in _bank?.sentencesFor(name) ?? const []) SbSentence.spoken(raw)],
-        },
-        knownLanguage: s.knownLanguage,
-        targetLanguage: s.targetLanguage,
-        count: s.listenTextsPerRun,
-        sentencesPerText: s.listenSentencesPerText,
-      );
-      for (final text in texts) {
-        // The model can repeat itself across runs; a duplicate would just be
-        // the same audio twice in the loop.
-        if (!existing.add(text.l2)) continue;
-        // The whole selection is recorded as the pool this text came from — we
-        // can't tell which topics it actually leaned on, and don't need to.
-        added.add(ListenStory(subjects: subjects, l2: text.l2, l1: text.l1));
+    var fetched = 0;
+    if (reserve.length < want) {
+      if (s.aiApiKey.trim().isEmpty) {
+        setState(() => _generating = false);
+        lpSnack(context, 'Set a Gemini API key in Settings first.', 4000);
+        return;
       }
-    } catch (e) {
-      error = e.toString().split('\n').first.trim();
+      try {
+        final texts = await AiService.generateListeningTexts(
+          apiKey: s.aiApiKey,
+          // One flat, de-duplicated pool across every selected subject. The
+          // subject boundaries are dropped on purpose: grouped seeds made the
+          // model build each story around a couple of phrases the learner
+          // already knows by heart, which is recognisable rather than
+          // comprehensible.
+          knownPhrases: {
+            for (final name in subjects)
+              for (final raw in _bank?.sentencesFor(name) ?? const []) SbSentence.spoken(raw),
+          }.toList(),
+          knownLanguage: s.knownLanguage,
+          targetLanguage: s.targetLanguage,
+          count: want > _kFetchBatch ? want : _kFetchBatch,
+          sentencesPerText: s.listenSentencesPerText,
+        );
+        final existing = {for (final st in _stories) st.l2, for (final st in reserve) st.l2};
+        for (final text in texts) {
+          // The model can repeat itself across runs; a duplicate would just be
+          // the same audio twice in the loop.
+          if (!existing.add(text.l2)) continue;
+          // The whole selection is recorded as the pool this text came from —
+          // we can't tell which topics it actually leaned on, and don't need to.
+          reserve.add(ListenStory(subjects: subjects, l2: text.l2, l1: text.l1));
+          fetched++;
+        }
+      } catch (e) {
+        error = e.toString().split('\n').first.trim();
+      }
     }
+
+    final take = reserve.length < want ? reserve.length : want;
+    final added = reserve.take(take).toList();
+    reserve = reserve.skip(take).toList();
 
     if (!mounted) return;
     final all = [..._stories, ...added];
-    if (added.isNotEmpty) await _service.saveStories(s.targetLanguage, all);
+    if (added.isNotEmpty || fetched > 0) {
+      await _service.saveStories(s.targetLanguage, all);
+      await _service.saveReserve(s.targetLanguage, sig, reserve);
+    }
     if (!mounted) return;
     setState(() {
       _stories = all;
+      _reserve = reserve;
+      _reserveSig = sig;
       _generating = false;
       // New material means a new play order.
       _cancelBuild();
     });
     lpSnack(
       context,
-      error != null
+      error != null && added.isEmpty
           ? 'Generation failed: $error'
           : added.isEmpty
           ? 'No new texts came back — try again for more.'
-          : 'Added ${added.length} text${added.length == 1 ? '' : 's'}.',
+          : 'Added ${added.length} text${added.length == 1 ? '' : 's'}'
+                '${reserve.isEmpty ? '' : ' — ${reserve.length} more ready offline'}.',
       4000,
     );
   }
@@ -381,6 +428,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     if (!mounted) return;
     setState(() {
       _stories = [];
+      _reserve = [];
+      _reserveSig = '';
       _index = 0;
       _cancelBuild();
     });
@@ -951,6 +1000,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
             ? 'Generating…'
             : _stories.isEmpty
             ? 'Generate texts'
+            // Says "Add" rather than "Generate" when it costs no API call, so
+            // it's clear which presses are free and which reach the network.
+            : _reserveSig == _sigFor(_selectedSubjects) && _reserve.length >= s.listenTextsPerRun
+            ? 'Add ${s.listenTextsPerRun} more (${_reserve.length} ready)'
             : 'Generate ${s.listenTextsPerRun} more texts',
       ),
     );

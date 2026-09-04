@@ -59,6 +59,52 @@ class ListenService {
   Future<void> clearStories(String targetLang) async {
     await _prefs.remove(_storiesKey(targetLang));
     await _prefs.remove(_positionKey(targetLang));
+    await _prefs.remove(_reserveKey(targetLang));
+  }
+
+  // ── Reserve ───────────────────────────────────────────────────────────────
+  //
+  // Generated-but-not-yet-handed-out texts. One request that returns 24 costs
+  // barely more than one returning 8 — the seed vocabulary that dominates the
+  // prompt is sent once either way — so we over-fetch and hand out the user's
+  // chosen batch size from here. Later top-ups are then instant and work with
+  // no signal at all.
+  //
+  // Stored with the subject selection it was generated for: material written
+  // against a different pool isn't valid for the current one, so a mismatch
+  // discards it rather than quietly serving off-topic texts.
+
+  static String _reserveKey(String targetLang) => 'listenReserve_$targetLang';
+
+  Future<({String selectionSig, List<ListenStory> stories})> loadReserve(String targetLang) async {
+    final raw = await _prefs.getString(_reserveKey(targetLang));
+    if (raw == null) return (selectionSig: '', stories: <ListenStory>[]);
+    try {
+      final map = (jsonDecode(raw) as Map).cast<String, dynamic>();
+      return (
+        selectionSig: map['sig'] as String? ?? '',
+        stories: [
+          for (final e in (map['stories'] as List?) ?? const [])
+            ListenStory.fromJson((e as Map).cast<String, dynamic>()),
+        ],
+      );
+    } catch (_) {
+      return (selectionSig: '', stories: <ListenStory>[]);
+    }
+  }
+
+  Future<void> saveReserve(String targetLang, String selectionSig, List<ListenStory> stories) async {
+    if (stories.isEmpty) {
+      await _prefs.remove(_reserveKey(targetLang));
+      return;
+    }
+    await _prefs.setString(
+      _reserveKey(targetLang),
+      jsonEncode({
+        'sig': selectionSig,
+        'stories': [for (final s in stories) s.toJson()],
+      }),
+    );
   }
 
   // ── Resume position ───────────────────────────────────────────────────────
