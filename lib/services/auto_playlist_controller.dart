@@ -415,14 +415,18 @@ class AutoPlaylistController {
     }
   }
 
-  /// Seeks the player to the first clip of [ord] (or no-ops if that ordinal
-  /// has no clips in the current playlist — e.g. it hasn't been appended yet
-  /// in dynamic mode).
-  Future<void> seekToOrdinal(int ord) => _seekToOrdinal(ord);
+  /// Seeks the player to the first clip of [ord].
+  ///
+  /// Returns false — leaving the player exactly where it was — if that ordinal
+  /// has no clips in the current playlist, e.g. it hasn't been appended yet in
+  /// dynamic mode. Callers that must land on it can rebuild from there instead.
+  Future<bool> seekToOrdinal(int ord) => _seekToOrdinal(ord);
 
-  Future<void> _seekToOrdinal(int ord) async {
+  Future<bool> _seekToOrdinal(int ord) async {
     final clip = _clipToOrdinal.indexOf(ord);
-    if (clip >= 0) await _player.seek(Duration.zero, index: clip);
+    if (clip < 0) return false;
+    await _player.seek(Duration.zero, index: clip);
+    return true;
   }
 
   /// Gives up this controller's view of the shared player, without touching

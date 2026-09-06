@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_settings.dart';
@@ -387,7 +388,12 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     reserve = reserve.skip(take).toList();
 
     if (!mounted) return;
+    // Shuffled rather than appended: fresh texts should turn up early in the
+    // rotation instead of only after the whole existing bank has played out.
+    // The bank is a pool to listen through, not an ordered course, so there is
+    // no order to preserve — and the play order restarts from the top.
     final all = [..._stories, ...added];
+    if (added.isNotEmpty) all.shuffle();
     if (added.isNotEmpty || fetched > 0) {
       await _service.saveStories(s.targetLanguage, all);
       await _service.saveReserve(s.targetLanguage, sig, reserve);
@@ -398,9 +404,14 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       _reserve = reserve;
       _reserveSig = sig;
       _generating = false;
+      if (added.isNotEmpty) _index = 0;
       // New material means a new play order.
       _cancelBuild();
     });
+    final playable = _playable;
+    if (added.isNotEmpty && playable.isNotEmpty) {
+      unawaited(_service.savePosition(s.targetLanguage, playable.first.key));
+    }
     lpSnack(
       context,
       error != null && added.isEmpty
@@ -661,6 +672,25 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     if (_index > 0) setState(() => _index--);
   }
 
+  /// Makes the text at [i] the current one.
+  ///
+  /// If our playlist is live and that text has already been rendered into the
+  /// queue we seek straight to it. If it hasn't (the streaming build hasn't
+  /// reached it yet) seeking would silently no-op and leave the player where it
+  /// was, so the build is restarted from here instead — it always begins at
+  /// [_index] and wraps.
+  Future<void> _jumpTo(int i) async {
+    final stories = _playable;
+    if (i < 0 || i >= stories.length) return;
+    setState(() => _index = i);
+    unawaited(_service.savePosition(context.read<AppState>().settings.targetLanguage, stories[i].key));
+    if (!_sessionLoaded || !katalavenoAudio.isActiveSession(this)) return;
+    if (await _playlist.seekToOrdinal(i)) return;
+    if (!mounted) return;
+    setState(_cancelBuild);
+    await _play();
+  }
+
   void _bindMediaControls() {
     katalavenoAudio.bind(
       owner: this,
@@ -790,6 +820,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       ),
       onSelected: (v) {
         switch (v) {
+          case 'texts':
+            _showTextPicker();
           case 'voices':
             _showVoicePicker();
           case 'settings':
@@ -802,8 +834,74 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         if (ttsSupported()) item('voices', Icons.record_voice_over_outlined, 'Voices'),
         item('settings', Icons.tune, 'Settings'),
         item('clear', Icons.delete_outline, 'Delete generated texts', enabled: _stories.isNotEmpty),
+        item('texts', Icons.list_alt_outlined, 'All texts', enabled: _playable.isNotEmpty),
       ],
     );
+  }
+
+  /// The whole bank as a list, target language only, tap to jump.
+  ///
+  /// Deliberately one-sided: the translation is what you check yourself
+  /// against, so showing it here would turn picking a text into reading the
+  /// answer first.
+  Future<void> _showTextPicker() async {
+    final stories = _playable;
+    if (stories.isEmpty) return;
+    final current = _index.clamp(0, stories.length - 1);
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.75),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(
+                  children: [
+                    Text('All texts', style: Theme.of(ctx).textTheme.titleMedium),
+                    const Spacer(),
+                    Text('${stories.length}', style: Theme.of(ctx).textTheme.labelMedium),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Flexible(
+                // Positioned list, not a plain ListView: it opens scrolled to
+                // the text you're on, which a ListView can't do when the tiles
+                // have no fixed height (there is no offset to compute, and
+                // ensureVisible can't reach a tile the builder hasn't built).
+                // Same widget the History tab uses for the same reason.
+                child: ScrollablePositionedList.separated(
+                  padding: EdgeInsets.zero,
+                  itemCount: stories.length,
+                  initialScrollIndex: current,
+                  // A third of the way down rather than glued to the top, so
+                  // the texts either side of it are visible for context.
+                  initialAlignment: current == 0 ? 0 : 0.3,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (ctx, i) {
+                    final sel = i == current;
+                    final theme = Theme.of(ctx);
+                    return ListTile(
+                      selected: sel,
+                      leading: Text('${i + 1}', style: theme.textTheme.labelMedium),
+                      title: Text(stories[i].l2, maxLines: 3, overflow: TextOverflow.ellipsis),
+                      trailing: sel ? Icon(_playing ? Icons.graphic_eq : Icons.play_arrow, size: 20) : null,
+                      onTap: () => Navigator.pop(ctx, i),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked != null && mounted) await _jumpTo(picked);
   }
 
   /// The reading pane: a compact header line, then the current text and its
