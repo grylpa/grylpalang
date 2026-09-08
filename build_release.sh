@@ -3,5 +3,5 @@
 # target. Matches build_both.sh.
 set -x
 flutter clean
-flutter build apk --release --target-platform android-arm,android-arm64
+flutter build apk --release --flavor store --target-platform android-arm,android-arm64
 set +x

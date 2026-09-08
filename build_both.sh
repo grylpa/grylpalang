@@ -13,8 +13,8 @@ ABIS="android-arm,android-arm64"
 
 set -x
 flutter clean
-flutter build appbundle --release --target-platform "$ABIS"
-flutter build apk --release --target-platform "$ABIS"
+flutter build appbundle --release --flavor store --target-platform "$ABIS"
+flutter build apk --release --flavor store --target-platform "$ABIS"
 set +x
 
 # Both builds succeeded (set -e would have aborted otherwise) — copy the

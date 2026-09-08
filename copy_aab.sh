@@ -13,12 +13,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-AAB="build/app/outputs/bundle/release/app-release.aab"
+AAB="build/app/outputs/bundle/storeRelease/app-store-release.aab"
 OUT_DIR="release_builds"
 
 if [[ ! -f "$AAB" ]]; then
   echo "Release App Bundle not found at: $AAB" >&2
-  echo "Build it first with: flutter build appbundle --release" >&2
+  echo "Build it first with: flutter build appbundle --release --flavor store" >&2
   exit 1
 fi
 
