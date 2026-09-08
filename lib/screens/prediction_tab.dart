@@ -119,6 +119,8 @@ class _PredictionTabState extends State<PredictionTab> {
 
     final sent = _current;
     final ttsOk = _ttsSupported();
+    // Both the sentence generator and the answer checker are AI calls.
+    final aiOk = state.hasAiKey;
     final hintText = 'Type this in $targetLang. You can mix phonetic or $knownLang for words you don’t know.';
 
     return Padding(
@@ -130,7 +132,7 @@ class _PredictionTabState extends State<PredictionTab> {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: _loading ? null : _newSentence,
+                  onPressed: _loading || !aiOk ? null : _newSentence,
                   icon: const Icon(Icons.casino),
                   label: const Text('Give me a new sentence'),
                 ),
@@ -146,6 +148,16 @@ class _PredictionTabState extends State<PredictionTab> {
               ],
             ],
           ),
+
+          if (!aiOk) ...[
+            const SizedBox(height: 12),
+            // Says what to do rather than only greying the buttons out, which
+            // gives no clue why they are dead.
+            Text(
+              'Predict needs a Gemini API key. Set one in Settings → AI engine.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
 
           const SizedBox(height: 12),
 
@@ -217,7 +229,7 @@ class _PredictionTabState extends State<PredictionTab> {
                       children: [
                         Expanded(
                           child: FilledButton(
-                            onPressed: (_submitted || _loading) ? null : _submit,
+                            onPressed: (_submitted || _loading || !aiOk) ? null : _submit,
                             child: _loading
                                 ? const SizedBox(
                                     width: 18,

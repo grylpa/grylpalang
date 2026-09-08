@@ -18,6 +18,9 @@ flutter build apk --release --flavor store --target-platform "$ABIS"
 set +x
 
 # Both builds succeeded (set -e would have aborted otherwise) — copy the
-# artifacts into release_builds/ with versioned names + checksums.
-./copy_aab.sh
-./copy_release.sh
+# artifacts into release_builds/ with versioned names + checksums. They live in
+# .scripts/ (not run directly), with a fallback for when they sit beside this.
+HELPERS=".scripts"
+[[ -x "$HELPERS/copy_aab.sh" ]] || HELPERS="."
+"$HELPERS/copy_aab.sh"
+"$HELPERS/copy_release.sh"

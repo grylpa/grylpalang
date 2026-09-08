@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
 #
-# Installs a release APK onto a connected Android device via adb.
+# Builds the dev APK and installs it on a connected Android device via adb.
 #
-# Usage: ./install_release.sh [--dev|--store] [--build] [device-serial]
-#   --dev          the dev flavor: com.grylpa.katalaveno.dev, "Katalaveno Dev",
-#                  its own data, installs beside the Play version (default)
-#   --store        the store flavor: the published application ID. Only install
-#                  this if you are NOT running the Play build on this device —
-#                  it is the same package, so it replaces it.
-#   --build        build the APK first (build_dev.sh / build_release.sh)
+# Usage: ./install_release.sh [--no-build] [device-serial]
+#   --no-build     skip the build, install whatever was built last
 #   device-serial  optional; needed only when more than one device is connected
 #                  (see `adb devices`)
+#
+# The dev flavor is a *release* build under com.grylpa.katalaveno.dev, labelled
+# "KataDev", with its own data — so it sits beside the Play version instead of
+# replacing it.
+#
+# arm64 only: this build is for the developer's own phone, not for users, so
+# there is no reason to carry the 32-bit slice that build_release.sh ships for
+# older devices. It builds faster and installs smaller.
+#
+# Dev only, deliberately. The store APK built here is signed with the local
+# release key while Play re-signs what it distributes, so installing it would
+# make the Play version un-installable over it — the only way out being an
+# uninstall, which takes the app's data with it. If you ever genuinely need to
+# check the store artifact, `adb install` it by hand on a phone you don't mind
+# wiping.
 
 set -euo pipefail
 
@@ -19,37 +29,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Parse args: flavor and --build flags, plus an optional device serial.
-FLAVOR="dev"
-BUILD=0
+PACKAGE="com.grylpa.katalaveno.dev"
+APK="build/app/outputs/flutter-apk/app-dev-release.apk"
+
+# Parse args: --no-build flag plus an optional device serial.
+BUILD=1
 SERIAL=""
 for arg in "$@"; do
   case "$arg" in
-    --dev) FLAVOR="dev" ;;
-    --store) FLAVOR="store" ;;
-    --build) BUILD=1 ;;
+    --no-build) BUILD=0 ;;
     *) SERIAL="$arg" ;;
   esac
 done
 
-if [[ "$FLAVOR" == "dev" ]]; then
-  PACKAGE="com.grylpa.katalaveno.dev"
-  APK="build/app/outputs/flutter-apk/app-dev-release.apk"
-  BUILD_SCRIPT="build_dev.sh"
-else
-  PACKAGE="com.grylpa.katalaveno"
-  APK="build/app/outputs/flutter-apk/app-store-release.apk"
-  BUILD_SCRIPT="build_release.sh"
-fi
-
 if [[ "$BUILD" -eq 1 ]]; then
-  echo "Building $FLAVOR release APK ..."
-  "$SCRIPT_DIR/$BUILD_SCRIPT"
+  set -x
+  flutter build apk --release --flavor dev --target-platform android-arm64
+  set +x
 fi
 
 if [[ ! -f "$APK" ]]; then
-  echo "Release APK not found at: $APK" >&2
-  echo "Build it first: ./$BUILD_SCRIPT  (or pass --build)" >&2
+  echo "Dev APK not found at: $APK" >&2
+  echo "Run without --no-build to build it first." >&2
   exit 1
 fi
 
@@ -71,7 +72,7 @@ if [[ "$device_count" -eq 0 ]]; then
   exit 1
 fi
 if [[ "$device_count" -gt 1 && -z "$SERIAL" ]]; then
-  echo "Multiple devices connected; pass a serial: ./install_release.sh [--dev|--store] [--build] <serial>" >&2
+  echo "Multiple devices connected; pass a serial: ./install_release.sh [--no-build] <serial>" >&2
   "$ADB" devices >&2
   exit 1
 fi

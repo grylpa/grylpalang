@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../models/word_type.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
 
@@ -17,7 +16,6 @@ class _AddWordPanelState extends State<AddWordPanel> {
   final _formKey = GlobalKey<FormState>();
   final _knownCtrl = TextEditingController(); // L1
   final _targetCtrl = TextEditingController(); // L2 (Greek/phonetic)
-  WordType _type = WordType.verb;
   bool _loading = false;
 
   @override
@@ -44,11 +42,7 @@ class _AddWordPanelState extends State<AddWordPanel> {
 
     setState(() => _loading = true);
     try {
-      await state.addWordWithAi(
-        wordL1: known.isNotEmpty ? known : null,
-        wordL2: target.isNotEmpty ? target : null,
-        type: _type,
-      );
+      await state.addWordWithAi(wordL1: known.isNotEmpty ? known : null, wordL2: target.isNotEmpty ? target : null);
       _knownCtrl.clear();
       _targetCtrl.clear();
       if (mounted) {
@@ -78,32 +72,11 @@ class _AddWordPanelState extends State<AddWordPanel> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Text('Add new', style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(width: 16),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<WordType>(
-                          focusColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                          dropdownColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                          value: _type,
-                          onChanged: (val) => setState(() => _type = val ?? WordType.verb),
-                          items: const [
-                            DropdownMenuItem(value: WordType.verb, child: Text('Verb')),
-                            DropdownMenuItem(value: WordType.noun, child: Text('Noun')),
-                            DropdownMenuItem(value: WordType.other, child: Text('Other')),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                // No word-type picker: the AI classifies the word itself (and
+                // covers both senses when it is genuinely ambiguous), so the
+                // form asks only for the word.
+                Text('Add new', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(

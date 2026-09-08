@@ -6,6 +6,14 @@ class WordEntry {
   final String wordL2;
   final String wordL1;
   final WordType type;
+
+  /// What the AI called this word: "verb", "noun", "adjective", "noun &
+  /// adjective"… Free text on purpose — parts of speech don't fit a fixed
+  /// enum, and a word that is two of them is exactly the case worth teaching
+  /// both sides of. Shown on the card and fed back verbatim when regenerating,
+  /// so a later batch is shaped like the first. [type] survives only to read
+  /// entries stored before this existed.
+  final String typeLabel;
   final DateTime createdAt;
   final List<WordSentence> sentences;
   final int startStep; // global step at which this word starts appearing
@@ -16,6 +24,7 @@ class WordEntry {
     required this.wordL2,
     required this.wordL1,
     required this.type,
+    this.typeLabel = '',
     required this.createdAt,
     required this.active,
     required this.sentences,
@@ -29,6 +38,7 @@ class WordEntry {
     'wordL2': wordL2,
     'wordL1': wordL1,
     'type': type.name,
+    'typeLabel': typeLabel,
     'createdAt': createdAt.toIso8601String(),
     'active': active,
     'sentences': sentences.map((s) => s.toJson()).toList(),
@@ -38,6 +48,7 @@ class WordEntry {
   factory WordEntry.fromJson(Map<String, dynamic> json) {
     final rawType = (json['type'] as String? ?? 'other').toLowerCase();
     WordType parseType() {
+      if (rawType.contains('both')) return WordType.both;
       if (rawType.contains('verb')) return WordType.verb;
       if (rawType.contains('noun')) return WordType.noun;
       return WordType.other;
@@ -48,6 +59,11 @@ class WordEntry {
       wordL2: json['wordL2'] as String,
       wordL1: json['wordL1'] as String,
       type: parseType(),
+      // Older entries have no label; the enum they were stored with is the
+      // best available stand-in.
+      typeLabel: (json['typeLabel'] as String?)?.trim().isNotEmpty == true
+          ? json['typeLabel'] as String
+          : parseType().label,
       createdAt: DateTime.parse(json['createdAt'] as String),
       active: json['active'] as bool? ?? true,
       sentences: ((json['sentences'] as List?) ?? [])
