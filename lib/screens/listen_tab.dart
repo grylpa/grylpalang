@@ -1343,6 +1343,11 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     );
   }
 
+  /// Whether the AI can be called at all. Both make-material buttons are dead
+  /// without a key — the reserve is the one exception, but it can only ever be
+  /// filled by a call that needed one.
+  bool get _aiReady => context.read<AppState>().hasAiKey;
+
   /// Shared shape for the two make-material buttons: a tight icon+label pair
   /// whose label is allowed to wrap onto a second line, since they sit half a
   /// screen wide.
@@ -1363,7 +1368,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
 
   Widget _generateButton(AppSettings s) {
     return _makeButton(
-      onPressed: _generating || _selectedSubjects.isEmpty ? null : _generate,
+      onPressed: _generating || _selectedSubjects.isEmpty || !_aiReady ? null : _generate,
       icon: _generating
           ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
           : const Icon(Icons.auto_awesome),
@@ -1384,7 +1389,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// setting.
   Widget _storyButton() {
     return _makeButton(
-      onPressed: _generating || _selectedSubjects.isEmpty ? null : _createStory,
+      onPressed: _generating || _selectedSubjects.isEmpty || !_aiReady ? null : _createStory,
       icon: const Icon(Icons.auto_stories_outlined),
       label: 'Create a story',
     );

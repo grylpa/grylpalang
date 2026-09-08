@@ -2802,7 +2802,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           children: [
             Expanded(
               child: OutlinedButton.icon(
-                onPressed: _batchRunning ? null : _onTranslateButton,
+                // Translating is an AI call: dead without a key, like every
+                // other AI action in the app.
+                onPressed: _batchRunning || !context.read<AppState>().hasAiKey ? null : _onTranslateButton,
                 icon: (_translating || _batchRunning)
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.translate),

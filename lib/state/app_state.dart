@@ -14,7 +14,6 @@ import '../models/notification_snapshot.dart';
 import '../models/scheduled_sentence.dart';
 import '../models/word_entry.dart';
 import '../models/word_sentence.dart';
-import '../models/word_type.dart';
 import '../services/ai_service.dart';
 import '../services/app_storage.dart';
 import '../services/google_translate_tts.dart';
@@ -148,6 +147,11 @@ class AppState extends ChangeNotifier {
   static const int _kMaxScheduledAhead = 10;
 
   AppSettings get settings => _settings;
+
+  /// Whether anything that talks to the AI can run at all. Every such action is
+  /// disabled until a key is set — an enabled button whose only outcome is
+  /// "AI API key is empty" wastes the user's time and teaches nothing.
+  bool get hasAiKey => _settings.aiApiKey.trim().isNotEmpty;
 
   List<WordEntry> get words => List.unmodifiable(_words);
 
@@ -436,10 +440,15 @@ class AppState extends ChangeNotifier {
   // Word management + AI
   // ---------------------------------------------------------
 
+  /// Adds a word and its AI-generated sentences.
+  ///
+  /// The part of speech is not asked for: the model decides it while it is
+  /// already reading and normalizing the word, and returns it. That removes a
+  /// decision from the add form and, more importantly, removes the chance of
+  /// overriding a correct inference with a mis-tapped one.
   Future<void> addWordWithAi({
     String? wordL1, // known language
     String? wordL2, // target language (Greek or phonetic)
-    required WordType type,
   }) async {
     final l1 = (wordL1 ?? '').trim();
     final l2 = (wordL2 ?? '').trim();
@@ -461,7 +470,6 @@ class AppState extends ChangeNotifier {
       apiKey: s.aiApiKey,
       wordL1: l1.isEmpty ? null : l1,
       wordL2: l2.isEmpty ? null : l2,
-      type: type,
       knownLanguage: s.knownLanguage,
       targetLanguage: s.targetLanguage,
       simpleCount: s.simpleCount,
@@ -476,7 +484,8 @@ class AppState extends ChangeNotifier {
       id: id,
       wordL2: baseWord,
       wordL1: combined.wordL1,
-      type: type,
+      type: combined.type,
+      typeLabel: combined.typeLabel,
       createdAt: DateTime.now(),
       active: true,
       sentences: generated,
@@ -498,6 +507,7 @@ class AppState extends ChangeNotifier {
       wordL2: old.wordL2,
       wordL1: old.wordL1,
       type: old.type,
+      typeLabel: old.typeLabel,
       createdAt: old.createdAt,
       active: !old.active,
       sentences: old.sentences,
@@ -526,7 +536,7 @@ class AppState extends ChangeNotifier {
       apiKey: _settings.aiApiKey,
       word: old.wordL2,
       knownWord: old.wordL1,
-      type: old.type,
+      typeLabel: old.typeLabel,
       knownLanguage: _settings.knownLanguage,
       targetLanguage: _settings.targetLanguage,
       simpleCount: 0,
@@ -557,6 +567,7 @@ class AppState extends ChangeNotifier {
       wordL2: old.wordL2,
       wordL1: old.wordL1,
       type: old.type,
+      typeLabel: old.typeLabel,
       createdAt: old.createdAt,
       active: old.active,
       sentences: newSentences,
@@ -902,6 +913,7 @@ class AppState extends ChangeNotifier {
             wordL2: w.wordL2,
             wordL1: w.wordL1,
             type: w.type,
+            typeLabel: w.typeLabel,
             createdAt: w.createdAt,
             active: w.active,
             sentences: w.sentences,
@@ -935,6 +947,7 @@ class AppState extends ChangeNotifier {
             wordL2: w.wordL2,
             wordL1: w.wordL1,
             type: w.type,
+            typeLabel: w.typeLabel,
             createdAt: w.createdAt,
             active: w.active,
             sentences: const [],
@@ -958,7 +971,7 @@ class AppState extends ChangeNotifier {
         apiKey: s.aiApiKey,
         word: w.wordL2,
         knownWord: w.wordL1,
-        type: w.type,
+        typeLabel: w.typeLabel,
         knownLanguage: s.knownLanguage,
         targetLanguage: s.targetLanguage,
         simpleCount: s.simpleCount,
@@ -972,6 +985,7 @@ class AppState extends ChangeNotifier {
           wordL2: w.wordL2,
           wordL1: w.wordL1,
           type: w.type,
+          typeLabel: w.typeLabel,
           createdAt: w.createdAt,
           active: w.active,
           sentences: generated,

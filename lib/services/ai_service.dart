@@ -252,7 +252,19 @@ Guidance for score:
     return out.cast<String, dynamic>();
   }
 
-  static ({String wordL2, String wordL1, List<WordSentence> sentences}) _parseWordAndSentencesJson({
+  /// Maps the model's `word_type` string onto the enum. Anything unrecognised
+  /// becomes [WordType.other], which is also what an older cached response
+  /// without the field yields.
+  static WordType _wordTypeFrom(String? raw) {
+    final v = (raw ?? '').trim().toLowerCase();
+    if (v.contains('both')) return WordType.both;
+    if (v.contains('verb')) return WordType.verb;
+    if (v.contains('noun')) return WordType.noun;
+    return WordType.other;
+  }
+
+  static ({String wordL2, String wordL1, WordType type, String typeLabel, List<WordSentence> sentences})
+  _parseWordAndSentencesJson({
     required String jsonString,
     required String fallbackWord,
     required String fallbackKnownWord,
@@ -278,10 +290,22 @@ Guidance for score:
       final l1 = (item['l1'] as String? ?? '').trim();
       if (l2.isEmpty && l1.isEmpty) continue;
       final l1conj = (item['l1conj'] as String? ?? outKnownWord).trim();
-      result.add(WordSentence(l2: l2, l1: l1, word: outWord, translatedWord: l1conj));
+      // A sentence may carry its own base word: for an ambiguous entry the two
+      // senses are usually different lexemes in L2 (English "walk" is
+      // περπατάω but περπάτημα), and the cloze needs the one this sentence
+      // actually uses.
+      final own = (item['word'] as String? ?? '').trim();
+      result.add(WordSentence(l2: l2, l1: l1, word: own.isEmpty ? outWord : own, translatedWord: l1conj));
     }
 
-    return (wordL2: outWord, wordL1: outKnownWord, sentences: result);
+    final rawType = (decoded['word_type'] as String? ?? '').trim();
+    return (
+      wordL2: outWord,
+      wordL1: outKnownWord,
+      type: _wordTypeFrom(rawType),
+      typeLabel: rawType.isEmpty ? WordType.other.label : rawType,
+      sentences: result,
+    );
   }
 
   /// Normalize a user-typed language name to a canonical English name
@@ -552,11 +576,11 @@ USER INPUT: "$input"
 
   /// Option A: one request that (a) produces/normalizes the final L2 word and (b) generates the sentences.
   /// This is used when adding a new word, to avoid doing two back-to-back Gemini calls.
-  static Future<({String wordL2, String wordL1, List<WordSentence> sentences})> generateWordAndSentences({
+  static Future<({String wordL2, String wordL1, WordType type, String typeLabel, List<WordSentence> sentences})>
+  generateWordAndSentences({
     required String apiKey,
     String? wordL1,
     String? wordL2,
-    required WordType type,
     required String knownLanguage,
     required String targetLanguage,
     required int simpleCount,
@@ -577,11 +601,24 @@ USER INPUT: "$input"
     if (l1.isNotEmpty && l2.isNotEmpty) throw Exception('Please fill only one of the two fields, not both.');
 
     final total = sc + cc;
-    final typeText = switch (type) {
-      WordType.verb => 'verb (action)',
-      WordType.noun => 'noun (thing)',
-      WordType.other => 'other word type',
-    };
+    // The model decides the part of speech while it is already reading and
+    // normalizing the word — strictly easier than what it is doing anyway, and
+    // it cannot be overruled by a mis-tapped dropdown. Free text, not a fixed
+    // set: parts of speech don't enumerate cleanly, and a word that is two of
+    // them is exactly the case worth teaching both sides of.
+    const typeText = '''DECIDE IT YOURSELF from the input word, and report it in "word_type".
+- A short lower-case label: "verb", "noun", "adjective", "adverb",
+  "preposition", "phrase"… whatever the word actually is.
+- If it is commonly used as MORE THAN ONE part of speech, do NOT pick one.
+  Give a combined label — "verb & noun", "noun & adjective" — and split TASK
+  B's sentences between those senses, roughly evenly and interleaved rather
+  than grouped, so the learner meets both as they go.
+- Judge that ambiguity in the language the user typed the word in. Combine at
+  most two senses: the two most common ones.
+- When the senses are different words in the target language, WORD_L2 is the
+  more common sense, and each sentence of another sense carries its own base
+  form in that sentence's "word" field (still exactly one [[...]] per sentence,
+  around whichever word that sentence is teaching).''';
     final connectorsList = connectorWords.where((w) => w.trim().isNotEmpty).toList();
     final connectorsText = connectorsList.isEmpty ? '[]' : '[${connectorsList.map((w) => '"$w"').join(', ')}]';
 
@@ -614,7 +651,8 @@ You are an expert language generator.
 TARGET LANGUAGE (L2): $targetLanguage
 KNOWN LANGUAGE (L1): $knownLanguage
 
-WORD TYPE: $typeText
+WORD TYPE:
+$typeText
 
 CONNECTOR WORDS (very important):
 $connectorsText
@@ -660,8 +698,9 @@ The JSON object must be:
 {
   "word_l2": "...",
   "word_l1": "...",
+  "word_type": "verb" | "noun" | "adjective" | "noun & adjective" | ...,
   "sentences": [
-    {"l2": "...", "l1": "..."},
+    {"l2": "...", "l1": "...", "word": "base L2 word this sentence teaches"},
     ...
   ]
 }
@@ -682,6 +721,13 @@ The JSON object must be:
           'properties': {
             'word_l2': {'type': 'string', 'description': 'Final L2 word in correct script.'},
             'word_l1': {'type': 'string', 'description': 'Final L1 word in correct script.'},
+            'word_type': {
+              'type': 'string',
+              'description':
+                  'Short lower-case part-of-speech label for the input word, e.g. "verb", "adjective". When '
+                  'the word is commonly two parts of speech, a combined label such as "noun & adjective", '
+                  'and the sentences must then cover both senses.',
+            },
             'sentences': {
               'type': 'array',
               'items': {
@@ -692,12 +738,18 @@ The JSON object must be:
                     'description': 'L2 sentence. MUST contain exactly one [[...]] around the word form.',
                   },
                   'l1': {'type': 'string', 'description': 'L1 translation.'},
+                  'word': {
+                    'type': 'string',
+                    'description':
+                        'Base L2 form this sentence teaches. Same as word_l2 except for the other sense of a '
+                        '"both" word, where it is that sense\'s own word.',
+                  },
                 },
                 'required': ['l2', 'l1'],
               },
             },
           },
-          'required': ['word_l2', 'word_l1', 'sentences'],
+          'required': ['word_l2', 'word_l1', 'word_type', 'sentences'],
         },
       },
     };
@@ -726,14 +778,24 @@ The JSON object must be:
     if (sentences.length > total) sentences = sentences.take(total).toList();
     if (sentences.isEmpty) throw Exception('AI returned empty sentences list');
 
-    return (wordL2: parsed.wordL2, wordL1: parsed.wordL1, sentences: sentences);
+    return (
+      wordL2: parsed.wordL2,
+      wordL1: parsed.wordL1,
+      type: parsed.type,
+      typeLabel: parsed.typeLabel,
+      sentences: sentences,
+    );
   }
 
   static Future<List<WordSentence>> generateSentences({
     required String apiKey,
     required String word,
     required String knownWord,
-    required WordType type,
+
+    /// The label the AI gave this word when it was added, passed back verbatim
+    /// so a later batch is shaped like the first instead of quietly narrowing
+    /// a two-sense word to one.
+    required String typeLabel,
     required String knownLanguage,
     required String targetLanguage,
     required int simpleCount,
@@ -749,11 +811,10 @@ The JSON object must be:
     }
 
     final total = simpleCount + conjugatedCount;
-    final typeText = switch (type) {
-      WordType.verb => 'verb (action)',
-      WordType.noun => 'noun (thing)',
-      WordType.other => 'other word type',
-    };
+    final label = typeLabel.trim().isEmpty ? 'unknown' : typeLabel.trim();
+    // A combined label ("noun & adjective") must keep covering both senses here
+    // too, or the second batch quietly narrows the word to one of them.
+    final typeText = label.contains('&') ? '$label — split the sentences between those senses, interleaved' : label;
 
     final connectorsList = connectorWords.where((w) => w.trim().isNotEmpty).toList();
     final connectorsText = connectorsList.isEmpty ? '[]' : '[${connectorsList.map((w) => '"$w"').join(', ')}]';

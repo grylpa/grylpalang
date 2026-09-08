@@ -7,10 +7,12 @@
 
 set -euo pipefail
 
-# Resolve the directory this script lives in (the Flutter project root, main/),
-# so it works regardless of the current working directory.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# Run from the Flutter project root (main/), found by walking up to the nearest
+# pubspec.yaml — so this works whether the script sits in main/ or in
+# main/.scripts/, and whatever directory it is invoked from.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+while [[ "$DIR" != "/" && ! -f "$DIR/pubspec.yaml" ]]; do DIR="$(dirname "$DIR")"; done
+cd "$DIR"
 
 APK="build/app/outputs/flutter-apk/app-store-release.apk"
 OUT_DIR="release_builds"

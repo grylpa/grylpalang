@@ -423,7 +423,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final words = [...state.words]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
     int maxWords = 4;
-    bool canAddMoreWords = words.length < maxWords;
+    // Two separate reasons the panel can be off, and the tap message has to say
+    // which one applies.
+    bool roomForMore = words.length < maxWords;
+    bool canAddMoreWords = roomForMore && state.hasAiKey;
 
     return SafeArea(
       child: Padding(
@@ -462,7 +465,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         // style: TextStyle(fontWeight: FontWeight.w900,)
                         style: DefaultTextStyle.of(context).style.apply(fontSizeDelta: 8.0, fontWeightDelta: 2),
                       ),
-                      subtitle: Text('${w.type.name.capitalize()}, Remaining: $remaining'),
+                      subtitle: Text('${w.typeLabel.capitalize()}, Remaining: $remaining'),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -518,7 +521,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   if (!canAddMoreWords)
                     Positioned.fill(
                       child: GestureDetector(
-                        onTap: () => lpSnack(context, "Cannot add more\nthan $maxWords words", 2000),
+                        onTap: () => lpSnack(
+                          context,
+                          roomForMore
+                              ? "Set a Gemini API key in Settings\nto add words"
+                              : "Cannot add more\nthan $maxWords words",
+                          3000,
+                        ),
                       ),
                     ),
                 ],
