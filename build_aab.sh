@@ -1,5 +1,5 @@
 #!/bin/bash
 set -x
 flutter clean
-flutter build appbundle --release
+flutter build appbundle --release --flavor store
 set +x

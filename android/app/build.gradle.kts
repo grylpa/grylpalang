@@ -38,6 +38,33 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
+    // Two shipping variants of the same release build, so a development copy can
+    // sit on the phone beside the Play one: different applicationId (hence a
+    // separate data sandbox and a separate launcher entry), different label,
+    // same signing key.
+    //
+    // Declaring flavors makes the flavor mandatory for every build and run —
+    // `flutter run --flavor dev`, `flutter build apk --flavor store`. The
+    // scripts in main/ pass it; a bare `flutter run` will now ask for one.
+    // The launcher label comes from a manifest placeholder rather than a
+    // per-flavor resValue: AGP 9 ships with the resValues build feature off, so
+    // a generated string resource fails configuration outright.
+    flavorDimensions += "channel"
+    productFlavors {
+        create("store") {
+            dimension = "channel"
+            // No suffix: this is the published application ID, and keeping it
+            // untouched is what lets an existing install keep its data.
+            manifestPlaceholders["appLabel"] = "Katalaveno"
+        }
+        create("dev") {
+            dimension = "channel"
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appLabel"] = "KataDev"
+        }
+    }
+
     signingConfigs {
         create("release") {
             keyAlias = keystoreProperties["keyAlias"] as String

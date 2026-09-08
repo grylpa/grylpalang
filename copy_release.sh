@@ -12,12 +12,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-APK="build/app/outputs/flutter-apk/app-release.apk"
+APK="build/app/outputs/flutter-apk/app-store-release.apk"
 OUT_DIR="release_builds"
 
 if [[ ! -f "$APK" ]]; then
   echo "Release APK not found at: $APK" >&2
-  echo "Build it first with: flutter build apk --release" >&2
+  echo "Build it first with: flutter build apk --release --flavor store" >&2
   exit 1
 fi
 

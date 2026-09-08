@@ -63,6 +63,12 @@ class AppSettings {
   // shows up by default instead of silently missing.
   List<String> hiddenTabIds;
 
+  /// Off on a fresh install. Stored as *hidden* ids rather than visible ones so
+  /// a tab added in a later version still shows up by default — which is also
+  /// why this default only applies when nothing has been stored yet: once the
+  /// user has been to Settings → Tabs, their list is what counts.
+  static const List<String> kHiddenTabIdsDefault = ['predict', 'books'];
+
   // Sentence Bank settings
   String sentenceBankUrl; // URL to fetch sentence_bank.yaml (empty = use bundled asset)
   String sentenceBankVoiceGender; // 'male' | 'female' (fallback when no explicit source voice)
@@ -127,7 +133,7 @@ class AppSettings {
     this.listenStoryPartSentences = kListenStoryPartSentencesDefault,
     this.listenVoiceIds = const [],
     this.listenKnownVoice = '',
-    this.hiddenTabIds = const [],
+    this.hiddenTabIds = kHiddenTabIdsDefault,
     this.sentenceBankTargetFirst = false,
     this.sentenceBankPrepareAudio = true,
     this.booksChunkUnit = 'sentence',
@@ -352,7 +358,7 @@ class AppSettings {
       listenStoryPartSentences: (json['listenStoryPartSentences'] as int?) ?? kListenStoryPartSentencesDefault,
       listenVoiceIds: (json['listenVoiceIds'] as List?)?.cast<String>() ?? const [],
       listenKnownVoice: json['listenKnownVoice'] as String? ?? '',
-      hiddenTabIds: (json['hiddenTabIds'] as List?)?.cast<String>() ?? const [],
+      hiddenTabIds: (json['hiddenTabIds'] as List?)?.cast<String>() ?? kHiddenTabIdsDefault,
       sentenceBankTargetFirst: json['sentenceBankTargetFirst'] as bool? ?? false,
       sentenceBankPrepareAudio: json['sentenceBankPrepareAudio'] as bool? ?? true,
       booksChunkUnit: json['booksChunkUnit'] as String? ?? 'sentence',

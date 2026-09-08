@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter_file_dialog/flutter_file_dialog.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -7,9 +10,90 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/app_tab.dart';
 import '../services/ai_service.dart';
 import '../services/app_update_service.dart';
+import '../services/data_transfer_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
 import 'policies_screen.dart';
+
+/// Writes a backup and lets the user save it wherever they like.
+///
+/// `flutter_file_dialog` rather than `file_selector`, which the rest of the app
+/// uses: file_selector implements `openFile` on Android but not
+/// `getSaveLocation`, so it can open a file and not save one. This opens
+/// Android's own ACTION_CREATE_DOCUMENT picker — a real folder-and-name dialog,
+/// and the supported way to write outside the app sandbox.
+Future<void> _exportData(BuildContext context) async {
+  final ok = await showYesNoDialog(
+    context,
+    title: 'Export data?',
+    message:
+        'Saves your words, settings, sentence bank, Listen texts and progress '
+        'to one file.\n\nThe file includes your Gemini API key, so keep it '
+        'somewhere private.\n\nDownloaded books and cached audio are not '
+        'included — they rebuild themselves.',
+  );
+  if (ok != true || !context.mounted) return;
+  try {
+    final info = await PackageInfo.fromPlatform();
+    final file = await DataTransferService.writeBackup(appVersion: info.version);
+    final saved = await FlutterFileDialog.saveFile(
+      params: SaveFileDialogParams(
+        sourceFilePath: file.path,
+        fileName: file.uri.pathSegments.last,
+        mimeTypesFilter: const ['application/json'],
+      ),
+    );
+    if (!context.mounted) return;
+    // null means the user backed out of the picker, which needs no report.
+    if (saved != null) lpSnack(context, 'Backup saved.', 3000);
+  } catch (e) {
+    if (context.mounted) lpSnack(context, 'Export failed: ${e.toString().split('\n').first.trim()}', 5000);
+  }
+}
+
+/// Restores a backup over this install's data.
+///
+/// Deliberately a full replace and deliberately blunt about it: a merge between
+/// two divergent installs would leave a state neither of them was ever in.
+Future<void> _importData(BuildContext context) async {
+  final ok = await showYesNoDialog(
+    context,
+    title: 'Import data?',
+    message:
+        'This REPLACES everything currently in this app — words, settings, API '
+        'key, sentence bank, Listen texts and progress — with the contents of '
+        'the file you pick.\n\nThere is no undo.',
+  );
+  if (ok != true || !context.mounted) return;
+
+  // The same Android picker the export writes through, and deliberately
+  // *unfiltered*: a .json saved to Downloads is reported by different providers
+  // as application/json, text/plain or application/octet-stream, and a MIME
+  // filter would grey out the very file the user just saved. The file's own
+  // header is what validates it, in DataTransferService.restore.
+  final picked = await FlutterFileDialog.pickFile(params: const OpenFileDialogParams(copyFileToCacheDir: true));
+  if (picked == null || !context.mounted) return;
+
+  try {
+    final count = await DataTransferService.restore(File(picked));
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Data restored'),
+        content: Text(
+          '$count entries were restored.\n\nClose Katalaveno completely and '
+          'open it again — the app is still showing what was loaded before the '
+          'import.',
+        ),
+        actions: [FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
+  } catch (e) {
+    if (context.mounted) lpSnack(context, 'Import failed: ${e.toString().split('\n').first.trim()}', 5000);
+  }
+}
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -378,6 +462,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ],
+              ),
+            ]),
+
+            // ── Backup ───────────────────────────────────────────────────
+            _section('Backup', [
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.upload_file_outlined),
+                title: const Text('Export data'),
+                subtitle: const Text('Words, settings, sentences, stories and progress to a file'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _exportData(context),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.download_outlined),
+                title: const Text('Import data'),
+                subtitle: const Text('Replace everything with a previously exported file'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _importData(context),
               ),
             ]),
 
