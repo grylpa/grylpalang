@@ -392,8 +392,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     // rotation instead of only after the whole existing bank has played out.
     // The bank is a pool to listen through, not an ordered course, so there is
     // no order to preserve — and the play order restarts from the top.
-    final all = [..._stories, ...added];
-    if (added.isNotEmpty) all.shuffle();
+    final all = added.isEmpty ? [..._stories] : _shuffledGroups([..._stories, ...added]);
     if (added.isNotEmpty || fetched > 0) {
       await _service.saveStories(s.targetLanguage, all);
       await _service.saveReserve(s.targetLanguage, sig, reserve);
@@ -422,6 +421,202 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                 '${reserve.isEmpty ? '' : ' — ${reserve.length} more ready offline'}.',
       4000,
     );
+  }
+
+  /// Shuffles the bank a *group* at a time: a micro-story is its own group and
+  /// moves freely, while the parts of a long story stay together and in their
+  /// written order. They are one continuous narrative — shuffling them would be
+  /// shuffling the pages of a book.
+  static List<ListenStory> _shuffledGroups(List<ListenStory> all) {
+    final groups = <List<ListenStory>>[];
+    final byStory = <String, List<ListenStory>>{};
+    for (final story in all) {
+      if (!story.isStoryPart) {
+        groups.add([story]);
+        continue;
+      }
+      byStory
+          .putIfAbsent(story.storyId, () {
+            final fresh = <ListenStory>[];
+            groups.add(fresh);
+            return fresh;
+          })
+          .add(story);
+    }
+    for (final g in groups) {
+      if (g.length > 1) g.sort((a, b) => a.part.compareTo(b.part));
+    }
+    groups.shuffle();
+    return [for (final g in groups) ...g];
+  }
+
+  /// The offered story lengths, in sentences before the part size divides them.
+  /// A short story, not a novel — long enough to have a plot, short enough to
+  /// finish on one walk.
+  static const List<(String, int)> _kStoryLengths = [('Short', 24), ('Med', 48), ('Long', 80)];
+
+  /// Creates one long story and adds its parts to the bank, in order.
+  ///
+  /// Unlike [_generate] there is no reserve: a story is one bespoke request, and
+  /// banking spare stories would mean paying for material the learner may never
+  /// reach.
+  Future<void> _createStory() async {
+    final state = context.read<AppState>();
+    final s = state.settings;
+    final subjects = _selectableSubjects.where(_selectedSubjects.contains).toList();
+    if (subjects.isEmpty) {
+      lpSnack(context, 'Select at least one subject first.', 3000);
+      return;
+    }
+    if (s.aiApiKey.trim().isEmpty) {
+      lpSnack(context, 'Set a Gemini API key in Settings first.', 4000);
+      return;
+    }
+    final ask = await _askStoryOptions(s);
+    if (ask == null || !mounted) return;
+    // Remembered, so the next story defaults to what worked last time.
+    if (ask.sentences != s.listenStorySentences || ask.perPart != s.listenStoryPartSentences) {
+      await state.saveSettingsOnly(
+        s.copyWith(listenStorySentences: ask.sentences, listenStoryPartSentences: ask.perPart),
+      );
+      if (!mounted) return;
+    }
+
+    _pause();
+    setState(() => _generating = true);
+    try {
+      // Both come from the dialog: only the number of parts moves, so the story
+      // comes out the length they asked for however finely they sliced it.
+      final perPart = ask.perPart;
+      final partCount = (ask.sentences / perPart).round().clamp(3, 40);
+      final story = await AiService.generateStory(
+        apiKey: s.aiApiKey,
+        knownPhrases: {
+          for (final name in subjects)
+            for (final raw in _bank?.sentencesFor(name) ?? const []) SbSentence.spoken(raw),
+        }.toList(),
+        knownLanguage: s.knownLanguage,
+        targetLanguage: s.targetLanguage,
+        parts: partCount,
+        sentencesPerPart: perPart,
+        theme: ask.idea,
+      );
+      final id = 'st${DateTime.now().millisecondsSinceEpoch}';
+      final added = [
+        for (var i = 0; i < story.parts.length; i++)
+          ListenStory(
+            subjects: subjects,
+            l2: story.parts[i].l2,
+            l1: story.parts[i].l1,
+            storyId: id,
+            part: i,
+            partCount: story.parts.length,
+            titleL2: story.titleL2,
+            titleL1: story.titleL1,
+          ),
+      ];
+      if (!mounted) return;
+      final all = _shuffledGroups([..._stories, ...added]);
+      await _service.saveStories(s.targetLanguage, all);
+      if (!mounted) return;
+      setState(() {
+        _stories = all;
+        _generating = false;
+        _cancelBuild();
+      });
+      // Land on the new story's first part: it was just asked for, so that is
+      // what the next Play should start with.
+      final at = _playable.indexWhere((x) => x.key == added.first.key);
+      if (at >= 0) {
+        setState(() => _index = at);
+        unawaited(_service.savePosition(s.targetLanguage, added.first.key));
+      }
+      if (!mounted) return;
+      lpSnack(context, 'Added "${story.titleL1}" in ${added.length} parts.', 4000);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _generating = false);
+      lpSnack(context, 'Could not write the story: ${e.toString().split('\n').first.trim()}', 5000);
+    }
+  }
+
+  /// Length and an optional steer for the story. Left blank, the idea field
+  /// lets [AiService.generateStory] pick one of its own seed situations — which
+  /// is the normal case, and why it is a hint rather than a required field.
+  ///
+  /// The length is shown in sentences *and* in the parts it works out to, since
+  /// the part size is the learner's own setting and is what they will actually
+  /// hear.
+  Future<({String idea, int sentences, int perPart})?> _askStoryOptions(AppSettings s) async {
+    final ctl = TextEditingController();
+    var sentences = s.listenStorySentences;
+    var perPart = s.listenStoryPartSentences;
+    final result = await showDialog<({String idea, int sentences, int perPart})>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => AlertDialog(
+          title: const Text('Create a story'),
+          // Wider than a default dialog, with tighter padding inside it: the
+          // three length segments have to fit on one row without eliding their
+          // labels, which the stock content box can't manage.
+          insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+          contentPadding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'One long story at your level, split into parts and played in '
+                'order. Takes a moment to generate.',
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.maxFinite,
+                child: SegmentedButton<int>(
+                  segments: [for (final (label, n) in _kStoryLengths) ButtonSegment<int>(value: n, label: Text(label))],
+                  selected: {sentences},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (v) => setSheet(() => sentences = v.first),
+                ),
+              ),
+              // A story's own part size, separate from the micro-texts' — the
+              // two are read differently: a self-contained text is drilled,
+              // while a story part is a beat in a narrative and wants more room.
+              _stepper(
+                ctx,
+                label: 'Part size',
+                suffix: ' sent.',
+                value: perPart,
+                min: 1,
+                max: 10,
+                valueWidth: 80,
+                onSet: (v) => setSheet(() => perPart = v),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '$sentences sentences — about ${(sentences / perPart).round().clamp(3, 40)} parts of $perPart',
+                style: Theme.of(ctx).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: ctl,
+                autofocus: false,
+                decoration: const InputDecoration(labelText: 'Idea (optional)', hintText: 'e.g. a lost dog'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, (idea: ctl.text.trim(), sentences: sentences, perPart: perPart)),
+              child: const Text('Create'),
+            ),
+          ],
+        ),
+      ),
+    );
+    ctl.dispose();
+    return result;
   }
 
   Future<void> _clearTexts() async {
@@ -606,8 +801,12 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         // start on the text the user left off at rather than at the top.
         final i = (from + n) % stories.length;
         // The voice follows the story's own index, so it doesn't change
-        // depending on where the build happened to start.
-        final clips = await _clipsFor(stories[i], voices.isEmpty ? '' : voices[i % voices.length], s);
+        // depending on where the build happened to start. Every part of a long
+        // story shares one voice instead — a narrator that changed mid-chapter
+        // would sound like the recording had been spliced.
+        final story = stories[i];
+        final vi = story.isStoryPart ? story.storyId.hashCode.abs() : i;
+        final clips = await _clipsFor(story, voices.isEmpty ? '' : voices[vi % voices.length], s);
         if (!mounted || token != _buildToken) return;
 
         if (clips == null) {
@@ -757,7 +956,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     }
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 4, 60),
+      padding: const EdgeInsets.fromLTRB(12, 12, 4, 32),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -771,7 +970,19 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
           const SizedBox(height: 20),
           Expanded(child: _statusCard(s)),
           const SizedBox(height: 10),
-          _generateButton(s),
+          // Side by side, and wrapping rather than truncating: at half a phone
+          // width neither label fits on one line, and "Generate 8 more te…"
+          // hides exactly the part that says what the press will cost.
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: _generateButton(s)),
+                const SizedBox(width: 8),
+                Expanded(child: _storyButton()),
+              ],
+            ),
+          ),
           const SizedBox(height: 16),
           _controls(),
         ],
@@ -886,12 +1097,50 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                   itemBuilder: (ctx, i) {
                     final sel = i == current;
                     final theme = Theme.of(ctx);
-                    return ListTile(
+                    final story = stories[i];
+                    final tile = ListTile(
                       selected: sel,
                       leading: Text('${i + 1}', style: theme.textTheme.labelMedium),
-                      title: Text(stories[i].l2, maxLines: 3, overflow: TextOverflow.ellipsis),
+                      title: Text(story.l2, maxLines: 3, overflow: TextOverflow.ellipsis),
+                      // The title is named once, on the story's first part —
+                      // the stripe already says which rows below it belong to
+                      // the same story, so repeating the name on each is noise.
+                      // Muted, never primary: primary is what marks the row you
+                      // are on.
+                      subtitle: !story.isStoryPart
+                          ? null
+                          : Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (story.part == 0 && story.titleL2.isNotEmpty)
+                                  Text(
+                                    story.titleL2,
+                                    style: theme.textTheme.bodyMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                Text(
+                                  'part ${story.part + 1} of ${story.partCount}',
+                                  style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                                ),
+                              ],
+                            ),
                       trailing: sel ? Icon(_playing ? Icons.graphic_eq : Icons.play_arrow, size: 20) : null,
                       onTap: () => Navigator.pop(ctx, i),
+                    );
+                    // A story's parts are a run of consecutive rows, so a
+                    // continuous stripe down their left edge shows at a glance
+                    // where it starts and ends — which the per-row label alone
+                    // doesn't.
+                    if (!story.isStoryPart) return tile;
+                    return DecoratedBox(
+                      decoration: BoxDecoration(
+                        // Secondary, not primary: primary is the "you are here"
+                        // colour, and a stripe in it would read as selection.
+                        border: Border(left: BorderSide(width: 3, color: theme.colorScheme.secondary)),
+                      ),
+                      child: tile,
                     );
                   },
                 ),
@@ -943,6 +1192,13 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
             ),
           ],
         ),
+        // Long stories say where you are inside them; a micro-story is
+        // self-contained and gets no title, which would only give it away.
+        if (story.isStoryPart)
+          Text(
+            '${story.titleL2} — part ${story.part + 1} of ${story.partCount}',
+            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.primary),
+          ),
         if (!_knownSpeechOk)
           // Not a blocking notice like the target language — the exercise still
           // works without the translation — but it gets the same instructions,
@@ -1087,23 +1343,50 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     );
   }
 
+  /// Shared shape for the two make-material buttons: a tight icon+label pair
+  /// whose label is allowed to wrap onto a second line, since they sit half a
+  /// screen wide.
+  Widget _makeButton({required Widget icon, required String label, required VoidCallback? onPressed}) {
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10)),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          icon,
+          const SizedBox(width: 8),
+          Flexible(child: Text(label, textAlign: TextAlign.center)),
+        ],
+      ),
+    );
+  }
+
   Widget _generateButton(AppSettings s) {
-    return OutlinedButton.icon(
+    return _makeButton(
       onPressed: _generating || _selectedSubjects.isEmpty ? null : _generate,
       icon: _generating
           ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
           : const Icon(Icons.auto_awesome),
-      label: Text(
-        _generating
-            ? 'Generating…'
-            : _stories.isEmpty
-            ? 'Generate texts'
-            // Says "Add" rather than "Generate" when it costs no API call, so
-            // it's clear which presses are free and which reach the network.
-            : _reserveSig == _sigFor(_selectedSubjects) && _reserve.length >= s.listenTextsPerRun
-            ? 'Add ${s.listenTextsPerRun} more (${_reserve.length} ready)'
-            : 'Generate ${s.listenTextsPerRun} more texts',
-      ),
+      label: _generating
+          ? 'Generating…'
+          : _stories.isEmpty
+          ? 'Generate texts'
+          // Says "Add" rather than "Generate" when it costs no API call, so
+          // it's clear which presses are free and which reach the network.
+          : _reserveSig == _sigFor(_selectedSubjects) && _reserve.length >= s.listenTextsPerRun
+          ? 'Add ${s.listenTextsPerRun} more (${_reserve.length} ready)'
+          : 'Generate ${s.listenTextsPerRun} more texts',
+    );
+  }
+
+  /// The story generator, at the same level as [_generateButton] rather than
+  /// buried in the ⋮ menu: it is one of the two ways to make material, not a
+  /// setting.
+  Widget _storyButton() {
+    return _makeButton(
+      onPressed: _generating || _selectedSubjects.isEmpty ? null : _createStory,
+      icon: const Icon(Icons.auto_stories_outlined),
+      label: 'Create a story',
     );
   }
 
@@ -1124,7 +1407,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         style: FilledButton.styleFrom(
           backgroundColor: backgroundColor,
           foregroundColor: foregroundColor,
-          minimumSize: const Size(0, 56),
+          // 1.5x the old 56. The extra height is taken out of the bottom
+          // padding below, so the buttons grow downwards and nothing above
+          // them shifts.
+          minimumSize: const Size(0, 84),
           padding: EdgeInsets.zero,
         ),
         child: Icon(icon, size: 36),
@@ -1354,6 +1640,9 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     required int min,
     required int max,
     int step = 1,
+    // The value box. Sized for the settings sheet's long labels; a shorter
+    // label leaves room to widen it so the suffix stops wrapping.
+    double valueWidth = 52,
     required void Function(int) onSet,
   }) {
     return Padding(
@@ -1363,7 +1652,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
           Expanded(child: Text(label, style: Theme.of(ctx).textTheme.bodyMedium)),
           IconButton(icon: const Icon(Icons.remove), onPressed: value - step < min ? null : () => onSet(value - step)),
           SizedBox(
-            width: 52,
+            width: valueWidth,
             child: Text('$value$suffix', textAlign: TextAlign.center, style: Theme.of(ctx).textTheme.titleMedium),
           ),
           IconButton(icon: const Icon(Icons.add), onPressed: value + step > max ? null : () => onSet(value + step)),

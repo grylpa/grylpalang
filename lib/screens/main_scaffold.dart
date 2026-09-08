@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_tab.dart';
+import '../services/app_update_service.dart';
 import '../state/app_state.dart';
 import 'books_tab.dart';
 import 'dashboard_screen.dart';
@@ -74,6 +75,9 @@ class _MainScaffoldState extends State<MainScaffold> {
   // shown at most once each app run (only while no key is set — see
   // _maybeShowApiKeyIntro), never persisted.
   bool _apiKeyIntroHandled = false;
+
+  // Same shape for the Play update check: at most one attempt per app run.
+  bool _updateCheckStarted = false;
 
   void _persistTab(AppTab t) => SharedPreferencesAsync().setString(_kTabIdKey, t.id);
 
@@ -175,6 +179,18 @@ class _MainScaffoldState extends State<MainScaffold> {
     );
   }
 
+  /// Asks Google Play whether a newer build is out, and offers to install it.
+  ///
+  /// Deliberately last and deliberately timid: it waits a few seconds so the
+  /// app is usable first, and gives up entirely if any other dialog is on
+  /// screen (the first-run intro, most likely). An update prompt is never
+  /// urgent enough to stack on top of something else — the next launch will do.
+  Future<void> _startupUpdateCheck() async {
+    await Future<void>.delayed(const Duration(seconds: 3));
+    if (!mounted || ModalRoute.of(context)?.isCurrent == false) return;
+    await AppUpdateService.maybePromptOnStartup(context);
+  }
+
   /// Restores the tab the user was last on. Reads the id key first; falls back
   /// once to the legacy raw index, translated through the tab order as it was
   /// before tabs became hideable.
@@ -254,6 +270,10 @@ class _MainScaffoldState extends State<MainScaffold> {
         // Once settings have loaded, show the AI-key intro if no key is set.
         if (isInitialized && !_apiKeyIntroHandled) {
           WidgetsBinding.instance.addPostFrameCallback((_) => _maybeShowApiKeyIntro());
+        }
+        if (isInitialized && !_updateCheckStarted) {
+          _updateCheckStarted = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) => _startupUpdateCheck());
         }
         // New tap? Jump to history tab.
         if (tapToken != _seenNotificationTapToken) {

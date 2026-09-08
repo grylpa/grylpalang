@@ -1065,6 +1065,202 @@ Return ONLY a JSON array and nothing else. No explanations, no markdown.
     return out;
   }
 
+  /// Generates ONE long story in L2, already split into consecutive parts.
+  ///
+  /// The counterpart of [generateListeningTexts]: same seed pool and the same
+  /// "this is the level, not the plot" framing, but one continuous narrative
+  /// instead of many unrelated scenes. Parts come back pre-split so Listen mode
+  /// can play them exactly as it plays micro-stories — the model knows where its
+  /// own sentence boundaries are, and asking it to segment is far safer than
+  /// splitting L2 prose on punctuation afterwards (there would be no way to keep
+  /// the translation aligned if we did).
+  ///
+  /// The outline is requested *first, in the same response*: committing to a
+  /// plot before writing the prose is what stops a long text from wandering and
+  /// then ending because it ran out of room. It is never shown to the user.
+  static Future<({String titleL2, String titleL1, String outline, List<({String l2, String l1})> parts})>
+  generateStory({
+    required String apiKey,
+    required List<String> knownPhrases,
+    required String knownLanguage,
+    required String targetLanguage,
+    required int parts,
+    required int sentencesPerPart,
+    String theme = '',
+  }) async {
+    if (apiKey.trim().isEmpty) {
+      throw Exception('AI API key is empty (set it in Settings).');
+    }
+    if (knownPhrases.isEmpty) {
+      throw Exception('No sentences in the selected subjects.');
+    }
+
+    final pool = [...knownPhrases]..shuffle();
+    final seeds = <String>[];
+    var chars = 0;
+    for (final phrase in pool) {
+      if (seeds.length >= _kMaxSeedPhrases || chars + phrase.length > _kMaxSeedChars) break;
+      seeds.add(phrase);
+      chars += phrase.length;
+    }
+    final vocabulary = seeds.map((x) => '  - $x').join('\n');
+    // Given per generation rather than left to the model: asked to "be creative"
+    // it reliably returns the same handful of gentle scenes, so the variety has
+    // to come from the instruction.
+    final seedIdea = theme.trim().isNotEmpty ? theme.trim() : (_storySeeds.toList()..shuffle()).first;
+
+    final prompt =
+        '''
+You are writing a short story for a language learner to listen to.
+
+TARGET LANGUAGE (L2): $targetLanguage
+KNOWN LANGUAGE (L1): $knownLanguage
+
+THE LEARNER'S ACTIVE VOCABULARY
+One flat list, no topics or grouping. Read it as a picture of the words,
+structures, tenses and register they can follow.
+$vocabulary
+
+HOW TO USE THAT LIST — READ THIS TWICE
+It tells you their LEVEL. It is NOT a plot outline, NOT sentences to reuse, and
+NOT a list of topics to cover. They know every phrase on it by heart, so a story
+recognisably assembled out of them is recognised rather than understood, and is
+worthless as practice. Invent situations that appear nowhere in the list.
+Introducing a few new words the listener can infer from context is welcome —
+that is what listening practice is for.
+
+YOUR TASK
+Write ONE short story in $targetLanguage — a real short story, the kind that
+would sit in a collection, not a language exercise.
+
+Seed idea: $seedIdea
+
+Answer in two stages, both inside the JSON:
+1. "outline": 3-6 sentences in $knownLanguage. Who the people are, what the
+   problem is, what complicates it, how it ends. Commit to this BEFORE writing
+   any prose.
+2. "parts": the story itself, already divided into exactly $parts consecutive
+   parts of about $sentencesPerPart sentences each. Part 2 continues part 1.
+   These are slices of ONE story, never separate vignettes, and the learner
+   hears them in order.
+
+WHAT MAKES THE STORY ACCEPTABLE
+1. Two or three named characters. Use their names and keep them straight
+   throughout.
+2. Something is wrong by the end of part 1. Not "a lovely day at the market".
+3. Concrete physical detail — what is in the room, what someone is holding, what
+   the weather is doing. Dialogue is welcome.
+4. An ending that resolves the situation. NO moral, NO "and so they learned", NO
+   narrator stepping in to explain the point.
+5. Sentences roughly as long as the phrases in the vocabulary list above.
+   Written for the ear: natural connected speech, no headings, bullets, emoji or
+   parenthetical asides.
+6. Each part's "l1" is a faithful, natural translation of that part's "l2" — not
+   a summary.
+7. "title_l2" is the story's title in $targetLanguage, "title_l1" the same title
+   in $knownLanguage. Short, and not a summary of the plot.
+
+Return JSON only.
+''';
+
+    final body = {
+      'contents': [
+        {
+          'parts': [
+            {'text': prompt},
+          ],
+        },
+      ],
+      'generationConfig': {
+        // Lower than the micro-story batch: there, spread stops many texts
+        // collapsing into one scene. Here there is only one text, and what
+        // matters instead is that it holds together over its whole length.
+        'temperature': 1.0,
+        'responseMimeType': 'application/json',
+        'responseSchema': {
+          'type': 'object',
+          'properties': {
+            'outline': {
+              'type': 'string',
+              'description': 'The plot, in L1, decided before the prose is written. Never shown to the learner.',
+            },
+            'title_l2': {'type': 'string'},
+            'title_l1': {'type': 'string'},
+            'parts': {
+              'type': 'array',
+              'items': {
+                'type': 'object',
+                'properties': {
+                  'l2': {
+                    'type': 'string',
+                    'description': 'One consecutive slice of the story in L2. Continues directly from the part before.',
+                  },
+                  'l1': {'type': 'string', 'description': 'Faithful full translation of l2 into L1.'},
+                },
+                'required': ['l2', 'l1'],
+              },
+            },
+          },
+          'required': ['outline', 'title_l2', 'title_l1', 'parts'],
+        },
+      },
+    };
+
+    final resp = await queryModel(apiKey, body);
+    if (resp.statusCode != 200) _throwAiError(resp, 'generateStory');
+
+    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
+    final respParts =
+        ((decoded['candidates'] as List?)?.firstOrNull?['content'] as Map<String, dynamic>?)?['parts'] as List?;
+    final text = (respParts?.firstOrNull?['text'] as String? ?? '').trim();
+    if (text.isEmpty) throw Exception('AI returned no story');
+
+    late Map<String, dynamic> map;
+    try {
+      map = (jsonDecode(text) as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception('JSON decode failed: $e');
+    }
+
+    final out = <({String l2, String l1})>[];
+    for (final item in (map['parts'] as List?) ?? const []) {
+      final m = (item as Map).cast<String, dynamic>();
+      final l2 = (m['l2'] as String? ?? '').trim();
+      final l1 = (m['l1'] as String? ?? '').trim();
+      if (l2.isEmpty) continue;
+      out.add((l2: l2, l1: l1));
+    }
+    if (out.isEmpty) throw Exception('AI returned a story with no parts');
+
+    return (
+      titleL2: (map['title_l2'] as String? ?? '').trim(),
+      titleL1: (map['title_l1'] as String? ?? '').trim(),
+      outline: (map['outline'] as String? ?? '').trim(),
+      parts: out,
+    );
+  }
+
+  /// Seed situations for [generateStory], one picked at random per run. Left to
+  /// itself the model returns the same few mild scenes over and over; a concrete
+  /// starting point is what produces the variety.
+  static const List<String> _storySeeds = [
+    'a misunderstanding between neighbours that gets out of hand',
+    'a small theft that turns out not to be a theft',
+    'a journey that goes wrong in an ordinary way',
+    'someone waiting for a person who does not come',
+    'a favour that costs far more than expected',
+    'an object that keeps turning up where it should not be',
+    'a secret kept for a good reason and found out anyway',
+    'two people who need the same thing at the same time',
+    'a letter or message that arrives much too late',
+    'a promise made carelessly and taken seriously',
+    'a stranger who knows more than they should',
+    'a repair that makes the problem worse',
+    'a celebration nobody is in the mood for',
+    'an animal that decides the outcome of something',
+    'a lie told to be kind, which then has to be maintained',
+  ];
+
   /// The few-shot examples below are written in Greek script, so they only help
   /// when Greek is what's being learned — shown to a German learner they'd just
   /// be noise (or a nudge toward the wrong alphabet).
