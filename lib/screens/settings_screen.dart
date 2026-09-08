@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../models/app_tab.dart';
 import '../services/ai_service.dart';
+import '../services/app_update_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
 import 'policies_screen.dart';
@@ -403,6 +404,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ]),
+
+            Card(
+              margin: const EdgeInsets.only(bottom: 10),
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: ListTile(
+                title: const Text('Check for updates'),
+                onTap: () => AppUpdateService.checkManually(context),
+              ),
+            ),
 
             Card(
               margin: const EdgeInsets.only(bottom: 10),

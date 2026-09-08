@@ -1961,7 +1961,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     return Padding(
       // Tight right padding so the ⋮ overflow hugs the right edge like an app-bar
       // action (the subject field takes the rest of the width).
-      padding: const EdgeInsets.fromLTRB(12, 12, 4, 60),
+      padding: const EdgeInsets.fromLTRB(12, 12, 4, 32),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -2741,7 +2741,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         style: FilledButton.styleFrom(
           backgroundColor: backgroundColor,
           foregroundColor: foregroundColor,
-          minimumSize: const Size(0, 56),
+          // 1.5x the old 56. The extra height is taken out of the bottom
+          // padding below, so the buttons grow downwards and nothing above
+          // them shifts.
+          minimumSize: const Size(0, 84),
           padding: EdgeInsets.zero,
         ),
         child: Icon(icon, size: 36),

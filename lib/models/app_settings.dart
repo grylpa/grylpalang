@@ -23,6 +23,8 @@ class AppSettings {
   static const int kListenPauseBeforeNextSecDefault = 3;
   static const int kListenTextsPerRunDefault = 8;
   static const int kListenSentencesPerTextDefault = 2;
+  static const int kListenStorySentencesDefault = 48;
+  static const int kListenStoryPartSentencesDefault = 2;
 
   String knownLanguage;
   String targetLanguage;
@@ -51,6 +53,8 @@ class AppSettings {
   int listenPauseBeforeNextSec; // gap before the next story
   int listenTextsPerRun; // how many texts one "Generate texts" press asks for, across all selected subjects
   int listenSentencesPerText; // rough length of each generated text
+  int listenStorySentences; // total length of a generated long story, before it is split into parts
+  int listenStoryPartSentences; // sentences per part of a long story — its own setting, not the micro-text one
   List<String> listenVoiceIds; // target-language voices to rotate through (empty = all installed)
   String listenKnownVoice; // known-language voice for the translation pass ('' = automatic)
 
@@ -119,6 +123,8 @@ class AppSettings {
     this.listenPauseBeforeNextSec = kListenPauseBeforeNextSecDefault,
     this.listenTextsPerRun = kListenTextsPerRunDefault,
     this.listenSentencesPerText = kListenSentencesPerTextDefault,
+    this.listenStorySentences = kListenStorySentencesDefault,
+    this.listenStoryPartSentences = kListenStoryPartSentencesDefault,
     this.listenVoiceIds = const [],
     this.listenKnownVoice = '',
     this.hiddenTabIds = const [],
@@ -168,6 +174,8 @@ class AppSettings {
     int? listenPauseBeforeNextSec,
     int? listenTextsPerRun,
     int? listenSentencesPerText,
+    int? listenStorySentences,
+    int? listenStoryPartSentences,
     List<String>? listenVoiceIds,
     String? listenKnownVoice,
     List<String>? hiddenTabIds,
@@ -222,6 +230,8 @@ class AppSettings {
       listenPauseBeforeNextSec: listenPauseBeforeNextSec ?? this.listenPauseBeforeNextSec,
       listenTextsPerRun: listenTextsPerRun ?? this.listenTextsPerRun,
       listenSentencesPerText: listenSentencesPerText ?? this.listenSentencesPerText,
+      listenStorySentences: listenStorySentences ?? this.listenStorySentences,
+      listenStoryPartSentences: listenStoryPartSentences ?? this.listenStoryPartSentences,
       listenVoiceIds: listenVoiceIds ?? this.listenVoiceIds,
       listenKnownVoice: listenKnownVoice ?? this.listenKnownVoice,
       hiddenTabIds: hiddenTabIds ?? this.hiddenTabIds,
@@ -274,6 +284,8 @@ class AppSettings {
     'listenPauseBeforeNextSec': listenPauseBeforeNextSec,
     'listenTextsPerRun': listenTextsPerRun,
     'listenSentencesPerText': listenSentencesPerText,
+    'listenStorySentences': listenStorySentences,
+    'listenStoryPartSentences': listenStoryPartSentences,
     'listenVoiceIds': listenVoiceIds,
     'listenKnownVoice': listenKnownVoice,
     'hiddenTabIds': hiddenTabIds,
@@ -336,6 +348,8 @@ class AppSettings {
       listenTextsPerRun:
           (json['listenTextsPerRun'] as int?) ?? (json['listenTextsPerSubject'] as int?) ?? kListenTextsPerRunDefault,
       listenSentencesPerText: (json['listenSentencesPerText'] as int?) ?? kListenSentencesPerTextDefault,
+      listenStorySentences: (json['listenStorySentences'] as int?) ?? kListenStorySentencesDefault,
+      listenStoryPartSentences: (json['listenStoryPartSentences'] as int?) ?? kListenStoryPartSentencesDefault,
       listenVoiceIds: (json['listenVoiceIds'] as List?)?.cast<String>() ?? const [],
       listenKnownVoice: json['listenKnownVoice'] as String? ?? '',
       hiddenTabIds: (json['hiddenTabIds'] as List?)?.cast<String>() ?? const [],
