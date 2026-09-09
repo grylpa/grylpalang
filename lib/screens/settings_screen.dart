@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../models/ai_engine.dart';
 import '../models/app_tab.dart';
 import '../services/ai_service.dart';
 import '../services/app_update_service.dart';
@@ -93,6 +94,199 @@ Future<void> _importData(BuildContext context) async {
   } catch (e) {
     if (context.mounted) lpSnack(context, 'Import failed: ${e.toString().split('\n').first.trim()}', 5000);
   }
+}
+
+/// Pings every model in the selected chain, one at a time, showing the list up
+/// front with a spinner on whichever is being asked.
+///
+/// The probes are sequential and each one waits for a real answer, so the whole
+/// run takes several seconds; a single spinner for all of it looks hung, and
+/// says nothing about how far along it is.
+Future<void> _testModels(BuildContext context, String apiKey) => showDialog<void>(
+  context: context,
+  builder: (ctx) => _ModelTestDialog(apiKey: apiKey),
+);
+
+class _ModelTestDialog extends StatefulWidget {
+  const _ModelTestDialog({required this.apiKey});
+
+  final String apiKey;
+
+  @override
+  State<_ModelTestDialog> createState() => _ModelTestDialogState();
+}
+
+class _ModelTestDialogState extends State<_ModelTestDialog> {
+  final Map<String, ({int status, String detail})> _results = {};
+  String? _running;
+
+  @override
+  void initState() {
+    super.initState();
+    _run();
+  }
+
+  Future<void> _run() async {
+    for (final model in AiService.engine.models) {
+      // Closing the dialog mid-run abandons the rest: the remaining probes are
+      // only worth their seconds while someone is watching.
+      if (!mounted) return;
+      setState(() => _running = model);
+      final r = await AiService.probeModel(widget.apiKey, model);
+      if (!mounted) return;
+      setState(() {
+        _results[model] = r;
+        _running = null;
+      });
+    }
+  }
+
+  static String _label(int status) => switch (status) {
+    200 => 'OK',
+    404 => 'not available to this key',
+    429 => 'rate-limited / no quota',
+    401 || 403 => 'key rejected',
+    -1 => 'network error',
+    _ when status >= 500 => 'server error',
+    _ => 'failed',
+  };
+
+  Widget _row(BuildContext ctx, String model) {
+    final done = _results[model];
+    final scheme = Theme.of(ctx).colorScheme;
+    final Widget leading = done != null
+        ? Icon(
+            done.status == 200 ? Icons.check_circle_outline : Icons.error_outline,
+            size: 18,
+            color: done.status == 200 ? scheme.primary : scheme.error,
+          )
+        : _running == model
+        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+        // Not started: an outline, so the list reads as a queue rather than as
+        // a set of failures.
+        : Icon(Icons.circle_outlined, size: 18, color: scheme.outlineVariant);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              SizedBox(width: 18, child: Center(child: leading)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  done != null ? '$model — ${_label(done.status)}' : model,
+                  style: done == null && _running != model ? TextStyle(color: scheme.onSurfaceVariant) : null,
+                ),
+              ),
+            ],
+          ),
+          if (done != null && done.detail.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 26, top: 2),
+              child: Text(done.detail, style: Theme.of(ctx).textTheme.bodySmall),
+            ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final models = AiService.engine.models;
+    final finished = _results.length == models.length;
+    return AlertDialog(
+      title: const Text('Model test'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final m in models) _row(context, m),
+            const SizedBox(height: 12),
+            Text(
+              'Requests walk this list top to bottom, using the first that answers. '
+              'If none do, the app reports the last failure.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+      actions: [FilledButton(onPressed: () => Navigator.pop(context), child: Text(finished ? 'Close' : 'Stop'))],
+    );
+  }
+}
+
+/// Clock time for a failure line. Date omitted on purpose — the log is capped
+/// at 60 entries and read minutes after the fact, so the time of day is the part
+/// that helps.
+String _hhmm(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+/// The per-model tally behind the "last answered by" line: how many answers
+/// each model in the chain has actually given.
+Future<void> _showModelUsage(BuildContext context) async {
+  final entries = AiService.modelCalls.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  final total = entries.fold<int>(0, (sum, e) => sum + e.value);
+  final cleared = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Models used'),
+      // Wider and taller than a stock dialog, and scrollable: a failure line
+      // carries Google's own message, which is long, and there can be one per
+      // model in the chain.
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      contentPadding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: MediaQuery.of(ctx).size.height * 0.6,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final e in entries)
+                Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Text('${e.key} — ${e.value}')),
+              if (AiService.failures.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text('Failures (newest first)', style: Theme.of(ctx).textTheme.labelLarge),
+                // Newest first: the reason you opened this is almost always
+                // whatever just happened.
+                for (final f in AiService.failures.reversed)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${_hhmm(f.at)}  ${f.model}',
+                          style: Theme.of(ctx).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                        // Selectable: these are the messages worth pasting into
+                        // a search or a bug report.
+                        SelectableText(f.detail, style: Theme.of(ctx).textTheme.bodySmall),
+                      ],
+                    ),
+                  ),
+              ],
+              const SizedBox(height: 12),
+              Text(
+                '$total successful ${total == 1 ? 'call' : 'calls'} in total. A model '
+                'other than the first in the chain means the ones above it failed.',
+                style: Theme.of(ctx).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Reset')),
+        FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+      ],
+    ),
+  );
+  if (cleared == true) await AiService.clearUsage();
 }
 
 class SettingsScreen extends StatefulWidget {
@@ -370,6 +564,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       Uri.parse('https://aistudio.google.com/apikey'),
                       mode: LaunchMode.externalApplication,
                     ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // One key covers every model — it is scoped to the Google
+                // project, not to a generation — so switching here needs no
+                // other change.
+                DropdownButtonFormField<String>(
+                  initialValue: AiEngine.byId(s.aiEngineId).id,
+                  decoration: const InputDecoration(labelText: 'Engine'),
+                  items: [for (final e in AiEngine.values) DropdownMenuItem(value: e.id, child: Text(e.label))],
+                  onChanged: (v) => state.saveSettingsOnly(s.copyWith(aiEngineId: v ?? AiEngine.gemini25.id)),
+                ),
+                const SizedBox(height: 6),
+                Text(AiEngine.byId(s.aiEngineId).description, style: Theme.of(context).textTheme.bodySmall),
+                // Which model actually answered last. One quiet line, because
+                // the chain means the model that serves a request isn't always
+                // the one asked first — and nothing else in the app would ever
+                // tell you that you have been living on a fallback.
+                const SizedBox(height: 10),
+                // Set apart from the description above it: these are live
+                // readings about this key, not more explanatory prose, and
+                // styled the same they blurred into it.
+                if (AiService.lastModel.isNotEmpty)
+                  ActionChip(
+                    avatar: Icon(Icons.check_circle_outline, size: 18, color: Theme.of(context).colorScheme.primary),
+                    label: Text('Last answered by ${AiService.lastModel}'),
+                    onPressed: () => _showModelUsage(context),
+                  ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  // The only way to find out whether this key can reach the
+                  // models at all. A failing call can't tell you: by the time it
+                  // reports, the chain has moved on and the message describes
+                  // whichever model answered last.
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.network_check, size: 18),
+                    label: const Text('Test models'),
+                    onPressed: state.hasAiKey ? () => _testModels(context, s.aiApiKey) : null,
                   ),
                 ),
                 const SizedBox(height: 12),

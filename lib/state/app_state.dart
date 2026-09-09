@@ -14,6 +14,7 @@ import '../models/notification_snapshot.dart';
 import '../models/scheduled_sentence.dart';
 import '../models/word_entry.dart';
 import '../models/word_sentence.dart';
+import '../models/ai_engine.dart';
 import '../services/ai_service.dart';
 import '../services/app_storage.dart';
 import '../services/google_translate_tts.dart';
@@ -217,6 +218,10 @@ class AppState extends ChangeNotifier {
     ]);
 
     _settings = results[0] as AppSettings;
+    _applyAiEngine();
+    // Which model has been answering, restored so the Settings readout is a
+    // history rather than "since this launch".
+    unawaited(AiService.loadUsage());
     _words = results[1] as List<WordEntry>;
     var loadedHistory = results[2] as List<HistoryEntry>;
     _snapshots = results[3] as List<NotificationSnapshot>;
@@ -406,8 +411,13 @@ class AppState extends ChangeNotifier {
     debugPrint("saved all settings, words and snapshots");
   }
 
+  /// Points [AiService] at the generation the user picked. Called wherever
+  /// settings land, since the service holds it as process-wide state.
+  void _applyAiEngine() => AiService.engine = AiEngine.byId(_settings.aiEngineId);
+
   Future<void> updateSettings(AppSettings s) async {
     _settings = s;
+    _applyAiEngine();
     await _persist();
     await _rescheduleAll(firstOffset: const Duration(seconds: 30));
     notifyListeners();
@@ -416,6 +426,7 @@ class AppState extends ChangeNotifier {
   /// Persists settings without touching the notification schedule.
   Future<void> saveSettingsOnly(AppSettings s) async {
     _settings = s;
+    _applyAiEngine();
     await _persist();
     notifyListeners();
   }

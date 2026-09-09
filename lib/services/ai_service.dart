@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 // import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/word_sentence.dart';
+import '../models/ai_engine.dart';
 import '../models/word_type.dart';
 import '../widgets.dart';
 import "../utils/http_date.dart";
@@ -17,10 +20,257 @@ class AiException implements Exception {
 }
 
 class AiService {
-  static const String _fallbackModelEndpoint =
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent';
-  static const String _modelEndpoint =
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+  /// The generation every request goes to. Set once from settings (see
+  /// [AppState]) rather than threaded through each call: there is one engine per
+  /// process, and passing it to forty call sites would only create forty chances
+  /// to forget.
+  static AiEngine engine = AiEngine.gemini25;
+
+  static String _endpoint(String model) =>
+      'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent';
+
+  /// Which model actually answered, and how many answers each has given.
+  ///
+  /// The chain means the model that serves a request is not always the one that
+  /// was asked first, and nothing in the response says which it was. Counting
+  /// here is the only way to know whether you are really running on 3.8 or
+  /// quietly living on the fallback — without putting a badge on every screen.
+  static String lastModel = '';
+  static Map<String, int> modelCalls = {};
+
+  /// What the current request is doing right now: which model is being asked,
+  /// or how long it is waiting out a rate limit. Empty when nothing is in
+  /// flight.
+  ///
+  /// A notifier rather than a snackbar: a single call can try four models and
+  /// sit through two backoffs, and four snackbars would cover the screen to say
+  /// what one line beside the existing spinner says better. Screens that show a
+  /// spinner for an AI call watch this and print it underneath.
+  static final ValueNotifier<String> activity = ValueNotifier<String>('');
+
+  /// Incremented when a *new model* is tried. The banner flashes on this, not on
+  /// every text change, so the elapsed-time ticks below don't strobe.
+  static final ValueNotifier<int> activityStep = ValueNotifier<int>(0);
+
+  static const String _kUsageKey = 'aiModelUsage';
+
+  /// Restores the tally at startup so it reads as history, not "since launch".
+  static Future<void> loadUsage() async {
+    try {
+      final raw = await SharedPreferencesAsync().getString(_kUsageKey);
+      if (raw == null) return;
+      final map = (jsonDecode(raw) as Map).cast<String, dynamic>();
+      lastModel = map['last'] as String? ?? '';
+      modelCalls = ((map['calls'] as Map?) ?? {}).map((k, v) => MapEntry(k.toString(), (v as num).toInt()));
+      failures = [
+        for (final f in (map['failures'] as List?) ?? const [])
+          if (f is Map)
+            (
+              at: DateTime.tryParse(f['at']?.toString() ?? '') ?? DateTime.now(),
+              model: f['model']?.toString() ?? '?',
+              detail: f['detail']?.toString() ?? '',
+            ),
+      ];
+    } catch (_) {}
+  }
+
+  /// A rolling log of failed attempts, oldest first: every fallback the app has
+  /// taken, with when and why.
+  ///
+  /// A list, not a per-model map — a map keeps only the newest failure for each
+  /// model, so five entries is the most it could ever show and a repeated
+  /// pattern (the same model refusing all afternoon) stayed invisible. Capped
+  /// and persisted alongside the usage tally, so it survives a restart and is
+  /// still there when you go looking after the fact.
+  static List<({DateTime at, String model, String detail})> failures = [];
+
+  static const int _kMaxFailures = 60;
+
+  /// The newest failure per model, derived from [failures].
+  static Map<String, String> get lastErrors {
+    final out = <String, String>{};
+    for (final f in failures) out[f.model] = f.detail;
+    return out;
+  }
+
+  /// Why the previous model was abandoned, carried into the next model's
+  /// message so the banner explains the move instead of just naming a new
+  /// model. Null on a first attempt.
+  static String? _lastReason;
+
+  /// Model ids are long and all start the same way; the tail is the part that
+  /// distinguishes them.
+  static String _shortName(String model) => model.replaceFirst('gemini-', '');
+
+  static String _shortReason(int status) => switch (status) {
+    429 => 'rate-limited',
+    404 => 'unavailable',
+    401 || 403 => 'key rejected',
+    _ when status >= 500 => 'server busy',
+    _ => 'failed',
+  };
+
+  /// Posts to [model], reporting it through [activity].
+  ///
+  /// The delay before a first attempt announces itself is what keeps the banner
+  /// off screen for ordinary fast calls while still explaining a slow one —
+  /// which, from the outside, is indistinguishable from a hung spinner.
+  static Future<http.Response> _postAnnounced(
+    String model,
+    String apiKey,
+    dynamic body, {
+    required bool immediate,
+  }) async {
+    final name = _shortName(model);
+    final because = _lastReason == null ? '' : '$_lastReason — ';
+    final started = DateTime.now();
+    var base = '';
+    Timer? announce;
+    activityStep.value++;
+    if (immediate) {
+      base = '${because}trying $name…';
+      activity.value = base;
+    } else {
+      announce = Timer(const Duration(milliseconds: 1500), () {
+        base = 'Asking $name…';
+        activity.value = base;
+      });
+    }
+    // A generation can now run for a minute or more, and a message frozen for
+    // that long reads as a hang. Ticking the elapsed time is the cheapest honest
+    // way to show it is still going — and the wording changes once it is long
+    // enough to be worth explaining.
+    final tick = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (base.isEmpty) return;
+      final secs = DateTime.now().difference(started).inSeconds;
+      final note = secs >= 45 ? ' — long texts take a while' : '';
+      activity.value = '$base  ${secs}s$note';
+    });
+    try {
+      return await _post(_endpoint(model), apiKey, body).timeout(_requestTimeout);
+    } finally {
+      announce?.cancel();
+      tick.cancel();
+    }
+  }
+
+  /// Stands in for "nothing answered at all" — every model timed out, so there
+  /// is no real response to report. Shaped like Gemini's own error body so the
+  /// usual error path can read it.
+  static http.Response _noAnswer() => http.Response(
+    jsonEncode({
+      'error': {'status': 'UNAVAILABLE', 'message': 'No model answered in time.'},
+    }),
+    503,
+  );
+
+  static void _recordError(String model, http.Response resp) {
+    var detail = '';
+    try {
+      final err = jsonDecode(resp.body)['error'];
+      if (err is Map) detail = (err['message'] as String? ?? '').split('\n').first.trim();
+    } catch (_) {}
+    if (detail.length > 200) detail = '${detail.substring(0, 197)}…';
+    _recordFailure(model, detail.isEmpty ? '${resp.statusCode}' : '${resp.statusCode} — $detail');
+  }
+
+  static void _recordFailure(String model, String detail) {
+    failures.add((at: DateTime.now(), model: model, detail: detail));
+    if (failures.length > _kMaxFailures) failures.removeRange(0, failures.length - _kMaxFailures);
+    _persistUsage();
+  }
+
+  static void _recordUse(String model) {
+    lastModel = model;
+    modelCalls[model] = (modelCalls[model] ?? 0) + 1;
+    _persistUsage();
+  }
+
+  /// Fire and forget: a lost tally is not worth failing or delaying a request.
+  static void _persistUsage() {
+    unawaited(
+      SharedPreferencesAsync().setString(
+        _kUsageKey,
+        jsonEncode({
+          'last': lastModel,
+          'calls': modelCalls,
+          'failures': [
+            for (final f in failures) {'at': f.at.toIso8601String(), 'model': f.model, 'detail': f.detail},
+          ],
+        }),
+      ),
+    );
+  }
+
+  /// Asks one model a trivial question and reports what it says.
+  ///
+  /// Per model rather than per chain so the caller can show progress: the probe
+  /// is the one way to tell "this account cannot use 3.8 at all" (404, or a 429
+  /// with a zero limit) from "3.8 was briefly overloaded" — a distinction the
+  /// normal error path hides, because by then the chain has moved on and the
+  /// message describes only whatever answered last.
+  static Future<({int status, String detail})> probeModel(String apiKey, String model) async {
+    try {
+      final resp = await _post(
+        _endpoint(model),
+        apiKey,
+        _adaptBody({
+          'contents': [
+            {
+              'parts': [
+                {'text': 'ping'},
+              ],
+            },
+          ],
+          'generationConfig': {'maxOutputTokens': 8},
+        }),
+      );
+      var detail = '';
+      if (resp.statusCode != 200) {
+        try {
+          final err = jsonDecode(resp.body)['error'];
+          if (err is Map) detail = (err['message'] as String? ?? '').split('\n').first.trim();
+        } catch (_) {}
+        if (detail.length > 140) detail = '${detail.substring(0, 137)}…';
+      }
+      return (status: resp.statusCode, detail: detail);
+    } catch (e) {
+      return (status: -1, detail: e.toString().split('\n').first.trim());
+    }
+  }
+
+  /// Forgets the tally (Settings → the model-usage dialog).
+  static Future<void> clearUsage() async {
+    lastModel = '';
+    modelCalls = {};
+    failures = [];
+    try {
+      await SharedPreferencesAsync().remove(_kUsageKey);
+    } catch (_) {}
+  }
+
+  /// Rewrites a request body for the selected engine.
+  ///
+  /// Done centrally, at the one place every request passes through, so a call
+  /// site can go on asking for the temperature it wants without knowing whether
+  /// the current model accepts one. Gemini 3.x removed the sampling parameters
+  /// and added a thinking level; sending a parameter a model doesn't take can
+  /// fail the request outright, so they are stripped rather than left to luck.
+  static Map<String, dynamic> _adaptBody(dynamic body) {
+    if (body is! Map) return <String, dynamic>{};
+    final out = Map<String, dynamic>.from(body);
+    final cfg = out['generationConfig'];
+    final g = cfg is Map ? Map<String, dynamic>.from(cfg) : <String, dynamic>{};
+    if (!engine.acceptsSampling) {
+      for (final k in const ['temperature', 'topP', 'top_p', 'topK', 'top_k', 'candidateCount', 'candidate_count']) {
+        g.remove(k);
+      }
+    }
+    final level = engine.thinkingLevel;
+    if (level != null) g['thinkingConfig'] = {'thinkingLevel': level};
+    if (g.isNotEmpty) out['generationConfig'] = g;
+    return out;
+  }
 
   // static Future<http.Response> queryModel(String apiKey, body) async {
   //   try {
@@ -44,6 +294,23 @@ class AiService {
   // exhaustion (per-minute windows recover in <60s). We don't block on those —
   // we return the 429 so the caller can surface "try again later".
   static const Duration _maxBackoff = Duration(seconds: 60);
+
+  // Everything a single call may spend, across every model and retry — request
+  // time included, which is the part that actually runs away. Checked before
+  // every request and every backoff, not only between passes.
+  static const Duration _maxTotalWait = Duration(seconds: 150);
+
+  // One HTTP request.
+  //
+  // Long on purpose. The first model in the chain is the one doing the actual
+  // work — twenty-odd sentences with translations, with thinking on — and that
+  // genuinely runs to a minute or more. A tighter cap made things *slower*, not
+  // safer: it cut off a generation that was going to succeed, threw the work
+  // away, and fell through to models that refuse instantly because the minute's
+  // quota is already spent, before a later pass came back to the first model and
+  // finally got the answer. This is here only to catch a request that has truly
+  // stopped answering.
+  static const Duration _requestTimeout = Duration(seconds: 120);
 
   /// Parses `error.details[].retryDelay` (e.g. "27s") from a 429 body.
   static Duration? _retryDelayFrom(String body) {
@@ -84,33 +351,91 @@ class AiService {
 
   static Future<http.Response> queryModel(String apiKey, body, {int maxRetries = 3, bool allowFallback = true}) async {
     try {
-      var resp = await _post(_modelEndpoint, apiKey, body);
-      if (resp.statusCode != 429) return resp;
+      body = _adaptBody(body);
+      // A caller may want the primary model only (e.g. manual re-translate,
+      // which must not silently produce a weaker lite translation). It then gets
+      // the failure back and can say "try again later" instead of caching worse
+      // output.
+      final chain = allowFallback ? engine.models : [engine.primaryModel];
+      // A hard wall-clock stop. Without it a chain of five models, each with its
+      // own RetryInfo backoff, can spin for minutes behind a spinner while the
+      // user waits on what is meant to be an interactive action.
+      final deadline = DateTime.now().add(_maxTotalWait);
+      _lastReason = null;
 
-      // Caller wants the primary model only (e.g. manual re-translate, which must
-      // not silently produce a weaker lite translation). Surface the 429 so the
-      // caller can report "try again later" instead of caching worse output.
-      if (!allowFallback) return resp;
-
-      // Primary is rate-limited — try the lite model.
-      var fb = await _post(_fallbackModelEndpoint, apiKey, body);
-      if (fb.statusCode != 429) return fb;
-
-      // Daily cap on both models: waiting won't help today — return now.
-      if (isDailyQuota(fb.body) || isDailyQuota(resp.body)) return fb;
-
-      // Per-minute window: honor RetryInfo with bounded backoff (recovers <60s).
-      for (var attempt = 0; attempt < maxRetries; attempt++) {
-        final delay = _retryDelayFrom(fb.body) ?? _retryDelayFrom(resp.body);
-        if (delay == null || delay > _maxBackoff) return fb;
+      // Nullable: every model in the chain can time out without ever producing
+      // a response to hold onto.
+      http.Response? last;
+      // One pass down the chain, then up to [maxRetries] more after a backoff.
+      for (var attempt = 0; attempt <= maxRetries; attempt++) {
+        var dailyCapped = false;
+        for (final model in chain) {
+          // Checked per model, not just per pass: without this the deadline only
+          // ever cut a *backoff* short, and a chain of slow requests sailed past
+          // it — which is exactly the "took forever" case.
+          if (DateTime.now().isAfter(deadline) && attempt > 0) {
+            activity.value = '';
+            return last ?? _noAnswer();
+          }
+          final http.Response resp;
+          try {
+            resp = await _postAnnounced(
+              model,
+              apiKey,
+              body,
+              // A fallback is announced at once — something already went wrong.
+              // The very first attempt only announces itself if it turns out to be
+              // slow, so a normal quick call stays silent.
+              immediate: !(model == chain.first && attempt == 0),
+            );
+          } on TimeoutException {
+            // Treated exactly like a 5xx: this model isn't answering, the next
+            // one might.
+            _recordFailure(model, 'timed out after ${_requestTimeout.inSeconds}s');
+            _lastReason = '${_shortName(model)} timed out';
+            continue;
+          }
+          if (resp.statusCode == 200) {
+            _recordUse(model);
+            activity.value = '';
+            return resp;
+          }
+          _recordError(model, resp);
+          last = resp;
+          // Worth asking the next model: it is rate-limited (429), overloaded or
+          // erroring server-side (5xx), or simply not available to this key
+          // (404 — which is exactly what a model the account can't use returns,
+          // and aborting the whole chain on it would make one missing model look
+          // like a total outage). Anything else — a bad key, a malformed
+          // request — will fail identically everywhere, so report it now.
+          final worthNext = resp.statusCode == 429 || resp.statusCode == 404 || resp.statusCode >= 500;
+          if (!worthNext) {
+            activity.value = '';
+            return resp;
+          }
+          _lastReason = '${_shortName(model)} ${_shortReason(resp.statusCode)}';
+          dailyCapped = dailyCapped || isDailyQuota(resp.body);
+        }
+        // Every model failed. A daily cap won't lift by waiting, and a caller
+        // that opted out of fallbacks wants the failure now, not in a minute.
+        if (dailyCapped || !allowFallback) {
+          activity.value = '';
+          return last ?? _noAnswer();
+        }
+        // Per-minute window: honor RetryInfo with bounded backoff (recovers <60s).
+        final delay = last == null ? null : _retryDelayFrom(last.body);
+        if (delay == null || delay > _maxBackoff || DateTime.now().add(delay).isAfter(deadline)) {
+          activity.value = '';
+          return last ?? _noAnswer();
+        }
+        activity.value = 'Every model busy — waiting ${delay.inSeconds}s…';
+        _lastReason = null;
         await Future.delayed(delay + const Duration(milliseconds: 300));
-        resp = await _post(_modelEndpoint, apiKey, body);
-        if (resp.statusCode != 429) return resp;
-        fb = await _post(_fallbackModelEndpoint, apiKey, body);
-        if (fb.statusCode != 429) return fb;
       }
-      return fb;
+      activity.value = '';
+      return last ?? _noAnswer();
     } catch (e) {
+      activity.value = '';
       // Keep the real cause (SocketException, HandshakeException, etc.)
       throw AiException('Network/HTTP failure calling Gemini: $e');
     }
@@ -1002,6 +1327,24 @@ Example of the format (structure only):
     }
     final vocabulary = seeds.map((x) => '  - $x').join('\n');
 
+    // Variety across a batch normally comes from temperature — raised to 1.15
+    // below, precisely so eight texts don't turn into eight versions of one
+    // café scene. Gemini 3.x removes that control, so on those models the
+    // spread has to be bought in the prompt instead: one concrete situation per
+    // text, the same trick [generateStory] uses.
+    // Shuffled once, then walked in order: re-shuffling per line would happily
+    // hand the same situation to two texts, which is the exact failure this is
+    // meant to prevent.
+    final shuffledSeeds = _storySeeds.toList()..shuffle();
+    final situations = AiService.engine.acceptsSampling
+        ? ''
+        : '''
+
+ONE SITUATION PER TEXT (use them in order, one each — they are starting points,
+not plots, and none of them appears in the vocabulary list):
+${[for (var i = 0; i < count; i++) '  ${i + 1}. ${shuffledSeeds[i % shuffledSeeds.length]}'].join('\n')}
+''';
+
     final prompt =
         '''
 You are writing short listening-comprehension texts for a language learner.
@@ -1043,7 +1386,7 @@ WHAT MAKES A TEXT ACCEPTABLE
 4. It stands alone. No title, no preamble, no naming of themes. Start straight
    into the scene.
 5. Vary across the set: different people, places, moods, tenses and outcomes.
-   No two texts should open the same way or retell the same situation.
+   No two texts should open the same way or retell the same situation.$situations
 6. Write for the ear: natural connected speech, at an upper-beginner to
    intermediate level. No headings, bullet points, emoji, surrounding quotation
    marks, or parenthetical asides.
