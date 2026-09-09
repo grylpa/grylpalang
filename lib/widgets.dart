@@ -326,8 +326,11 @@ class _AiActivityBannerState extends State<AiActivityBanner> {
                 // A fixed height, so a message that wraps to two lines doesn't
                 // make the pill jump up and down mid-call — the movement read as
                 // a glitch rather than as information.
+                // Height follows the text (one line or two) but *animates* to
+                // it: a fixed height clipped the second line into the progress
+                // bar, while an unanimated one popped up and down mid-call and
+                // read as a glitch.
                 child: AnimatedContainer(
-                  height: 62,
                   duration: const Duration(milliseconds: 250),
                   clipBehavior: Clip.antiAlias,
                   decoration: BoxDecoration(
@@ -335,35 +338,40 @@ class _AiActivityBannerState extends State<AiActivityBanner> {
                     borderRadius: BorderRadius.circular(24),
                     boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2))],
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                          child: Center(
-                            child: Text(
-                              _text,
-                              textAlign: TextAlign.center,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: Colors.black87,
-                                fontWeight: _flash ? FontWeight.w600 : FontWeight.normal,
+                  child: AnimatedSize(
+                    duration: const Duration(milliseconds: 200),
+                    alignment: Alignment.bottomCenter,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(minHeight: 44),
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                            child: Center(
+                              child: Text(
+                                _text,
+                                textAlign: TextAlign.center,
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Colors.black87,
+                                  fontWeight: _flash ? FontWeight.w600 : FontWeight.normal,
+                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                      // A thin bar rather than a spinner: the buttons that
-                      // trigger these calls already show a circular indicator,
-                      // and two spinning circles at once is just noise.
-                      const LinearProgressIndicator(
-                        minHeight: 3,
-                        backgroundColor: Colors.black12,
-                        color: Colors.black38,
-                      ),
-                    ],
+                        // A thin bar rather than a spinner: the buttons that
+                        // trigger these calls already show a circular indicator,
+                        // and two spinning circles at once is just noise.
+                        const LinearProgressIndicator(
+                          minHeight: 3,
+                          backgroundColor: Colors.black12,
+                          color: Colors.black38,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
