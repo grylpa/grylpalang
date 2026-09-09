@@ -35,6 +35,7 @@ class AppSettings {
   int conjugatedCount;
   List<String> connectorWords;
   String aiApiKey; // Gemini key
+  String aiEngineId; // which Gemini generation to call — see AiEngine
   TimeOfDay dndStartTime;
   TimeOfDay dndEndTime;
   bool useDnd;
@@ -104,6 +105,7 @@ class AppSettings {
     required this.conjugatedCount,
     required this.connectorWords,
     required this.aiApiKey,
+    this.aiEngineId = '2.5',
     required this.dndStartTime,
     required this.dndEndTime,
     required this.useDnd,
@@ -155,6 +157,7 @@ class AppSettings {
     int? conjugatedCount,
     List<String>? connectorWords,
     String? aiApiKey,
+    String? aiEngineId,
     TimeOfDay? dndStartTime,
     TimeOfDay? dndEndTime,
     bool? useDnd,
@@ -205,6 +208,7 @@ class AppSettings {
       conjugatedCount: conjugatedCount ?? this.conjugatedCount,
       connectorWords: connectorWords ?? this.connectorWords,
       aiApiKey: aiApiKey ?? this.aiApiKey,
+      aiEngineId: aiEngineId ?? this.aiEngineId,
       dndStartTime: dndStartTime ?? this.dndStartTime,
       dndEndTime: dndEndTime ?? this.dndEndTime,
       useDnd: useDnd ?? this.useDnd,
@@ -265,6 +269,7 @@ class AppSettings {
     'conjugatedCount': conjugatedCount,
     'connectorWords': connectorWords,
     'aiApiKey': aiApiKey,
+    'aiEngineId': aiEngineId,
     'dndStartMinutes': dndStartTime.hour * 60 + dndStartTime.minute,
     'dndEndMinutes': dndEndTime.hour * 60 + dndEndTime.minute,
     'useDnd': useDnd,
@@ -321,6 +326,7 @@ class AppSettings {
       conjugatedCount: json['conjugatedCount'] as int? ?? 20,
       connectorWords: (json['connectorWords'] as List?)?.cast<String>() ?? <String>[],
       aiApiKey: json['aiApiKey'] as String? ?? '',
+      aiEngineId: json['aiEngineId'] as String? ?? '2.5',
       dndStartTime: TimeOfDay(hour: startM ~/ 60, minute: startM % 60),
       dndEndTime: TimeOfDay(hour: endM ~/ 60, minute: endM % 60),
       useDnd: json['useDnd'] as bool? ?? true,

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_tab.dart';
+import '../widgets.dart';
 import '../services/app_update_service.dart';
 import '../state/app_state.dart';
 import 'books_tab.dart';
@@ -365,7 +366,19 @@ class _MainScaffoldState extends State<MainScaffold> {
               )
             : Scaffold(
                 appBar: AppBar(title: const Text('Katalaveno'), centerTitle: true, titleSpacing: 8),
-                body: body,
+                // The AI-activity strip lives here, once, so every screen that
+                // calls the AI reports its fallbacks and waits without having to
+                // add anything of its own. Floating over the bottom of the
+                // content, not in a Column: that is where the eye already is
+                // (the add-word row, the Generate buttons), and overlaying keeps
+                // a fixed-behavior SnackBar — laid out in that same strip — from
+                // shunting the page up and down whenever a message appears.
+                body: Stack(
+                  children: [
+                    Positioned.fill(child: body),
+                    const Positioned(left: 0, right: 0, bottom: 0, child: AiActivityBanner()),
+                  ],
+                ),
                 // A single visible destination needs no bar (and BottomNavigationBar
                 // asserts on fewer than two items). Settings can't be hidden, so
                 // there is always a way back to the tab switches.
