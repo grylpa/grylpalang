@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show Clipboard, rootBundle;
 import 'package:flutter_file_dialog/flutter_file_dialog.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
@@ -94,6 +94,26 @@ Future<void> _importData(BuildContext context) async {
   } catch (e) {
     if (context.mounted) lpSnack(context, 'Import failed: ${e.toString().split('\n').first.trim()}', 5000);
   }
+}
+
+/// Fills the API key field from the clipboard.
+///
+/// Trimmed and stripped of stray whitespace or newlines, which a copy from a
+/// web page routinely brings along and which turn a valid key into a rejected
+/// one with no clue why.
+Future<void> _pasteApiKey(BuildContext context, AppState state, TextEditingController field) async {
+  final data = await Clipboard.getData(Clipboard.kTextPlain);
+  final text = (data?.text ?? '').replaceAll(RegExp(r'\s'), '');
+  if (!context.mounted) return;
+  if (text.isEmpty) {
+    lpSnack(context, 'Clipboard is empty. Copy your key first, then come back.', 3500);
+    return;
+  }
+  // The field holds its own copy of the key, so it has to be told too — the
+  // controller was seeded once from settings and won't follow them.
+  field.text = text;
+  await state.updateSettings(state.settings.copyWith(aiApiKey: text));
+  if (context.mounted) lpSnack(context, 'Key pasted.', 2000);
 }
 
 /// Pings every model in the selected chain, one at a time, showing the list up
@@ -567,45 +587,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                // One key covers every model — it is scoped to the Google
-                // project, not to a generation — so switching here needs no
-                // other change.
-                DropdownButtonFormField<String>(
-                  initialValue: AiEngine.byId(s.aiEngineId).id,
-                  decoration: const InputDecoration(labelText: 'Engine'),
-                  items: [for (final e in AiEngine.values) DropdownMenuItem(value: e.id, child: Text(e.label))],
-                  onChanged: (v) => state.saveSettingsOnly(s.copyWith(aiEngineId: v ?? AiEngine.gemini25.id)),
-                ),
-                const SizedBox(height: 6),
-                Text(AiEngine.byId(s.aiEngineId).description, style: Theme.of(context).textTheme.bodySmall),
-                // Which model actually answered last. One quiet line, because
-                // the chain means the model that serves a request isn't always
-                // the one asked first — and nothing else in the app would ever
-                // tell you that you have been living on a fallback.
-                const SizedBox(height: 10),
-                // Set apart from the description above it: these are live
-                // readings about this key, not more explanatory prose, and
-                // styled the same they blurred into it.
-                if (AiService.lastModel.isNotEmpty)
-                  ActionChip(
-                    avatar: Icon(Icons.check_circle_outline, size: 18, color: Theme.of(context).colorScheme.primary),
-                    label: Text('Last answered by ${AiService.lastModel}'),
-                    onPressed: () => _showModelUsage(context),
-                  ),
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  // The only way to find out whether this key can reach the
-                  // models at all. A failing call can't tell you: by the time it
-                  // reports, the chain has moved on and the message describes
-                  // whichever model answered last.
-                  child: OutlinedButton.icon(
-                    icon: const Icon(Icons.network_check, size: 18),
-                    label: const Text('Test models'),
-                    onPressed: state.hasAiKey ? () => _testModels(context, s.aiApiKey) : null,
-                  ),
-                ),
-                const SizedBox(height: 12),
                 filledTF(
                   context,
                   controller: _apiKeyCtrl,
@@ -621,6 +602,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
+                    // The key arrives by copy-paste from a browser, and a long
+                    // opaque string is exactly what a long-press-and-drag
+                    // gesture fumbles. One button removes the whole step.
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.content_paste, size: 18),
+                      label: const Text('Paste'),
+                      onPressed: () => _pasteApiKey(context, state, _apiKeyCtrl),
+                    ),
+                    const SizedBox(width: 8),
                     FilledButton(
                       onPressed: () async {
                         final ok = await AiService.testApiKey(_apiKeyCtrl.text.trim());
@@ -629,21 +619,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       },
                       child: const Text('Test key'),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        _apiKeyCtrl.text.trim().isEmpty
-                            ? 'No key set.'
-                            : 'Key is stored locally and used only for generating sentences and translations.',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    ),
                   ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _apiKeyCtrl.text.trim().isEmpty
+                      ? 'No key set.'
+                      : 'Key is stored locally and used only for generating sentences and translations.',
+                  style: const TextStyle(fontSize: 12),
                 ),
               ],
               sectionKey: _aiSectionKey,
               controller: _aiExpansion,
             ),
+
+            // ── Advanced ────────────────────────────────────────────────
+            // Everything here is for diagnosing the app, not for learning a
+            // language. Collapsed and out of the way: a model chain and a
+            // failure log are the strongest possible signal that this is a
+            // developer's tool, and a learner never needs either.
+            _section('Advanced', [
+              Text(
+                'You can ignore all of this — the app picks '
+                'sensible defaults on its own.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              // One key covers every model — it is scoped to the Google
+              // project, not to a generation — so switching here needs no
+              // other change.
+              DropdownButtonFormField<String>(
+                initialValue: AiEngine.byId(s.aiEngineId).id,
+                decoration: const InputDecoration(labelText: 'AI model'),
+                items: [for (final e in AiEngine.values) DropdownMenuItem(value: e.id, child: Text(e.label))],
+                onChanged: (v) => state.saveSettingsOnly(s.copyWith(aiEngineId: v ?? AiEngine.gemini25.id)),
+              ),
+              const SizedBox(height: 6),
+              Text(AiEngine.byId(s.aiEngineId).description, style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 10),
+              // Which model actually answered last: the chain means the model
+              // that serves a request isn't always the one asked first, and
+              // nothing else would ever reveal a life on the fallback.
+              if (AiService.lastModel.isNotEmpty)
+                ActionChip(
+                  avatar: Icon(Icons.check_circle_outline, size: 18, color: Theme.of(context).colorScheme.primary),
+                  label: Text('Last answered by ${AiService.lastModel}'),
+                  onPressed: () => _showModelUsage(context),
+                ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                // The only way to find out whether this key can reach the
+                // models at all. A failing call can't tell you: by the time it
+                // reports, the chain has moved on and the message describes
+                // whichever model answered last.
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.network_check, size: 18),
+                  label: const Text('Test models'),
+                  onPressed: state.hasAiKey ? () => _testModels(context, s.aiApiKey) : null,
+                ),
+              ),
+            ]),
 
             // ── Maintenance ─────────────────────────────────────────────
             _section('Maintenance', [

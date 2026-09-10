@@ -7,12 +7,15 @@ import 'package:flutter/material.dart';
 /// changes that set, and inserting a destination here would silently re-point
 /// anything that had saved a raw index.
 enum AppTab {
-  dashboard('active', 'Active', Icons.spellcheck_outlined, Icons.spellcheck),
-  history('history', 'History', Icons.history_outlined, Icons.history),
-  predict('predict', 'Predict', Icons.psychology_outlined, Icons.psychology),
+  // Ordered by how much they are used, not by how they were built. History is
+  // deliberately absent: it only ever shows notifications for active words, so
+  // it lives in that screen's ⋮ menu rather than costing a destination of its
+  // own.
   sentences('sentences', 'Sentences', Icons.menu_book_outlined, Icons.menu_book),
-  books('books', 'Books', Icons.auto_stories_outlined, Icons.auto_stories),
   listen('listen', 'Listen', Icons.hearing_outlined, Icons.hearing),
+  dashboard('active', 'Active', Icons.spellcheck_outlined, Icons.spellcheck),
+  predict('predict', 'Predict', Icons.psychology_outlined, Icons.psychology),
+  books('books', 'Books', Icons.auto_stories_outlined, Icons.auto_stories),
   settings('settings', 'Settings', Icons.settings_outlined, Icons.settings);
 
   const AppTab(this.id, this.label, this.icon, this.activeIcon);
@@ -41,10 +44,12 @@ enum AppTab {
   ];
 
   /// Tab order from before tabs became hideable. Used once, to translate a
-  /// saved `lastTabIndex` into an id the new code understands.
-  static const List<AppTab> legacyOrder = [
+  /// saved `lastTabIndex` into an id the new code understands. `null` is the
+  /// slot History used to occupy — no longer a destination, so an old index
+  /// pointing at it simply finds nothing and the default applies.
+  static const List<AppTab?> legacyOrder = [
     AppTab.dashboard,
-    AppTab.history,
+    null,
     AppTab.predict,
     AppTab.sentences,
     AppTab.books,
