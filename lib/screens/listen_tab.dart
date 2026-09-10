@@ -68,6 +68,11 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
 
   bool _generating = false;
 
+  /// Which of the two make-material actions is running, so the spinner and the
+  /// "…ing" label land on the button that was actually pressed. Both buttons are
+  /// disabled while either runs, but only one should look busy.
+  bool _generatingStory = false;
+
   // Bumped to abandon an in-flight streaming build; a build that finds the
   // token changed stops touching the playlist and the UI.
   int _buildToken = 0;
@@ -483,7 +488,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     }
 
     _pause();
-    setState(() => _generating = true);
+    setState(() {
+      _generating = true;
+      _generatingStory = true;
+    });
     try {
       // Both come from the dialog: only the number of parts moves, so the story
       // comes out the length they asked for however finely they sliced it.
@@ -522,6 +530,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       setState(() {
         _stories = all;
         _generating = false;
+        _generatingStory = false;
         _cancelBuild();
       });
       // Land on the new story's first part: it was just asked for, so that is
@@ -535,7 +544,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       lpSnack(context, 'Added "${story.titleL1}" in ${added.length} parts.', 4000);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _generating = false);
+      setState(() {
+        _generating = false;
+        _generatingStory = false;
+      });
       lpSnack(context, 'Could not write the story: ${e.toString().split('\n').first.trim()}', 5000);
     }
   }
@@ -1367,12 +1379,13 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   }
 
   Widget _generateButton(AppSettings s) {
+    final busy = _generating && !_generatingStory;
     return _makeButton(
       onPressed: _generating || _selectedSubjects.isEmpty || !_aiReady ? null : _generate,
-      icon: _generating
+      icon: busy
           ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
           : const Icon(Icons.auto_awesome),
-      label: _generating
+      label: busy
           ? 'Generating…'
           : _stories.isEmpty
           ? 'Generate texts'
@@ -1390,8 +1403,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   Widget _storyButton() {
     return _makeButton(
       onPressed: _generating || _selectedSubjects.isEmpty || !_aiReady ? null : _createStory,
-      icon: const Icon(Icons.auto_stories_outlined),
-      label: 'Create a story',
+      icon: _generatingStory
+          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+          : const Icon(Icons.auto_stories_outlined),
+      label: _generatingStory ? 'Creating…' : 'Create a story',
     );
   }
 
