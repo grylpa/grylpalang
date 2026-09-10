@@ -9,6 +9,24 @@ import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
 
+/// History as a full screen, pushed from the Active-words ⋮ menu or by tapping
+/// a notification.
+///
+/// It stopped being a tab because it only ever lists notifications for active
+/// words — a view of that screen's data, not a place of its own, and one of
+/// seven destinations is too high a price for it.
+class NotificationHistoryScreen extends StatelessWidget {
+  const NotificationHistoryScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Notification history')),
+      body: const SafeArea(child: NotificationHistoryTab()),
+    );
+  }
+}
+
 class NotificationHistoryTab extends StatefulWidget {
   const NotificationHistoryTab({super.key});
 

@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../models/word_entry.dart';
 import '../services/ai_service.dart';
 import '../state/app_state.dart';
+import 'notification_history_tab.dart';
 import 'add_word_panel.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -101,11 +102,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _openActiveWordsSettings();
           case 'notif':
             _openNotificationSettings();
+          case 'history':
+            Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const NotificationHistoryScreen()));
         }
       },
       itemBuilder: (ctx) => [
         item('active', Icons.tune, 'Active words settings'),
         item('notif', Icons.notifications_outlined, 'Notification settings'),
+        // Lives here rather than in the nav bar: it only ever lists
+        // notifications for these words.
+        item('history', Icons.history, 'Notification history'),
       ],
     );
   }

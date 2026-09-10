@@ -59,7 +59,6 @@ class _MainScaffoldState extends State<MainScaffold> {
   // arithmetic.
   static const Map<AppTab, Widget> _pages = {
     AppTab.dashboard: _KeepAlive(child: DashboardScreen()),
-    AppTab.history: _KeepAlive(child: NotificationHistoryTab()),
     AppTab.predict: _KeepAlive(child: PredictionTab()),
     AppTab.sentences: _KeepAlive(child: SentenceBankTab()),
     AppTab.books: _KeepAlive(child: BooksTab()),
@@ -180,6 +179,20 @@ class _MainScaffoldState extends State<MainScaffold> {
     );
   }
 
+  /// Opens the notification history over the current tab.
+  ///
+  /// History is no longer a destination — it is a view of the Active-words
+  /// data — so a notification tap pushes it rather than switching tabs, which
+  /// also means Back returns the user exactly where they were.
+  bool _historyOpen = false;
+
+  Future<void> _openHistory() async {
+    if (_historyOpen || !mounted) return;
+    _historyOpen = true;
+    await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const NotificationHistoryScreen()));
+    _historyOpen = false;
+  }
+
   /// Asks Google Play whether a newer build is out, and offers to install it.
   ///
   /// Deliberately last and deliberately timid: it waits a few seconds so the
@@ -237,7 +250,7 @@ class _MainScaffoldState extends State<MainScaffold> {
       final token = appState.notificationTapToken;
       if (token != _seenNotificationTapToken) {
         _seenNotificationTapToken = token;
-        _jumpToTab(AppTab.history);
+        _openHistory();
       }
     });
   }
@@ -276,16 +289,12 @@ class _MainScaffoldState extends State<MainScaffold> {
           _updateCheckStarted = true;
           WidgetsBinding.instance.addPostFrameCallback((_) => _startupUpdateCheck());
         }
-        // New tap? Jump to history tab.
+        // New tap? Open the history screen over whatever tab is showing.
         if (tapToken != _seenNotificationTapToken) {
-          debugPrint("hack got new tap token");
           _seenNotificationTapToken = tapToken;
-          if (_current != AppTab.history) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              _jumpToTab(AppTab.history);
-            });
-          }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _openHistory();
+          });
         }
 
         // Horizontal swipes move one tab at a time and are non-cyclic (the list
