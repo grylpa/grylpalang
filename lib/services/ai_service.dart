@@ -1287,6 +1287,37 @@ Example of the format (structure only):
     return result;
   }
 
+  /// The hard vocabulary limit, shared verbatim by every Listen generator.
+  ///
+  /// Defined once because the two prompts must not drift: a story and a batch of
+  /// micro-texts are heard by the same ears, and a ceiling that applies to one
+  /// but not the other just moves the problem. It replaced an earlier
+  /// *invitation* to add new words, which a stronger model read as licence and
+  /// answered with prose the learner couldn't follow — pleasant to read, useless
+  /// to listen to.
+  static const String _kVocabularyCeiling = '''
+VOCABULARY CEILING — THE HARDEST RULE HERE
+A word is NEW if neither it nor any other form of it appears in the vocabulary
+list above. In every sentence, use AT MOST TWO new words. One is better. None is
+perfectly fine.
+
+This is a ceiling, not an average. A listener has no way to stop and look
+anything up, so one sentence carrying four unknown words costs them the rest of
+the text — they are still working on it while the next sentence plays.
+
+* Other grammatical forms of a listed word are NOT new: different tense, case,
+  number, person, mood, or a participle. Use them freely — that is the point.
+* Names of people and places do not count, nor do numbers.
+* A new word must be inferable from the sentence around it or from what has
+  already happened. If it cannot be guessed, use a listed word instead.
+* When you cannot say something inside this limit, say something simpler. Never
+  spend the budget on a word the listener does not need.
+
+Before you answer, re-read every sentence you have written and count its new
+words against the list. Rewrite any sentence that is over the limit. Do this
+check on the finished text, not from memory of intending to comply.
+''';
+
   /// Maximum seed phrases fed to the generator, and the character budget they
   /// share. The point is a broad picture of the learner's vocabulary, so more
   /// is better — but not so much that the reference buries the instructions.
@@ -1365,10 +1396,10 @@ The learner knows every one of those phrases by heart. So:
 * Never quote a phrase, never lightly reword one, never chain several together.
 * Invent situations that do NOT appear anywhere in the list. Recombine the
   vocabulary into things the learner has never heard.
-* You have real freedom here: any everyday scene is fair game, whether or not
-  the list hints at it. Introducing a few new words the learner can infer from
-  context is welcome — that is what listening practice is for.
-
+* You have real freedom in *what happens*: any everyday scene is fair game,
+  whether or not the list hints at it. You have very little freedom in *which
+  words say it* — see the ceiling below.
+$_kVocabularyCeiling
 YOUR TASK
 Write $count different texts in $targetLanguage. Each one is a tiny, complete
 story.
@@ -1529,10 +1560,9 @@ HOW TO USE THAT LIST — READ THIS TWICE
 It tells you their LEVEL. It is NOT a plot outline, NOT sentences to reuse, and
 NOT a list of topics to cover. They know every phrase on it by heart, so a story
 recognisably assembled out of them is recognised rather than understood, and is
-worthless as practice. Invent situations that appear nowhere in the list.
-Introducing a few new words the listener can infer from context is welcome —
-that is what listening practice is for.
-
+worthless as practice. Invent situations that appear nowhere in the list — the
+freedom is in what happens, not in which words say it.
+$_kVocabularyCeiling
 YOUR TASK
 Write ONE short story in $targetLanguage — a real short story, the kind that
 would sit in a collection, not a language exercise.
