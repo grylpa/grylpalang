@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'speech_text.dart';
 
 /// Fetches and caches MP3 audio from the unofficial Google Translate audio
 /// endpoint. Used for the target language (e.g. Greek), whose offline system
@@ -107,19 +108,21 @@ class GoogleTranslateTts {
   /// else null. Never makes a network call — used by callers to know whether
   /// they'd be hitting the endpoint, without actually doing so.
   Future<String?> cachedFile(String text, String langCode) async {
-    final f = await _diskFileFor(text, langCode);
+    final f = await _diskFileFor(speakable(text, langCode), langCode);
     return await f.exists() ? f.path : null;
   }
 
   /// Ensures the MP3 for [text]/[langCode] exists on disk and returns its path.
   /// Downloads (and caches) if missing. Throws on network failure.
   Future<String> ensureFile(String text, String langCode) async {
-    final diskFile = await _diskFileFor(text, langCode);
+    // Keyed and fetched by what is spoken, so an abbreviation's dot never
+    // reaches the endpoint as a full stop.
+    final diskFile = await _diskFileFor(speakable(text, langCode), langCode);
     if (await diskFile.exists()) {
       unawaited(_touch(diskFile));
       return diskFile.path;
     }
-    final bytes = await _downloadBytes(text, langCode);
+    final bytes = await _downloadBytes(speakable(text, langCode), langCode);
     await _evictIfFull();
     await diskFile.writeAsBytes(bytes, flush: true);
     _diskCount = (_diskCount ?? 0) + 1;
