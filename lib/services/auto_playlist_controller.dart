@@ -349,6 +349,10 @@ class AutoPlaylistController {
       await _player.addAudioSources(newSources);
     }
     _clipToOrdinal.addAll(newOrdinals);
+    // A caller may grow the queue past the count it began with (Listen appends
+    // freshly generated texts to a live session); next() stops at the count, so
+    // it has to follow.
+    if (ord >= _ordinalCount) _ordinalCount = ord + 1;
   }
 
   /// Appends the clips for one chunk to the dynamic playlist. Safe to call
@@ -403,7 +407,13 @@ class AutoPlaylistController {
     }
   }
 
-  Future<void> previous() async {
+  /// Seeks to the start of the previous ordinal.
+  ///
+  /// With [restartAtFirst], pressing it on the first ordinal restarts that one
+  /// from its beginning instead of doing nothing — the usual media-player
+  /// meaning of "back". Opt-in, so the modes that haven't asked for it keep
+  /// their existing behaviour.
+  Future<void> previous({bool restartAtFirst = false}) async {
     final ord = currentOrdinal;
     if (ord == null) return;
     for (var p = ord - 1; p >= 0; p--) {
@@ -412,6 +422,10 @@ class AutoPlaylistController {
         await _player.seek(Duration.zero, index: clip);
         return;
       }
+    }
+    if (restartAtFirst) {
+      final clip = _clipToOrdinal.indexOf(ord);
+      if (clip >= 0) await _player.seek(Duration.zero, index: clip);
     }
   }
 

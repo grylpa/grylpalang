@@ -10,6 +10,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'audio_utils.dart';
+import 'speech_text.dart';
 
 /// The app's "normal" speech rate. flutter_tts on Android treats 0.5 as the
 /// engine's natural pace (1.0 is roughly double speed), so this — not 1.0 — is
@@ -112,7 +113,9 @@ class TtsSynthService {
   }) async {
     try {
       final dir = await _ensureDir();
-      final file = File('${dir.path}/${_key(langCode, voiceId.isNotEmpty ? voiceId : gender, rate, text)}.wav');
+      final file = File(
+        '${dir.path}/${_key(langCode, voiceId.isNotEmpty ? voiceId : gender, rate, speakable(text, langCode))}.wav',
+      );
       return await file.exists() ? file.path : null;
     } catch (_) {
       return null;
@@ -132,7 +135,9 @@ class TtsSynthService {
     double rate = kSourceSpeechRate,
   }) async {
     final dir = await _ensureDir();
-    final file = File('${dir.path}/${_key(langCode, voiceId.isNotEmpty ? voiceId : gender, rate, text)}.wav');
+    final file = File(
+      '${dir.path}/${_key(langCode, voiceId.isNotEmpty ? voiceId : gender, rate, speakable(text, langCode))}.wav',
+    );
     // Reuse a cached clip only if it's a plausibly-real WAV. A previously
     // failed/timed-out synthesis can leave a 0-byte or header-only file; a valid
     // clip is always >20 KB (the 500ms silence pad alone is that big). Serving
@@ -168,7 +173,7 @@ class TtsSynthService {
       // with no way for the per-item catch to kick in. Wrap it in a hard timeout
       // so a hung synthesis becomes a normal per-item failure that gets skipped.
       try {
-        await _tts.synthesizeToFile(text, file.path, true).timeout(const Duration(seconds: 30));
+        await _tts.synthesizeToFile(speakable(text, langCode), file.path, true).timeout(const Duration(seconds: 30));
       } on TimeoutException {
         // Best-effort: cancel any in-flight engine work so the next call starts
         // clean, and delete any partial file so it isn't cached as a silent clip.
@@ -210,7 +215,7 @@ class TtsSynthService {
         await _tts.setSpeechRate(rate);
         await _tts.setPitch(1.0);
         await _tts.setVolume(1.0);
-        await _tts.speak(text);
+        await _tts.speak(speakableForLocale(text, locale));
       });
 
   /// Whether the engine can actually speak [locale]. False means the language

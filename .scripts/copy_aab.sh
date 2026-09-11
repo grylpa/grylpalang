@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
 # Copies the built release App Bundle into release_builds/, naming it with the
-# app name and version from pubspec.yaml, and writes a matching .sha256 checksum
-# file.
+# app name and version from pubspec.yaml.
 #
 # Usage: ./copy_aab.sh   (run after `flutter build appbundle --release`)
 
@@ -42,9 +41,8 @@ dest="$OUT_DIR/$filename"
 
 cp -f "$AAB" "$dest"
 
-# Write the checksum from inside OUT_DIR so the .sha256 references just the
-# filename (makes `sha256sum -c "$filename.sha256"` work from that directory).
-( cd "$OUT_DIR" && sha256sum "$filename" > "$filename.sha256" )
+# No .sha256 alongside the bundle: the AAB goes straight to Play, which verifies
+# and re-signs it. A checksum only earns its keep for the APK, which people
+# download by hand from GitHub releases.
 
 echo "Copied: $dest"
-echo "SHA256: $(cut -d' ' -f1 < "$dest.sha256")  ($filename.sha256)"

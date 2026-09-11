@@ -1522,6 +1522,14 @@ Return ONLY a JSON array and nothing else. No explanations, no markdown.
     required int parts,
     required int sentencesPerPart,
     String theme = '',
+    // How the story should feel. Separate from [theme] on purpose: a mood
+    // alone ("suspense") is not a situation, and given only that the model
+    // drifts to the same few scenes, so the situation still comes from the
+    // theme or, failing that, a random seed.
+    String mood = '',
+    // Stories the learner has already been given. The model remembers none of
+    // them, so without this list it happily writes the same story twice.
+    List<String> avoidTitles = const [],
   }) async {
     if (apiKey.trim().isEmpty) {
       throw Exception('AI API key is empty (set it in Settings).');
@@ -1543,6 +1551,14 @@ Return ONLY a JSON array and nothing else. No explanations, no markdown.
     // it reliably returns the same handful of gentle scenes, so the variety has
     // to come from the instruction.
     final seedIdea = theme.trim().isNotEmpty ? theme.trim() : (_storySeeds.toList()..shuffle()).first;
+    final moodLine = mood.trim().isEmpty
+        ? ''
+        : '\nMood: ${mood.trim()} — let it set the tone and what is at stake. The seed idea is still what happens.';
+    final avoidBlock = avoidTitles.isEmpty
+        ? ''
+        : '\n\nSTORIES THIS LEARNER HAS ALREADY HEARD — write nothing resembling any of\n'
+              'them: a different situation, different people, a different kind of problem.\n'
+              '${avoidTitles.map((t) => '  - $t').join('\n')}';
 
     final prompt =
         '''
@@ -1567,7 +1583,7 @@ YOUR TASK
 Write ONE short story in $targetLanguage — a real short story, the kind that
 would sit in a collection, not a language exercise.
 
-Seed idea: $seedIdea
+Seed idea: $seedIdea$moodLine$avoidBlock
 
 Answer in two stages, both inside the JSON:
 1. "outline": 3-6 sentences in $knownLanguage. Who the people are, what the

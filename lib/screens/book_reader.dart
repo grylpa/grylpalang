@@ -19,6 +19,7 @@ import '../services/katalaveno_audio_handler.dart';
 import '../services/tts_synth_service.dart';
 import '../services/sentence_bank_service.dart';
 import '../state/app_state.dart';
+import '../services/speech_text.dart';
 
 /// Best-effort mapping from a book's `language` field (often a 2-letter ISO
 /// code from the EPUB OPF, e.g. "en" / "el") to a BCP-47 locale flutter_tts
@@ -454,7 +455,7 @@ class _BookReaderState extends State<BookReader> {
     await _audioTts.setSpeechRate(0.5);
     await _audioTts.setPitch(1.0);
     await _audioTts.awaitSpeakCompletion(true);
-    await _audioTts.speak(text);
+    await _audioTts.speak(speakableForLocale(text, locale));
   }
 
   /// Skip back one chunk. The playlist's previous() seeks to the previous
@@ -775,7 +776,9 @@ class _BookReaderState extends State<BookReader> {
     // never fires). On failure delete any partial file so it isn't cached as a
     // silent clip.
     try {
-      await _audioTts.synthesizeToFile(text, file.path, true).timeout(const Duration(seconds: 30));
+      await _audioTts
+          .synthesizeToFile(speakableForLocale(text, locale), file.path, true)
+          .timeout(const Duration(seconds: 30));
     } on TimeoutException {
       try {
         await _audioTts.stop();

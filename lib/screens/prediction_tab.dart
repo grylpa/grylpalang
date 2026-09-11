@@ -7,6 +7,7 @@ import '../models/word_sentence.dart';
 import '../services/tts_synth_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
+import '../services/speech_text.dart';
 
 class PredictionTab extends StatefulWidget {
   const PredictionTab({super.key});
@@ -92,7 +93,7 @@ class _PredictionTabState extends State<PredictionTab> {
       // Speak the clean target-language sentence (strip [[...]] markers)
       final clean = (sentenceCleanup(sent.l2)['clean'] ?? sent.l2).trim();
       await _tts.stop();
-      await _tts.speak(clean);
+      await _tts.speak(speakableForLocale(clean, locale));
     } catch (e) {
       if (!mounted) return;
       lpSnack(context, 'TTS failed: $e', 8000);

@@ -56,12 +56,6 @@ class ListenService {
     await _prefs.setString(_storiesKey(targetLang), jsonEncode([for (final s in stories) s.toJson()]));
   }
 
-  Future<void> clearStories(String targetLang) async {
-    await _prefs.remove(_storiesKey(targetLang));
-    await _prefs.remove(_positionKey(targetLang));
-    await _prefs.remove(_reserveKey(targetLang));
-  }
-
   // ── Reserve ───────────────────────────────────────────────────────────────
   //
   // Generated-but-not-yet-handed-out texts. One request that returns 24 costs
@@ -117,4 +111,79 @@ class ListenService {
   }
 
   Future<String?> loadPosition(String targetLang) => _prefs.getString(_positionKey(targetLang));
+
+  // ── Recent story titles ───────────────────────────────────────────────────
+  //
+  // The titles of the last few stories written — retired ones included — sent
+  // with each new story request so the model steers away from them. It has no
+  // memory of its own. The bank alone isn't enough: a retiring story is removed
+  // the moment before its replacement is requested, so the story most likely
+  // to be copied would be the one missing from the list.
+
+  /// Enough to cover a long stretch of listening; small enough (a title is a
+  /// handful of words) to be noise next to the vocabulary the prompt carries.
+  static const int kRecentStoryTitles = 20;
+
+  static String _titlesKey(String targetLang) => 'listenStoryTitles_$targetLang';
+
+  Future<List<String>> loadRecentTitles(String targetLang) async {
+    final raw = await _prefs.getString(_titlesKey(targetLang));
+    if (raw == null) return [];
+    try {
+      return (jsonDecode(raw) as List).cast<String>();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> clearRecentTitles(String targetLang) => _prefs.remove(_titlesKey(targetLang));
+
+  /// Newest first, de-duplicated, capped at [kRecentStoryTitles].
+  Future<void> addRecentTitle(String targetLang, String title) async {
+    final t = title.trim();
+    if (t.isEmpty) return;
+    final list = [t, ...(await loadRecentTitles(targetLang)).where((x) => x != t)];
+    await _prefs.setString(_titlesKey(targetLang), jsonEncode(list.take(kRecentStoryTitles).toList()));
+  }
+
+  // ── Wear ──────────────────────────────────────────────────────────────────
+  //
+  // How often each text has been heard, how many full listens each story has
+  // had, and how many texts have been retired since the last generation — the
+  // three numbers that decide when material is used up and when to make more.
+  // Persisted because a listening habit spans many sessions: counts that reset
+  // on every launch would never reach a limit.
+
+  static String _wearKey(String targetLang) => 'listenWear_$targetLang';
+
+  Future<({Map<String, int> textPlays, Map<String, int> storyPlays, int retiredSinceGen})> loadWear(
+    String targetLang,
+  ) async {
+    final raw = await _prefs.getString(_wearKey(targetLang));
+    if (raw == null) return (textPlays: <String, int>{}, storyPlays: <String, int>{}, retiredSinceGen: 0);
+    try {
+      final map = (jsonDecode(raw) as Map).cast<String, dynamic>();
+      Map<String, int> ints(Object? m) =>
+          ((m as Map?) ?? const {}).map((k, v) => MapEntry(k.toString(), (v as num).toInt()));
+      return (
+        textPlays: ints(map['text']),
+        storyPlays: ints(map['story']),
+        retiredSinceGen: (map['retired'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return (textPlays: <String, int>{}, storyPlays: <String, int>{}, retiredSinceGen: 0);
+    }
+  }
+
+  Future<void> saveWear(
+    String targetLang, {
+    required Map<String, int> textPlays,
+    required Map<String, int> storyPlays,
+    required int retiredSinceGen,
+  }) async {
+    await _prefs.setString(
+      _wearKey(targetLang),
+      jsonEncode({'text': textPlays, 'story': storyPlays, 'retired': retiredSinceGen}),
+    );
+  }
 }

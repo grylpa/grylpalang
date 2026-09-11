@@ -25,6 +25,9 @@ class AppSettings {
   static const int kListenSentencesPerTextDefault = 2;
   static const int kListenStorySentencesDefault = 48;
   static const int kListenStoryPartSentencesDefault = 2;
+  static const int kListenPauseAfterKnownSecDefault = 1;
+  static const int kListenThirdPassRatePctDefault = 60;
+  static const int kListenPauseAfterThirdSecDefault = 2;
 
   String knownLanguage;
   String targetLanguage;
@@ -56,8 +59,27 @@ class AppSettings {
   int listenSentencesPerText; // rough length of each generated text
   int listenStorySentences; // total length of a generated long story, before it is split into parts
   int listenStoryPartSentences; // sentences per part of a long story — its own setting, not the micro-text one
+  // The mood a story is written in ("suspense", "funny"). Remembered and
+  // reused by automatic replacements — unlike the theme, which is content:
+  // reusing that would largely rewrite the same story.
+  String listenStoryMood;
+  // The Delete dialog's last-used boxes. Titles default off: they are what
+  // keeps new stories from repeating old ones, rarely part of starting over.
+  bool listenDeleteTexts;
+  bool listenDeleteStories;
+  bool listenDeleteTitles;
   List<String> listenVoiceIds; // target-language voices to rotate through (empty = all installed)
   String listenKnownVoice; // known-language voice for the translation pass ('' = automatic)
+  bool listenUseMediumPass; // play the 2nd (faster) target pass
+  bool listenUseSlowAfterKnown; // the 3rd pass: target again after the translation, before the full-speed one
+  int listenThirdPassRatePct; // its own speed — not tied to the 1st pass
+  int listenPauseAfterThirdSec; // and its own gap
+  int listenPauseAfterKnownSec; // gap after the translation
+  // How many times a generated text / a whole story may be heard before it is
+  // retired from the bank. 0 = never — the default, because retiring deletes
+  // generated material and must be something the user chose.
+  int listenMaxPlaysPerText;
+  int listenMaxPlaysPerStory;
 
   // Bottom-nav destinations the user has switched off (AppTab ids). Stored as
   // the *hidden* set, not the visible one, so a tab added in a later version
@@ -133,8 +155,19 @@ class AppSettings {
     this.listenSentencesPerText = kListenSentencesPerTextDefault,
     this.listenStorySentences = kListenStorySentencesDefault,
     this.listenStoryPartSentences = kListenStoryPartSentencesDefault,
+    this.listenStoryMood = '',
+    this.listenDeleteTexts = true,
+    this.listenDeleteStories = true,
+    this.listenDeleteTitles = false,
     this.listenVoiceIds = const [],
     this.listenKnownVoice = '',
+    this.listenUseMediumPass = true,
+    this.listenUseSlowAfterKnown = true,
+    this.listenThirdPassRatePct = kListenThirdPassRatePctDefault,
+    this.listenPauseAfterThirdSec = kListenPauseAfterThirdSecDefault,
+    this.listenPauseAfterKnownSec = kListenPauseAfterKnownSecDefault,
+    this.listenMaxPlaysPerText = 0,
+    this.listenMaxPlaysPerStory = 0,
     this.hiddenTabIds = kHiddenTabIdsDefault,
     this.sentenceBankTargetFirst = false,
     this.sentenceBankPrepareAudio = true,
@@ -185,8 +218,19 @@ class AppSettings {
     int? listenSentencesPerText,
     int? listenStorySentences,
     int? listenStoryPartSentences,
+    String? listenStoryMood,
+    bool? listenDeleteTexts,
+    bool? listenDeleteStories,
+    bool? listenDeleteTitles,
     List<String>? listenVoiceIds,
     String? listenKnownVoice,
+    bool? listenUseMediumPass,
+    bool? listenUseSlowAfterKnown,
+    int? listenThirdPassRatePct,
+    int? listenPauseAfterThirdSec,
+    int? listenPauseAfterKnownSec,
+    int? listenMaxPlaysPerText,
+    int? listenMaxPlaysPerStory,
     List<String>? hiddenTabIds,
     bool? sentenceBankTargetFirst,
     bool? sentenceBankPrepareAudio,
@@ -242,8 +286,19 @@ class AppSettings {
       listenSentencesPerText: listenSentencesPerText ?? this.listenSentencesPerText,
       listenStorySentences: listenStorySentences ?? this.listenStorySentences,
       listenStoryPartSentences: listenStoryPartSentences ?? this.listenStoryPartSentences,
+      listenStoryMood: listenStoryMood ?? this.listenStoryMood,
+      listenDeleteTexts: listenDeleteTexts ?? this.listenDeleteTexts,
+      listenDeleteStories: listenDeleteStories ?? this.listenDeleteStories,
+      listenDeleteTitles: listenDeleteTitles ?? this.listenDeleteTitles,
       listenVoiceIds: listenVoiceIds ?? this.listenVoiceIds,
       listenKnownVoice: listenKnownVoice ?? this.listenKnownVoice,
+      listenUseMediumPass: listenUseMediumPass ?? this.listenUseMediumPass,
+      listenUseSlowAfterKnown: listenUseSlowAfterKnown ?? this.listenUseSlowAfterKnown,
+      listenThirdPassRatePct: listenThirdPassRatePct ?? this.listenThirdPassRatePct,
+      listenPauseAfterThirdSec: listenPauseAfterThirdSec ?? this.listenPauseAfterThirdSec,
+      listenPauseAfterKnownSec: listenPauseAfterKnownSec ?? this.listenPauseAfterKnownSec,
+      listenMaxPlaysPerText: listenMaxPlaysPerText ?? this.listenMaxPlaysPerText,
+      listenMaxPlaysPerStory: listenMaxPlaysPerStory ?? this.listenMaxPlaysPerStory,
       hiddenTabIds: hiddenTabIds ?? this.hiddenTabIds,
       sentenceBankTargetFirst: sentenceBankTargetFirst ?? this.sentenceBankTargetFirst,
       sentenceBankPrepareAudio: sentenceBankPrepareAudio ?? this.sentenceBankPrepareAudio,
@@ -297,8 +352,19 @@ class AppSettings {
     'listenSentencesPerText': listenSentencesPerText,
     'listenStorySentences': listenStorySentences,
     'listenStoryPartSentences': listenStoryPartSentences,
+    'listenStoryMood': listenStoryMood,
+    'listenDeleteTexts': listenDeleteTexts,
+    'listenDeleteStories': listenDeleteStories,
+    'listenDeleteTitles': listenDeleteTitles,
     'listenVoiceIds': listenVoiceIds,
     'listenKnownVoice': listenKnownVoice,
+    'listenUseMediumPass': listenUseMediumPass,
+    'listenUseSlowAfterKnown': listenUseSlowAfterKnown,
+    'listenThirdPassRatePct': listenThirdPassRatePct,
+    'listenPauseAfterThirdSec': listenPauseAfterThirdSec,
+    'listenPauseAfterKnownSec': listenPauseAfterKnownSec,
+    'listenMaxPlaysPerText': listenMaxPlaysPerText,
+    'listenMaxPlaysPerStory': listenMaxPlaysPerStory,
     'hiddenTabIds': hiddenTabIds,
     'sentenceBankTargetFirst': sentenceBankTargetFirst,
     'sentenceBankPrepareAudio': sentenceBankPrepareAudio,
@@ -362,8 +428,19 @@ class AppSettings {
       listenSentencesPerText: (json['listenSentencesPerText'] as int?) ?? kListenSentencesPerTextDefault,
       listenStorySentences: (json['listenStorySentences'] as int?) ?? kListenStorySentencesDefault,
       listenStoryPartSentences: (json['listenStoryPartSentences'] as int?) ?? kListenStoryPartSentencesDefault,
+      listenStoryMood: json['listenStoryMood'] as String? ?? '',
+      listenDeleteTexts: json['listenDeleteTexts'] as bool? ?? true,
+      listenDeleteStories: json['listenDeleteStories'] as bool? ?? true,
+      listenDeleteTitles: json['listenDeleteTitles'] as bool? ?? false,
       listenVoiceIds: (json['listenVoiceIds'] as List?)?.cast<String>() ?? const [],
       listenKnownVoice: json['listenKnownVoice'] as String? ?? '',
+      listenUseMediumPass: json['listenUseMediumPass'] as bool? ?? true,
+      listenUseSlowAfterKnown: json['listenUseSlowAfterKnown'] as bool? ?? true,
+      listenThirdPassRatePct: json['listenThirdPassRatePct'] as int? ?? kListenThirdPassRatePctDefault,
+      listenPauseAfterThirdSec: json['listenPauseAfterThirdSec'] as int? ?? kListenPauseAfterThirdSecDefault,
+      listenPauseAfterKnownSec: json['listenPauseAfterKnownSec'] as int? ?? kListenPauseAfterKnownSecDefault,
+      listenMaxPlaysPerText: json['listenMaxPlaysPerText'] as int? ?? 0,
+      listenMaxPlaysPerStory: json['listenMaxPlaysPerStory'] as int? ?? 0,
       hiddenTabIds: (json['hiddenTabIds'] as List?)?.cast<String>() ?? kHiddenTabIdsDefault,
       sentenceBankTargetFirst: json['sentenceBankTargetFirst'] as bool? ?? false,
       sentenceBankPrepareAudio: json['sentenceBankPrepareAudio'] as bool? ?? true,

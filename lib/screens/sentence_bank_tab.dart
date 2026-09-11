@@ -25,6 +25,7 @@ import '../services/sentence_bank_service.dart';
 import '../services/tts_synth_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
+import '../services/speech_text.dart';
 
 /// Speech rate passed to flutter_tts for source-clip synthesis.
 ///
@@ -2634,7 +2635,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       await _tts.setVoice({'name': (v['name'] as String? ?? ''), 'locale': loc});
       await _tts.setSpeechRate(kSourceSpeechRate);
       await _tts.setPitch(1.0);
-      await _tts.speak(_currentSource() ?? 'This is a sample sentence.');
+      await _tts.speak(speakableForLocale(_currentSource() ?? 'This is a sample sentence.', loc));
     } catch (_) {}
   }
 
