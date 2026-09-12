@@ -1287,19 +1287,63 @@ Example of the format (structure only):
     return result;
   }
 
-  /// The hard vocabulary limit, shared verbatim by every Listen generator.
+  /// How many new words a whole short text may carry, whatever its sentence
+  /// count. The per-sentence rule alone multiplies: three sentences at two new
+  /// words each is six unknowns in a scene the listener has never met, and eight
+  /// such texts in a run is dozens of them, none repeated. A long story spends
+  /// its new words on people and things that come back, so each one gets several
+  /// chances and teaches itself — which is why the story keeps the looser rule.
+  static const int _kNewWordsPerText = 2;
+
+  /// How many words a story part may introduce. Counted on **first appearance
+  /// only**: a word the story has already used belongs to it, and bringing it
+  /// back is how the listener learns it. Counting every appearance would make
+  /// "never reuse a word" the cheapest way to comply, destroying the recurrence
+  /// that is exactly why a story is easier to follow than a pile of scenes.
+  static const int _kNewWordsPerPart = 2;
+
+  /// The hard vocabulary limit, shared by every Listen generator.
   ///
   /// Defined once because the two prompts must not drift: a story and a batch of
-  /// micro-texts are heard by the same ears, and a ceiling that applies to one
-  /// but not the other just moves the problem. It replaced an earlier
-  /// *invitation* to add new words, which a stronger model read as licence and
-  /// answered with prose the learner couldn't follow — pleasant to read, useless
-  /// to listen to.
-  static const String _kVocabularyCeiling = '''
+  /// micro-texts are heard by the same ears. It replaced an earlier *invitation*
+  /// to add new words, which a stronger model read as licence and answered with
+  /// prose the learner couldn't follow — pleasant to read, useless to listen to.
+  ///
+  /// [perText] adds a whole-text budget on top of the per-sentence one (short
+  /// texts; see [_kNewWordsPerText]); [perPart] adds a per-part budget counted on
+  /// a word's first appearance in the story (see [_kNewWordsPerPart]).
+  static String _vocabularyCeiling({int? perText, int? perPart}) {
+    final textBudget = perText == null
+        ? ''
+        : '''
+
+AND A BUDGET FOR THE WHOLE TEXT: at most $perText new words in a text — in the
+whole thing, not per sentence. These texts are a few sentences each and every one
+is a scene the listener has never heard, so a new word here has nothing to lean
+on and never comes back. Two per text they can follow; six they cannot. If a text
+seems to need another new word, rewrite it so it doesn't.''';
+    final partBudget = perPart == null
+        ? ''
+        : '''
+
+AND A BUDGET FOR EACH PART: at most $perPart words that are new TO THIS STORY in
+any one part. A word counts as new only the first time the story uses it — after
+that it belongs to the story, and using it again is how the listener comes to
+know it. So when you need a word you have already introduced, reach for that one
+rather than for another new one: repetition across the parts is what makes a
+story followable, and a part is what the listener hears in one go.''';
+    final textCheck = perText == null
+        ? ''
+        : " Count the whole text's new words as well, against the $perText it is allowed.";
+    final partCheck = perPart == null
+        ? ''
+        : ' Go part by part as well, counting only words the story had not used before,'
+              ' against the $perPart each part is allowed.';
+    return '''
 VOCABULARY CEILING — THE HARDEST RULE HERE
 A word is NEW if neither it nor any other form of it appears in the vocabulary
 list above. In every sentence, use AT MOST TWO new words. One is better. None is
-perfectly fine.
+perfectly fine.$textBudget$partBudget
 
 This is a ceiling, not an average. A listener has no way to stop and look
 anything up, so one sentence carrying four unknown words costs them the rest of
@@ -1314,9 +1358,10 @@ the text — they are still working on it while the next sentence plays.
   spend the budget on a word the listener does not need.
 
 Before you answer, re-read every sentence you have written and count its new
-words against the list. Rewrite any sentence that is over the limit. Do this
-check on the finished text, not from memory of intending to comply.
+words against the list.$textCheck$partCheck Rewrite anything over the limit. Do this check
+on the finished text, not from memory of intending to comply.
 ''';
+  }
 
   /// Maximum seed phrases fed to the generator, and the character budget they
   /// share. The point is a broad picture of the learner's vocabulary, so more
@@ -1399,7 +1444,7 @@ The learner knows every one of those phrases by heart. So:
 * You have real freedom in *what happens*: any everyday scene is fair game,
   whether or not the list hints at it. You have very little freedom in *which
   words say it* — see the ceiling below.
-$_kVocabularyCeiling
+${_vocabularyCeiling(perText: _kNewWordsPerText)}
 YOUR TASK
 Write $count different texts in $targetLanguage. Each one is a tiny, complete
 story.
@@ -1578,7 +1623,7 @@ NOT a list of topics to cover. They know every phrase on it by heart, so a story
 recognisably assembled out of them is recognised rather than understood, and is
 worthless as practice. Invent situations that appear nowhere in the list — the
 freedom is in what happens, not in which words say it.
-$_kVocabularyCeiling
+${_vocabularyCeiling(perPart: _kNewWordsPerPart)}
 YOUR TASK
 Write ONE short story in $targetLanguage — a real short story, the kind that
 would sit in a collection, not a language exercise.
