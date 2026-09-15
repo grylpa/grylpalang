@@ -14,6 +14,7 @@ import 'notification_history_tab.dart';
 import 'sentence_bank_tab.dart';
 import 'settings_screen.dart';
 import 'prediction_tab.dart';
+import '../services/katalaveno_audio_handler.dart';
 
 class MainScaffold extends StatefulWidget {
   const MainScaffold({super.key});
@@ -79,7 +80,13 @@ class _MainScaffoldState extends State<MainScaffold> {
   // Same shape for the Play update check: at most one attempt per app run.
   bool _updateCheckStarted = false;
 
-  void _persistTab(AppTab t) => SharedPreferencesAsync().setString(_kTabIdKey, t.id);
+  void _persistTab(AppTab t) {
+    SharedPreferencesAsync().setString(_kTabIdKey, t.id);
+    // Tells the audio handler which tab is on screen, so a headset Play with
+    // nothing playing starts *this* tab rather than whichever one bound last.
+    // Every path that changes the current tab goes through here.
+    katalavenoAudio.setVisibleTab(t.id);
+  }
 
   /// Position of the selected tab among the *visible* ones. Never negative:
   /// build keeps `_current` inside `_tabs`.

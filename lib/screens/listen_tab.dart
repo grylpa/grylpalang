@@ -16,6 +16,7 @@ import '../services/sentence_bank_service.dart';
 import '../services/tts_synth_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
+import '../models/app_tab.dart';
 
 /// Listen mode — listening comprehension rather than vocabulary.
 ///
@@ -120,6 +121,9 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     _playingSub = _playlist.playingStream.listen((p) {
       if (mounted) setState(() => _playing = p && katalavenoAudio.isActiveSession(this));
     });
+    // Registered, not bound: this must not claim the player, only make a system
+    // Play reach this tab while the user is looking at it.
+    katalavenoAudio.registerStarter(AppTab.listen.id, this, _play);
   }
 
   @override
@@ -140,6 +144,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   @override
   void dispose() {
     katalavenoAudio.unbind(this);
+    katalavenoAudio.unregisterStarter(AppTab.listen.id, this);
     // The tab can be disposed mid-playback (hidden from Settings → Tabs), and
     // the player belongs to the shared handler — so it would otherwise keep
     // looping with nobody left to control it.
@@ -1365,6 +1370,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     katalavenoAudio.bind(
       owner: this,
       onPlay: _play,
+      hasSession: () => _sessionLoaded,
       onPause: () async => _pause(),
       onStop: () async => _pause(),
       onSkipNext: _next,

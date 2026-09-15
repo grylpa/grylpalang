@@ -38,6 +38,7 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
   void bind({
     required Object owner,
     Future<void> Function()? onPlay,
+    bool Function()? hasSession,
     Future<void> Function()? onPause,
     Future<void> Function()? onStop,
     Future<void> Function()? onSkipNext,
@@ -50,6 +51,7 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
       _Binding(
         owner: owner,
         onPlay: onPlay,
+        hasSession: hasSession,
         onPause: onPause,
         onStop: onStop,
         onSkipNext: onSkipNext,
@@ -69,6 +71,29 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
 
   _Binding? get _top => _stack.isEmpty ? null : _stack.last;
 
+  // ── Which tab the user is looking at ─────────────────────────────────────
+  //
+  // A system Play (headset button, lockscreen) with nothing playing means
+  // "start the tab I am on" — not "start whatever bound last". The Sentence
+  // Bank binds at launch so that it can answer a cold Play at all, which left
+  // it answering *every* cold Play even while the user sat in Listen.
+  //
+  // Starters are registered per tab id at init and, unlike [bind], claim
+  // nothing: a tab that has pre-built its playlist keeps its instant resume.
+  String? _visibleTab;
+  final Map<String, ({Object owner, Future<void> Function() onPlay})> _starters = {};
+
+  void setVisibleTab(String tabId) => _visibleTab = tabId;
+
+  void registerStarter(String tabId, Object owner, Future<void> Function() onPlay) =>
+      _starters[tabId] = (owner: owner, onPlay: onPlay);
+
+  /// Only drops the entry if it is still [owner]'s — a rebuilt screen may have
+  /// registered over it already.
+  void unregisterStarter(String tabId, Object owner) {
+    if (identical(_starters[tabId]?.owner, owner)) _starters.remove(tabId);
+  }
+
   /// True when [owner] holds the top binding — i.e. it is the session the
   /// shared player is currently serving. Since every screen re-binds when it
   /// starts playing, this is how a tab tells "the player is playing *my*
@@ -83,6 +108,18 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> play() async {
+    // Nothing playing, and whoever holds the buttons has no paused session to
+    // resume? Then this Play belongs to the tab on screen. A paused session
+    // keeps the button — pressing play after pausing must resume, not switch.
+    if (!player.playing && !(_top?.hasSession?.call() ?? false)) {
+      final visible = _visibleTab;
+      final starter = visible == null ? null : _starters[visible];
+      if (starter != null && !identical(starter.owner, _top?.owner)) {
+        // That screen's own bind() promotes it and notifies the owner it
+        // displaces, so the queue hand-over stays on the one existing path.
+        return starter.onPlay();
+      }
+    }
     if (_top?.onPlay != null) await _top!.onPlay!();
   }
 
@@ -153,6 +190,10 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
 class _Binding {
   final Object owner;
   final Future<void> Function()? onPlay;
+
+  /// Whether this screen has a built playlist it could resume. Read on a system
+  /// Play to tell "resume what was paused" from "start the tab on screen".
+  final bool Function()? hasSession;
   final Future<void> Function()? onPause;
   final Future<void> Function()? onStop;
   final Future<void> Function()? onSkipNext;
@@ -164,6 +205,7 @@ class _Binding {
   _Binding({
     required this.owner,
     this.onPlay,
+    this.hasSession,
     this.onPause,
     this.onStop,
     this.onSkipNext,

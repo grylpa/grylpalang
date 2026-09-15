@@ -26,6 +26,7 @@ import '../services/tts_synth_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
 import '../services/speech_text.dart';
+import '../models/app_tab.dart';
 
 /// Speech rate passed to flutter_tts for source-clip synthesis.
 ///
@@ -59,6 +60,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   StreamSubscription<int>? _autoOrdinalSub;
   List<String> _autoTranslations = [];
   bool _autoPreparing = false;
+  // True once playback has begun for the build in progress. The queue keeps
+  // filling after the first sentence starts, and the status line must say so.
+  bool _autoStarted = false;
   int _prepDone = 0;
   int _prepTotal = 0;
   // Signature of the last built playlist; if unchanged we resume instead of
@@ -154,6 +158,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     // mode is currently running. Book Reader's session binds on top of this
     // while it's active and pops off when it ends, restoring this fallback.
     _bindMediaControls();
+    // Lets a system Play reach this tab when the user is *looking* at it, even
+    // though another tab may hold the buttons.
+    katalavenoAudio.registerStarter(AppTab.sentences.id, this, _mediaPlay);
   }
 
   /// Registers this tab's media-control handlers. Called at init (so Bluetooth
@@ -161,12 +168,32 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   /// `bind` moves an existing owner to the top of the handler's stack, which is
   /// how "the session that last started playing owns the buttons" is enforced
   /// once another tab (Listen, Book Reader) has bound too.
+  /// The progress line while a playlist is being built and nothing plays yet.
+  String get _prepLabel => _prepTotal > 0 ? 'Preparing audio… $_prepDone/$_prepTotal' : 'Preparing audio…';
+
+  /// The auto-mode status line.
+  ///
+  /// The queue goes on filling *after* the first sentence starts playing, so
+  /// "Preparing audio…" must never stand in place of "playing" — a preparing
+  /// message that sits there while sound is coming out reads as a hung build.
+  /// Once playback has begun the build becomes a suffix instead.
+  String get _autoStatusLabel {
+    if (!_autoPreparing) return 'Auto mode — playing';
+    if (!_autoStarted) return _prepLabel;
+    return _prepTotal > 0 ? 'Auto mode — playing · building $_prepDone/$_prepTotal' : 'Auto mode — playing';
+  }
+
+  /// What a system Play does on this tab. Shared by the media binding and the
+  /// starter registered for cold Plays, so the two can't drift.
+  Future<void> _mediaPlay() async {
+    if (!_autoMode && _currentSentences().isNotEmpty) await _startAuto();
+  }
+
   void _bindMediaControls() {
     katalavenoAudio.bind(
       owner: this,
-      onPlay: () async {
-        if (!_autoMode && _currentSentences().isNotEmpty) await _startAuto();
-      },
+      onPlay: _mediaPlay,
+      hasSession: () => _autoMode && _autoPlaylist.isLoaded,
       onPause: () async {
         if (_autoMode) _stopAuto();
       },
@@ -198,6 +225,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     setState(() {
       _autoMode = false;
       _autoPreparing = false;
+      _autoStarted = false;
       _ttsPlaying = false;
     });
   }
@@ -1552,6 +1580,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
     setState(() {
       _autoPreparing = true;
+      _autoStarted = false;
       _prepDone = 0;
       _prepTotal = 0;
     });
@@ -1596,10 +1625,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       final sourceVoice = settings.sentenceBankSourceVoice;
       final translationPaths = List<String>.filled(translations.length, '');
       final sourcePaths = List<String?>.filled(translations.length, null);
-      // Two-pass: cheap cache-existence probe first (in parallel) so the
-      // progress bar reflects *actual* work (synth/download) instead of marching
-      // through every ordinal even when 126/130 are already on disk.
-      final needsWork = <int>[];
+      // Two-pass: a cheap cache-existence probe first (in parallel), so the
+      // streaming loop below only synthesises what is genuinely missing.
       await Future.wait([
         for (var o = 0; o < translations.length; o++)
           () async {
@@ -1611,11 +1638,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
               gender,
               preferVoice: failed ? sourceVoice : '',
             );
-            if (cached != null) {
-              translationPaths[o] = cached;
-            } else {
-              needsWork.add(o);
-            }
+            if (cached != null) translationPaths[o] = cached;
             if (speakSource) {
               sourcePaths[o] = await _cachedClipFile(
                 orderedSpoken[o],
@@ -1626,18 +1649,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             }
           }(),
       ]);
-      needsWork.sort();
-      // Source clips still missing after the cache probe — append them so
-      // they're (re)synthesised below. Failures stay null (source is optional).
-      final sourceMissing = <int>[
-        if (speakSource)
-          for (var o = 0; o < translations.length; o++)
-            if (sourcePaths[o] == null) o,
-      ];
-
-      // The cache probe only sizes the progress bar now; the clips themselves
-      // are rendered inside the streaming loop below, in play order.
-      if (mounted) setState(() => _prepTotal = needsWork.length + sourceMissing.length);
+      // Progress counts *ordinals appended to the queue*, not clips
+      // synthesised. Counting synthesis meant a fully cached subject showed
+      // "0/0" — which read as a stuck build while the queue was in fact being
+      // assembled, and for a large subject that takes real time.
+      if (mounted) setState(() => _prepTotal = translations.length);
       var failureCount = 0;
       if (!mounted || token != _buildToken) return;
 
@@ -1690,7 +1706,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             translationPaths[o] = '';
             failureCount++;
           }
-          if (mounted && token == _buildToken) setState(() => _prepDone = _prepDone + 1);
         }
         if (speakSource && sourcePaths[o] == null) {
           sourcePaths[o] = await _ensureClipFileOrNull(
@@ -1699,7 +1714,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             gender,
             preferVoice: sourceVoice,
           );
-          if (mounted && token == _buildToken) setState(() => _prepDone = _prepDone + 1);
         }
         if (!mounted || token != _buildToken) return;
 
@@ -1710,6 +1724,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           translationPath: translationPaths[o],
           flip: flips != null && o < flips.length && flips[o],
         );
+        if (mounted && token == _buildToken) setState(() => _prepDone = k + 1);
 
         if (!started && translationPaths[o].isNotEmpty) {
           // Synthesizing source clips drives the flutter_tts engine, which
@@ -1722,6 +1737,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           } catch (_) {}
           if (play && _autoMode) await _autoPlaylist.playDynamic();
           started = true;
+          if (mounted) setState(() => _autoStarted = true);
         }
         // The user pressed Stop mid-render. Unlike Listen's pause, this calls
         // player.stop(), so appending into the queue afterwards is not
@@ -1776,6 +1792,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     setState(() {
       _autoMode = false;
       _autoPreparing = false;
+      _autoStarted = false;
       _ttsPlaying = false;
     });
   }
@@ -1848,6 +1865,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
   @override
   void dispose() {
+    katalavenoAudio.unregisterStarter(AppTab.sentences.id, this);
     katalavenoAudio.unbind(this);
     // The tab can be disposed mid-playback — the user hid it in Settings → Tabs
     // — and the player is the shared handler's, so it would otherwise keep
@@ -2775,11 +2793,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            _autoPreparing ? 'Preparing audio… $_prepDone/$_prepTotal' : 'Auto mode — playing',
-            style: Theme.of(context).textTheme.bodySmall,
-            textAlign: TextAlign.center,
-          ),
+          Text(_autoStatusLabel, style: Theme.of(context).textTheme.bodySmall, textAlign: TextAlign.center),
           const SizedBox(height: 8),
           navRow,
         ],
@@ -2794,7 +2808,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             children: [
               const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
               const SizedBox(width: 12),
-              Text('Preparing audio… $_prepDone/$_prepTotal', style: Theme.of(context).textTheme.bodySmall),
+              Text(_prepLabel, style: Theme.of(context).textTheme.bodySmall),
             ],
           ),
           const SizedBox(height: 12),
