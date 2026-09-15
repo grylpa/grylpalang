@@ -256,7 +256,17 @@ class AiService {
   /// the current model accepts one. Gemini 3.x removed the sampling parameters
   /// and added a thinking level; sending a parameter a model doesn't take can
   /// fail the request outright, so they are stripped rather than left to luck.
-  static Map<String, dynamic> _adaptBody(dynamic body) {
+  /// How much the Listen generators are allowed to think.
+  ///
+  /// Their prompt asks the model to count new words against a 400-phrase list
+  /// and rewrite anything over budget — reasoning work, not prose. The engine
+  /// default of `low` was chosen to save tokens on short jobs, and on 3.x it
+  /// suppressed exactly the step that keeps the output readable; 2.5 had no such
+  /// cap, which is why its texts came out easier. `medium` is the level 3.8
+  /// itself defaults to.
+  static const String _kListenThinking = 'medium';
+
+  static Map<String, dynamic> _adaptBody(dynamic body, {String? thinking}) {
     if (body is! Map) return <String, dynamic>{};
     final out = Map<String, dynamic>.from(body);
     final cfg = out['generationConfig'];
@@ -266,7 +276,9 @@ class AiService {
         g.remove(k);
       }
     }
-    final level = engine.thinkingLevel;
+    // Only 3.x takes a thinking level at all; a caller's request is honoured
+    // there and ignored on an engine that has no such control.
+    final level = engine.thinkingLevel == null ? null : (thinking ?? engine.thinkingLevel);
     if (level != null) g['thinkingConfig'] = {'thinkingLevel': level};
     if (g.isNotEmpty) out['generationConfig'] = g;
     return out;
@@ -349,9 +361,15 @@ class AiService {
     body: jsonEncode(body),
   );
 
-  static Future<http.Response> queryModel(String apiKey, body, {int maxRetries = 3, bool allowFallback = true}) async {
+  static Future<http.Response> queryModel(
+    String apiKey,
+    body, {
+    int maxRetries = 3,
+    bool allowFallback = true,
+    String? thinking,
+  }) async {
     try {
-      body = _adaptBody(body);
+      body = _adaptBody(body, thinking: thinking);
       // A caller may want the primary model only (e.g. manual re-translate,
       // which must not silently produce a weaker lite translation). It then gets
       // the failure back and can say "try again later" instead of caching worse
@@ -1482,8 +1500,13 @@ RETURN FORMAT (VERY IMPORTANT):
 Return ONLY a JSON array and nothing else. No explanations, no markdown.
 
 [
-  {"l2": "text in $targetLanguage", "l1": "translation in $knownLanguage"}
+  {"l2": "text in $targetLanguage", "l1": "translation in $knownLanguage",
+   "new_words": ["every word in l2 that is new by the rule above"]}
 ]
+
+"new_words" is the count you were told to make: list the new words you actually
+used in that text. A text whose list is longer than $_kNewWordsPerText is over
+budget — rewrite it before returning it rather than listing them all.
 ''';
 
     final body = {
@@ -1511,14 +1534,21 @@ Return ONLY a JSON array and nothing else. No explanations, no markdown.
                     'a development and an outcome. Never a list of unrelated sentences.',
               },
               'l1': {'type': 'string', 'description': 'Faithful full translation of l2 into L1.'},
+              'new_words': {
+                'type': 'array',
+                'items': {'type': 'string'},
+                'description':
+                    'Every word in l2 that is new to the learner by the vocabulary rule. Listing them is '
+                    'what forces the count; a text over budget must be rewritten, not merely reported.',
+              },
             },
-            'required': ['l2', 'l1'],
+            'required': ['l2', 'l1', 'new_words'],
           },
         },
       },
     };
 
-    final resp = await queryModel(apiKey, body);
+    final resp = await queryModel(apiKey, body, thinking: _kListenThinking);
     if (resp.statusCode != 200) _throwAiError(resp, 'generateListeningTexts');
 
     final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -1534,15 +1564,28 @@ Return ONLY a JSON array and nothing else. No explanations, no markdown.
       throw Exception('JSON decode failed: $e');
     }
 
-    final out = <({String l2, String l1})>[];
-    for (final item in list.take(count)) {
+    // Asking is not enough — the budget is checked here. A run fetches far more
+    // texts than it hands out, so an over-budget one can simply be discarded.
+    final within = <({String l2, String l1})>[];
+    final over = <({int newWords, String l2, String l1})>[];
+    for (final item in list) {
       final m = (item as Map).cast<String, dynamic>();
       final l2 = (m['l2'] as String? ?? '').trim();
       final l1 = (m['l1'] as String? ?? '').trim();
       if (l2.isEmpty) continue;
-      out.add((l2: l2, l1: l1));
+      final declared = ((m['new_words'] as List?) ?? const []).where((w) => '$w'.trim().isNotEmpty).length;
+      if (declared <= _kNewWordsPerText) {
+        within.add((l2: l2, l1: l1));
+      } else {
+        over.add((newWords: declared, l2: l2, l1: l1));
+      }
     }
-    return out;
+    // If too few complied, fill up from the least-offending rather than
+    // returning nothing: a batch the learner finds hard beats a batch that
+    // doesn't exist, and the next run gets another chance.
+    over.sort((a, b) => a.newWords.compareTo(b.newWords));
+    final out = [...within, for (final o in over) (l2: o.l2, l1: o.l1)];
+    return out.take(count).toList();
   }
 
   /// Generates ONE long story in L2, already split into consecutive parts.
@@ -1634,7 +1677,10 @@ Answer in two stages, both inside the JSON:
 1. "outline": 3-6 sentences in $knownLanguage. Who the people are, what the
    problem is, what complicates it, how it ends. Commit to this BEFORE writing
    any prose.
-2. "parts": the story itself, already divided into exactly $parts consecutive
+2. "parts": each with "l2", "l1", and "new_words" — the words that part
+   introduces which the story had not used before. Listing them is how you keep
+   the per-part budget; a part over budget gets rewritten, not reported.
+   The story itself is divided into exactly $parts consecutive
    parts of about $sentencesPerPart sentences each. Part 2 continues part 1.
    These are slices of ONE story, never separate vignettes, and the learner
    hears them in order.
@@ -1691,8 +1737,15 @@ Return JSON only.
                     'description': 'One consecutive slice of the story in L2. Continues directly from the part before.',
                   },
                   'l1': {'type': 'string', 'description': 'Faithful full translation of l2 into L1.'},
+                  'new_words': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                    'description':
+                        'Words this part introduces that the story had not used before. Listing them is what '
+                        'forces the per-part count.',
+                  },
                 },
-                'required': ['l2', 'l1'],
+                'required': ['l2', 'l1', 'new_words'],
               },
             },
           },
@@ -1701,7 +1754,7 @@ Return JSON only.
       },
     };
 
-    final resp = await queryModel(apiKey, body);
+    final resp = await queryModel(apiKey, body, thinking: _kListenThinking);
     if (resp.statusCode != 200) _throwAiError(resp, 'generateStory');
 
     final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
