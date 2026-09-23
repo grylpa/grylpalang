@@ -324,6 +324,14 @@ class AiService {
   // stopped answering.
   static const Duration _requestTimeout = Duration(seconds: 120);
 
+  // "The model is overloaded" (5xx) is momentary, unlike a quota refusal.
+  // Stepping straight down the chain for it means the best model is barely ever
+  // used — a story written by 3.5-flash when 3.8 would have answered a couple of
+  // seconds later. So a 5xx is retried on the *same* model first; a 429 gets no
+  // such retry, since a quota refusal repeats.
+  static const int _kOverloadRetries = 2;
+  static const Duration _kOverloadBackoff = Duration(seconds: 2);
+
   /// Parses `error.details[].retryDelay` (e.g. "27s") from a 429 body.
   static Duration? _retryDelayFrom(String body) {
     try {
@@ -395,24 +403,36 @@ class AiService {
             activity.value = '';
             return last ?? _noAnswer();
           }
-          final http.Response resp;
-          try {
-            resp = await _postAnnounced(
-              model,
-              apiKey,
-              body,
-              // A fallback is announced at once — something already went wrong.
-              // The very first attempt only announces itself if it turns out to be
-              // slow, so a normal quick call stays silent.
-              immediate: !(model == chain.first && attempt == 0),
-            );
-          } on TimeoutException {
-            // Treated exactly like a 5xx: this model isn't answering, the next
-            // one might.
-            _recordFailure(model, 'timed out after ${_requestTimeout.inSeconds}s');
-            _lastReason = '${_shortName(model)} timed out';
-            continue;
+          http.Response? resp;
+          var overloadTries = 0;
+          while (true) {
+            try {
+              resp = await _postAnnounced(
+                model,
+                apiKey,
+                body,
+                // A fallback is announced at once — something already went wrong.
+                // The very first attempt only announces itself if it turns out to
+                // be slow, so a normal quick call stays silent.
+                immediate: !(model == chain.first && attempt == 0 && overloadTries == 0),
+              );
+            } on TimeoutException {
+              // Treated exactly like a 5xx: this model isn't answering, the next
+              // one might.
+              _recordFailure(model, 'timed out after ${_requestTimeout.inSeconds}s');
+              _lastReason = '${_shortName(model)} timed out';
+              resp = null;
+              break;
+            }
+            // Only an overloaded model earns another go at itself, and only
+            // while there is time left for it.
+            final overloaded = resp.statusCode >= 500;
+            if (!overloaded || overloadTries >= _kOverloadRetries || DateTime.now().isAfter(deadline)) break;
+            overloadTries++;
+            activity.value = '${_shortName(model)} busy — trying it again…';
+            await Future.delayed(_kOverloadBackoff * overloadTries);
           }
+          if (resp == null) continue;
           if (resp.statusCode == 200) {
             _recordUse(model);
             activity.value = '';
