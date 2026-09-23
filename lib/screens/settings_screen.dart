@@ -247,7 +247,21 @@ String _hhmm(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toS
 /// The per-model tally behind the "last answered by" line: how many answers
 /// each model in the chain has actually given.
 Future<void> _showModelUsage(BuildContext context) async {
-  final entries = AiService.modelCalls.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  // Ordered by the chain — best model first — not by how often each answered.
+  // A tally sorted by count puts the weakest model at the top precisely when the
+  // strong ones are unavailable, which reads backwards.
+  final chain = AiService.engine.models;
+  int rank(String model) {
+    final i = chain.indexOf(model);
+    // Models from the other engine (or a past chain) sort below the live one.
+    return i < 0 ? chain.length : i;
+  }
+
+  final entries = AiService.modelCalls.entries.toList()
+    ..sort((a, b) {
+      final byChain = rank(a.key).compareTo(rank(b.key));
+      return byChain != 0 ? byChain : a.key.compareTo(b.key);
+    });
   final total = entries.fold<int>(0, (sum, e) => sum + e.value);
   final cleared = await showDialog<bool>(
     context: context,
