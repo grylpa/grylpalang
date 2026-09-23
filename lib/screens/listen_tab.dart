@@ -879,55 +879,63 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
           // labels, which the stock content box can't manage.
           insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
           contentPadding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'One long story at your level, split into parts and played in '
-                'order. Takes a moment to generate.',
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.maxFinite,
-                child: SegmentedButton<int>(
-                  segments: [for (final (label, n) in _kStoryLengths) ButtonSegment<int>(value: n, label: Text(label))],
-                  selected: {sentences},
-                  showSelectedIcon: false,
-                  onSelectionChanged: (v) => setSheet(() => sentences = v.first),
+          // Scrollable, and not merely because the content is tall: the two text
+          // fields sit at the bottom, and without a scrollable ancestor Flutter
+          // has nowhere to scroll a focused field to — the keyboard simply
+          // covered the mood box.
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'One long story at your level, split into parts and played in '
+                  'order. Takes a moment to generate.',
                 ),
-              ),
-              // A story's own part size, separate from the micro-texts' — the
-              // two are read differently: a self-contained text is drilled,
-              // while a story part is a beat in a narrative and wants more room.
-              _stepper(
-                ctx,
-                label: 'Part size',
-                suffix: ' sent.',
-                value: perPart,
-                min: 1,
-                max: 10,
-                valueWidth: 80,
-                onSet: (v) => setSheet(() => perPart = v),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '$sentences sentences — about ${(sentences / perPart).round().clamp(3, 40)} parts of $perPart',
-                style: Theme.of(ctx).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: ctl,
-                autofocus: false,
-                decoration: const InputDecoration(labelText: 'Story theme (optional)', hintText: 'e.g. a lost dog'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: moodCtl,
-                autofocus: false,
-                decoration: const InputDecoration(labelText: 'Mood (optional)', hintText: 'e.g. suspense, funny'),
-              ),
-            ],
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.maxFinite,
+                  child: SegmentedButton<int>(
+                    segments: [
+                      for (final (label, n) in _kStoryLengths) ButtonSegment<int>(value: n, label: Text(label)),
+                    ],
+                    selected: {sentences},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (v) => setSheet(() => sentences = v.first),
+                  ),
+                ),
+                // A story's own part size, separate from the micro-texts' — the
+                // two are read differently: a self-contained text is drilled,
+                // while a story part is a beat in a narrative and wants more room.
+                _stepper(
+                  ctx,
+                  label: 'Part size',
+                  suffix: ' sent.',
+                  value: perPart,
+                  min: 1,
+                  max: 10,
+                  valueWidth: 80,
+                  onSet: (v) => setSheet(() => perPart = v),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$sentences sentences — about ${(sentences / perPart).round().clamp(3, 40)} parts of $perPart',
+                  style: Theme.of(ctx).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: ctl,
+                  autofocus: false,
+                  decoration: const InputDecoration(labelText: 'Story theme (optional)', hintText: 'e.g. a lost dog'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: moodCtl,
+                  autofocus: false,
+                  decoration: const InputDecoration(labelText: 'Mood (optional)', hintText: 'e.g. suspense, funny'),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
