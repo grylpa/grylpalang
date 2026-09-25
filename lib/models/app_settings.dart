@@ -63,6 +63,11 @@ class AppSettings {
   // reused by automatic replacements — unlike the theme, which is content:
   // reusing that would largely rewrite the same story.
   String listenStoryMood;
+  // How many words a generated text / story part may introduce that the
+  // learner has never seen. Their own settings because the two are read
+  // differently: a story reuses its new words, a short text never does.
+  int listenNewWordsPerText;
+  int listenNewWordsPerPart;
   // The Delete dialog's last-used boxes. Titles default off: they are what
   // keeps new stories from repeating old ones, rarely part of starting over.
   bool listenDeleteTexts;
@@ -156,6 +161,8 @@ class AppSettings {
     this.listenStorySentences = kListenStorySentencesDefault,
     this.listenStoryPartSentences = kListenStoryPartSentencesDefault,
     this.listenStoryMood = '',
+    this.listenNewWordsPerText = 2,
+    this.listenNewWordsPerPart = 2,
     this.listenDeleteTexts = true,
     this.listenDeleteStories = true,
     this.listenDeleteTitles = false,
@@ -219,6 +226,8 @@ class AppSettings {
     int? listenStorySentences,
     int? listenStoryPartSentences,
     String? listenStoryMood,
+    int? listenNewWordsPerText,
+    int? listenNewWordsPerPart,
     bool? listenDeleteTexts,
     bool? listenDeleteStories,
     bool? listenDeleteTitles,
@@ -287,6 +296,8 @@ class AppSettings {
       listenStorySentences: listenStorySentences ?? this.listenStorySentences,
       listenStoryPartSentences: listenStoryPartSentences ?? this.listenStoryPartSentences,
       listenStoryMood: listenStoryMood ?? this.listenStoryMood,
+      listenNewWordsPerText: listenNewWordsPerText ?? this.listenNewWordsPerText,
+      listenNewWordsPerPart: listenNewWordsPerPart ?? this.listenNewWordsPerPart,
       listenDeleteTexts: listenDeleteTexts ?? this.listenDeleteTexts,
       listenDeleteStories: listenDeleteStories ?? this.listenDeleteStories,
       listenDeleteTitles: listenDeleteTitles ?? this.listenDeleteTitles,
@@ -353,6 +364,8 @@ class AppSettings {
     'listenStorySentences': listenStorySentences,
     'listenStoryPartSentences': listenStoryPartSentences,
     'listenStoryMood': listenStoryMood,
+    'listenNewWordsPerText': listenNewWordsPerText,
+    'listenNewWordsPerPart': listenNewWordsPerPart,
     'listenDeleteTexts': listenDeleteTexts,
     'listenDeleteStories': listenDeleteStories,
     'listenDeleteTitles': listenDeleteTitles,
@@ -429,6 +442,8 @@ class AppSettings {
       listenStorySentences: (json['listenStorySentences'] as int?) ?? kListenStorySentencesDefault,
       listenStoryPartSentences: (json['listenStoryPartSentences'] as int?) ?? kListenStoryPartSentencesDefault,
       listenStoryMood: json['listenStoryMood'] as String? ?? '',
+      listenNewWordsPerText: json['listenNewWordsPerText'] as int? ?? 2,
+      listenNewWordsPerPart: json['listenNewWordsPerPart'] as int? ?? 2,
       listenDeleteTexts: json['listenDeleteTexts'] as bool? ?? true,
       listenDeleteStories: json['listenDeleteStories'] as bool? ?? true,
       listenDeleteTitles: json['listenDeleteTitles'] as bool? ?? false,

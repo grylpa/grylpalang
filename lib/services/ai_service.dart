@@ -1347,57 +1347,55 @@ Example of the format (structure only):
   /// to add new words, which a stronger model read as licence and answered with
   /// prose the learner couldn't follow — pleasant to read, useless to listen to.
   ///
-  /// [perText] adds a whole-text budget on top of the per-sentence one (short
-  /// texts; see [_kNewWordsPerText]); [perPart] adds a per-part budget counted on
-  /// a word's first appearance in the story (see [_kNewWordsPerPart]).
-  static String _vocabularyCeiling({int? perText, int? perPart}) {
-    final textBudget = perText == null
-        ? ''
+  /// One budget, one scope: [budget] new words per *text*, or per *part* when
+  /// [perPart]. There is deliberately **no** per-sentence sub-cap — an extra
+  /// "at most two per sentence" rule made the learner's own number unreachable
+  /// (two sentences can never spend six), and the number they chose has to be
+  /// the number that applies.
+  static String _vocabularyCeiling({required int budget, required bool perPart}) {
+    final unit = perPart ? 'part' : 'text';
+    final rule = budget == 0
+        ? '''Use NO new words at all. Every word must be on the list above, or
+another form of one, or a name or a number. When you cannot say something with
+those words, say something else.'''
+        : '''In each $unit, use AT MOST $budget new ${budget == 1 ? 'word' : 'words'} — in the
+whole $unit, not per sentence and not on average. Fewer is better. None is
+perfectly fine.''';
+    final scope = perPart
+        ? '''
+
+A word counts as new only the FIRST time the story uses it. After that it belongs
+to the story, and using it again is how the listener comes to know it — so when
+you need a word you have already introduced, reach for that one rather than for
+another new one. Repetition across the parts is what makes a story followable.'''
         : '''
 
-AND A BUDGET FOR THE WHOLE TEXT: at most $perText new words in a text — in the
-whole thing, not per sentence. These texts are a few sentences each and every one
-is a scene the listener has never heard, so a new word here has nothing to lean
-on and never comes back. Two per text they can follow; six they cannot. If a text
-seems to need another new word, rewrite it so it doesn't.''';
-    final partBudget = perPart == null
-        ? ''
-        : '''
-
-AND A BUDGET FOR EACH PART: at most $perPart words that are new TO THIS STORY in
-any one part. A word counts as new only the first time the story uses it — after
-that it belongs to the story, and using it again is how the listener comes to
-know it. So when you need a word you have already introduced, reach for that one
-rather than for another new one: repetition across the parts is what makes a
-story followable, and a part is what the listener hears in one go.''';
-    final textCheck = perText == null
-        ? ''
-        : " Count the whole text's new words as well, against the $perText it is allowed.";
-    final partCheck = perPart == null
-        ? ''
-        : ' Go part by part as well, counting only words the story had not used before,'
-              ' against the $perPart each part is allowed.';
+Each of these texts is a scene the listener has never heard, so a new word here
+has nothing to lean on and never comes back. That is why the budget is per text,
+and small.''';
+    final check = budget == 0
+        ? "Every word must be on the list; remove any that isn't."
+        : 'Count the new words in each $unit against the $budget it is allowed'
+              '${perPart ? ', counting only words the story had not used before' : ''}.';
     return '''
 VOCABULARY CEILING — THE HARDEST RULE HERE
 A word is NEW if neither it nor any other form of it appears in the vocabulary
-list above. In every sentence, use AT MOST TWO new words. One is better. None is
-perfectly fine.$textBudget$partBudget
+list above. $rule$scope
 
-This is a ceiling, not an average. A listener has no way to stop and look
-anything up, so one sentence carrying four unknown words costs them the rest of
-the text — they are still working on it while the next sentence plays.
+A listener cannot stop to look anything up. One unknown word too many and they
+are still working on it while the next sentence plays, which costs them the rest.
 
 * Other grammatical forms of a listed word are NOT new: different tense, case,
-  number, person, mood, or a participle. Use them freely — that is the point.
+  number, person, mood, or a participle. Use them freely — that is the point,
+  and it is where the variety in these texts should come from.
 * Names of people and places do not count, nor do numbers.
 * A new word must be inferable from the sentence around it or from what has
   already happened. If it cannot be guessed, use a listed word instead.
 * When you cannot say something inside this limit, say something simpler. Never
   spend the budget on a word the listener does not need.
 
-Before you answer, re-read every sentence you have written and count its new
-words against the list.$textCheck$partCheck Rewrite anything over the limit. Do this check
-on the finished text, not from memory of intending to comply.
+Before you answer, re-read what you have written. $check Rewrite anything over the
+limit. Do this check on the finished text, not from memory of intending to comply.
 ''';
   }
 
@@ -1423,6 +1421,9 @@ on the finished text, not from memory of intending to comply.
     required String targetLanguage,
     required int count,
     required int sentencesPerText,
+    // The learner's choice, per generator (see [_kNewWordsPerText] for why the
+    // short texts need their own).
+    int newWordsPerText = _kNewWordsPerText,
   }) async {
     if (apiKey.trim().isEmpty) {
       throw Exception('AI API key is empty (set it in Settings).');
@@ -1482,7 +1483,7 @@ The learner knows every one of those phrases by heart. So:
 * You have real freedom in *what happens*: any everyday scene is fair game,
   whether or not the list hints at it. You have very little freedom in *which
   words say it* — see the ceiling below.
-${_vocabularyCeiling(perText: _kNewWordsPerText)}
+${_vocabularyCeiling(budget: newWordsPerText, perPart: false)}
 YOUR TASK
 Write $count different texts in $targetLanguage. Each one is a tiny, complete
 story.
@@ -1525,7 +1526,7 @@ Return ONLY a JSON array and nothing else. No explanations, no markdown.
 ]
 
 "new_words" is the count you were told to make: list the new words you actually
-used in that text. A text whose list is longer than $_kNewWordsPerText is over
+used in that text. A text whose list is longer than $newWordsPerText is over
 budget — rewrite it before returning it rather than listing them all.
 ''';
 
@@ -1594,7 +1595,7 @@ budget — rewrite it before returning it rather than listing them all.
       final l1 = (m['l1'] as String? ?? '').trim();
       if (l2.isEmpty) continue;
       final declared = ((m['new_words'] as List?) ?? const []).where((w) => '$w'.trim().isNotEmpty).length;
-      if (declared <= _kNewWordsPerText) {
+      if (declared <= newWordsPerText) {
         within.add((l2: l2, l1: l1));
       } else {
         over.add((newWords: declared, l2: l2, l1: l1));
@@ -1629,6 +1630,7 @@ budget — rewrite it before returning it rather than listing them all.
     required String targetLanguage,
     required int parts,
     required int sentencesPerPart,
+    int newWordsPerPart = _kNewWordsPerPart,
     String theme = '',
     // How the story should feel. Separate from [theme] on purpose: a mood
     // alone ("suspense") is not a situation, and given only that the model
@@ -1686,7 +1688,7 @@ NOT a list of topics to cover. They know every phrase on it by heart, so a story
 recognisably assembled out of them is recognised rather than understood, and is
 worthless as practice. Invent situations that appear nowhere in the list — the
 freedom is in what happens, not in which words say it.
-${_vocabularyCeiling(perPart: _kNewWordsPerPart)}
+${_vocabularyCeiling(budget: newWordsPerPart, perPart: true)}
 YOUR TASK
 Write ONE short story in $targetLanguage — a real short story, the kind that
 would sit in a collection, not a language exercise.

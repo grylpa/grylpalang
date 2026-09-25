@@ -220,7 +220,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// The reserve is only valid for the selection *and* the length it was
   /// written at: serving texts made at 2 sentences after the user asked for 4
   /// would quietly ignore the request.
-  static String _reserveSigFor(Iterable<String> subjects, int perText) => '${_sigFor(subjects)}#$perText';
+  static String _reserveSigFor(Iterable<String> subjects, int perText, int newWords) =>
+      '${_sigFor(subjects)}#$perText#$newWords';
 
   /// Every selectable subject — meta subjects are pure groups in the bank, so
   /// they're excluded here exactly as in the Sentences tab.
@@ -386,15 +387,23 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       if (ask == null || !mounted) return;
       // Remembered — and reused as-is by the automatic top-ups, which have no
       // dialog to ask.
-      if (ask.want != s.listenTextsPerRun || ask.perText != s.listenSentencesPerText) {
-        await state.saveSettingsOnly(s.copyWith(listenTextsPerRun: ask.want, listenSentencesPerText: ask.perText));
+      if (ask.want != s.listenTextsPerRun ||
+          ask.perText != s.listenSentencesPerText ||
+          ask.newWords != s.listenNewWordsPerText) {
+        await state.saveSettingsOnly(
+          s.copyWith(
+            listenTextsPerRun: ask.want,
+            listenSentencesPerText: ask.perText,
+            listenNewWordsPerText: ask.newWords,
+          ),
+        );
         if (!mounted) return;
         s = state.settings;
       }
     }
     final want = s.listenTextsPerRun;
     final perText = s.listenSentencesPerText;
-    final sig = _reserveSigFor(subjects, perText);
+    final sig = _reserveSigFor(subjects, perText, s.listenNewWordsPerText);
     var reserve = sig == _reserveSig ? [..._reserve] : <ListenStory>[];
 
     // An automatic top-up runs *during* playback, and must never pause it.
@@ -425,6 +434,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
           targetLanguage: s.targetLanguage,
           count: want > _kFetchBatch ? want : _kFetchBatch,
           sentencesPerText: perText,
+          newWordsPerText: s.listenNewWordsPerText,
         );
         final existing = {for (final st in _stories) st.l2, for (final st in reserve) st.l2};
         for (final text in texts) {
@@ -676,12 +686,14 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       // worked last time.
       if (ask.sentences != s.listenStorySentences ||
           ask.perPart != s.listenStoryPartSentences ||
-          ask.mood != s.listenStoryMood) {
+          ask.mood != s.listenStoryMood ||
+          ask.newWords != s.listenNewWordsPerPart) {
         await state.saveSettingsOnly(
           s.copyWith(
             listenStorySentences: ask.sentences,
             listenStoryPartSentences: ask.perPart,
             listenStoryMood: ask.mood,
+            listenNewWordsPerPart: ask.newWords,
           ),
         );
         if (!mounted) return;
@@ -721,6 +733,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         targetLanguage: s.targetLanguage,
         parts: partCount,
         sentencesPerPart: perPart,
+        newWordsPerPart: s.listenNewWordsPerPart,
         theme: idea,
         // Remembered, so automatic replacements keep it too.
         mood: s.listenStoryMood,
@@ -791,16 +804,17 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// The text-generation settings, asked at the moment of generating — the same
   /// shape as the story dialog. Whatever is chosen here is remembered and is
   /// exactly what the automatic top-ups reuse.
-  Future<({int want, int perText})?> _askGenerateOptions(AppSettings s) async {
+  Future<({int want, int perText, int newWords})?> _askGenerateOptions(AppSettings s) async {
     var want = s.listenTextsPerRun;
     var perText = s.listenSentencesPerText;
-    return showDialog<({int want, int perText})>(
+    var newWords = s.listenNewWordsPerText;
+    return showDialog<({int want, int perText, int newWords})>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) {
           // Live, because changing the length changes whether the reserve (made
           // at some particular length) can serve this request at all.
-          final spares = _reserveSig == _reserveSigFor(_selectedSubjects, perText) ? _reserve.length : 0;
+          final spares = _reserveSig == _reserveSigFor(_selectedSubjects, perText, newWords) ? _reserve.length : 0;
           // The spares are used first, so even a partial set is worth saying —
           // it is the difference between some texts arriving instantly and all
           // of them waiting on the network.
@@ -839,6 +853,19 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                   valueWidth: 80,
                   onSet: (v) => setSheet(() => perText = v),
                 ),
+                // The learner's own ceiling. 0 means every word must already be in the
+                // bank, which is what makes a batch reliably followable.
+                _stepper(
+                  ctx,
+                  label: 'New words per text',
+                  suffix: '',
+                  value: newWords,
+                  min: 0,
+                  max: 6,
+                  valueWidth: 80,
+                  display: (v) => v == 0 ? 'none' : '$v',
+                  onSet: (v) => setSheet(() => newWords = v),
+                ),
                 const SizedBox(height: 4),
                 Text(note, style: Theme.of(ctx).textTheme.bodySmall),
               ],
@@ -846,7 +873,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               FilledButton(
-                onPressed: () => Navigator.pop(ctx, (want: want, perText: perText)),
+                onPressed: () => Navigator.pop(ctx, (want: want, perText: perText, newWords: newWords)),
                 child: const Text('Generate'),
               ),
             ],
@@ -863,13 +890,16 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// The length is shown in sentences *and* in the parts it works out to, since
   /// the part size is the learner's own setting and is what they will actually
   /// hear.
-  Future<({String idea, String mood, int sentences, int perPart})?> _askStoryOptions(AppSettings s) async {
+  Future<({String idea, String mood, int sentences, int perPart, int newWords})?> _askStoryOptions(
+    AppSettings s,
+  ) async {
     final ctl = TextEditingController();
     // Prefilled: a mood is a preference you keep, where a theme is a one-off.
     final moodCtl = TextEditingController(text: s.listenStoryMood);
     var sentences = s.listenStorySentences;
     var perPart = s.listenStoryPartSentences;
-    final result = await showDialog<({String idea, String mood, int sentences, int perPart})>(
+    var newWords = s.listenNewWordsPerPart;
+    final result = await showDialog<({String idea, String mood, int sentences, int perPart, int newWords})>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) => AlertDialog(
@@ -917,6 +947,19 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                   valueWidth: 80,
                   onSet: (v) => setSheet(() => perPart = v),
                 ),
+                // Counted on a word's first appearance in the story, so a word brought
+                // back in a later part costs nothing.
+                _stepper(
+                  ctx,
+                  label: 'New words per part',
+                  suffix: '',
+                  value: newWords,
+                  min: 0,
+                  max: 6,
+                  valueWidth: 80,
+                  display: (v) => v == 0 ? 'none' : '$v',
+                  onSet: (v) => setSheet(() => newWords = v),
+                ),
                 const SizedBox(height: 4),
                 Text(
                   '$sentences sentences — about ${(sentences / perPart).round().clamp(3, 40)} parts of $perPart',
@@ -945,6 +988,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                 mood: moodCtl.text.trim(),
                 sentences: sentences,
                 perPart: perPart,
+                newWords: newWords,
               )),
               child: const Text('Create'),
             ),
