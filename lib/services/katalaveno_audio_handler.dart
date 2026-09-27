@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 
 /// Single shared [AudioHandler] owned by the app. Replaces just_audio_background
@@ -25,38 +26,113 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
     // Mirror the player's state into the audio_service playbackState so the
     // system media notification reflects what we're doing.
     player.playbackEventStream.listen(_emitPlaybackState);
-    player.processingStateStream.listen((_) => _emitPlaybackState(player.playbackEvent));
-    player.playingStream.listen((playing) => playing ? _idleTimer?.cancel() : _armIdleStop());
+    player.processingStateStream.listen((_) {
+      _emitPlaybackState(player.playbackEvent);
+      _reviewSession();
+    });
+    player.playingStream.listen((_) => _reviewSession());
   }
 
-  // ── Idle teardown ─────────────────────────────────────────────────────────
+  // ── Keeping the service honest ─────────────────────────────────
   //
-  // A paused session must keep the service in the foreground: Android 12+ has no
-  // exemption for a media button, so once foreground is dropped a headset Play
-  // from the background cannot legally bring it back and playback would run
-  // silently. The cost is a wakelock and a visible battery line for as long as
-  // the app stays paused — which, since nothing ever stopped it, was forever.
+  // audio_service holds a PARTIAL_WAKE_LOCK for as long as the session is in the
+  // foreground, and with `androidStopForegroundOnPause: false` — which we need,
+  // since Android 12+ would not let a background headset Play put the service
+  // back in the foreground — it releases that lock in exactly one place: when
+  // the playbackState goes **idle**. Nothing in the app used to take it there. A
+  // pause kept it. A queue that ran out kept it. Even the notification's Stop
+  // kept it, wherever the owning screen's `onStop` merely paused (Listen's does,
+  // by design — "pause is the stop"). The phone's own battery warning was
+  // reporting the result: a wakelock held for hours with nothing coming out of
+  // the speaker.
   //
-  // So: pause keeps everything, and after [idleStopAfter] of it the session ends
-  // for real — the notification goes too, so coming back means the app. That is
-  // a fair trade for an idle wakelock that otherwise lasted until the user
-  // noticed it in the battery screen.
+  // Two guards now watch for that, and both end in [_endSession], which drives
+  // the state to idle and so releases the lock and stops the service:
   //
-  // This is a plain Timer, not an alarm: Doze may fire it late, which only means
-  // the service lives a little longer than asked.
+  //  * **Paused, ended or stopped** for [idleStopAfter] → stop for real. Coming
+  //    back then means the app rather than the headset, which is the trade a ten
+  //    minute idle earns.
+  //  * **Nominally playing but not advancing** for [_kStallSamples] samples →
+  //    the same. A session that renders nothing is a wakelock and nothing else,
+  //    and `playing` staying true is why the first guard alone missed it.
+  //
+  // Exactly one guard is armed at a time, and the stall watch only ticks while
+  // the player claims to be playing — when the CPU is already awake for audio.
   Duration idleStopAfter = const Duration(minutes: 10);
   Timer? _idleTimer;
 
+  static const Duration _kStallSample = Duration(minutes: 1);
+  static const int _kStallSamples = 3;
+  Timer? _stallTimer;
+  int _stallTicks = 0;
+  (int?, int)? _lastProgress;
+
+  /// True once the plugin has put the service in the foreground and taken the
+  /// wakelock, which it does the moment we report `playing` — whatever the
+  /// processing state. This is the "is there anything to tear down" test: before
+  /// the first play, and after a teardown, there is not.
+  bool _serviceLive = false;
+
+  /// Re-arms the right guard. Called on every play/pause *and* processing-state
+  /// change: a queue that simply ended leaves `playing` true and emits no pause,
+  /// so watching one stream alone would miss it.
+  ///
+  /// The split is on `playing` alone, not on a set of "healthy" processing
+  /// states, because a `play()` on a queue that never got prepared reports
+  /// playing with the state still `idle` — enough for the plugin to go
+  /// foreground and take the lock, and the worst case to leave uncovered.
+  void _reviewSession() {
+    if (player.playing) {
+      _idleTimer?.cancel();
+      _idleTimer = null;
+      _startStallWatch();
+    } else {
+      _stopStallWatch();
+      _armIdleStop();
+    }
+  }
+
   void _armIdleStop() {
-    _idleTimer?.cancel();
-    _idleTimer = null;
+    if (_idleTimer?.isActive ?? false) return; // already counting down
     if (idleStopAfter <= Duration.zero) return;
-    // Nothing loaded means nothing to tear down (this fires at launch too).
-    if (player.audioSource == null) return;
+    if (!_serviceLive) return; // nothing playing has ever claimed the service
     _idleTimer = Timer(idleStopAfter, () {
+      _idleTimer = null;
       if (player.playing) return;
-      unawaited(_endIdleSession());
+      unawaited(_endSession('idle for ${idleStopAfter.inMinutes}m'));
     });
+  }
+
+  void _startStallWatch() {
+    if (_stallTimer != null) return;
+    _lastProgress = null;
+    _stallTicks = 0;
+    _stallTimer = Timer.periodic(_kStallSample, (_) => _checkProgress());
+  }
+
+  void _stopStallWatch() {
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    _lastProgress = null;
+    _stallTicks = 0;
+  }
+
+  /// Progress is the (clip, second) pair: either changing means audio is moving,
+  /// and a clip boundary resets the position, so both have to be sampled. A
+  /// player that reports playing while stuck at 0:00 — an unprepared queue —
+  /// reads as no progress, which is exactly right.
+  void _checkProgress() {
+    if (!player.playing) return; // the idle guard owns every other state
+    final now = (player.currentIndex, player.position.inSeconds);
+    if (_lastProgress != null && now == _lastProgress) {
+      if (++_stallTicks >= _kStallSamples) {
+        _stopStallWatch();
+        unawaited(_endSession('playing but stalled for ${_kStallSamples * _kStallSample.inMinutes}m'));
+      }
+      return;
+    }
+    _stallTicks = 0;
+    _lastProgress = now;
   }
 
   /// Ends the session the way another screen claiming the player would, so the
@@ -69,16 +145,28 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
   /// its position should see a live player when it does.
   ///
   /// The binding then goes too. A screen that kept it would still answer
-  /// `isActiveSession` and take its resume fast-path on the next Play — seeking
-  /// into a queue that no longer exists, which plays silence. Every screen binds
-  /// again when it plays, so nothing is lost; the per-tab starters, which is
-  /// what a cold Play goes through, are registered separately and stay.
-  Future<void> _endIdleSession() async {
+  /// `isActiveSession` and take its resume fast-path on the next Play — calling
+  /// `play()` on a player whose decoders were released, which plays nothing.
+  /// Every screen binds again when it plays, so nothing is lost; the per-tab
+  /// starters, which is what a cold Play goes through, are registered separately
+  /// and stay.
+  Future<void> _endSession(String reason) async {
+    _idleTimer?.cancel();
     _idleTimer = null;
+    _stopStallWatch();
+    debugPrint('katalaveno: ending audio session — $reason');
     final owner = _top;
     owner?.onSessionLost?.call();
     if (owner != null) unbind(owner.owner);
     await player.stop();
+    // The plugin stops the service (and releases the lock) on a **transition**
+    // into idle — `oldProcessingState != idle && processingState == idle` in its
+    // setState. A session that never got past idle in the first place would
+    // never make that transition, so state it explicitly rather than trusting
+    // the player's own stream to produce it.
+    playbackState.add(playbackState.value.copyWith(playing: false, processingState: AudioProcessingState.ready));
+    playbackState.add(playbackState.value.copyWith(playing: false, processingState: AudioProcessingState.idle));
+    _serviceLive = false;
     await super.stop();
   }
 
@@ -186,15 +274,12 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> stop() async {
-    _idleTimer?.cancel();
-    _idleTimer = null;
-    if (_top?.onStop != null) {
-      await _top!.onStop!();
-    } else {
-      // Safety net for system-stop with nothing bound (e.g. headphones disconnected).
-      await player.stop();
-    }
-    await super.stop();
+    // The screen's own semantics first — Listen's Stop is a pause, since its
+    // playlist is worth keeping — and then the session really ends. A Stop that
+    // left the player merely paused left the wakelock held, which is the whole
+    // reason the guards above exist.
+    if (_top?.onStop != null) await _top!.onStop!();
+    await _endSession('stop requested');
   }
 
   @override
@@ -210,6 +295,9 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
   // ── Playback state mirroring ─────────────────────────────────────────────
 
   void _emitPlaybackState(ja.PlaybackEvent event) {
+    // Reporting `playing` is what makes the plugin go foreground and take the
+    // wakelock, so it is also what makes a teardown something we owe.
+    if (player.playing) _serviceLive = true;
     playbackState.add(
       playbackState.value.copyWith(
         controls: [
