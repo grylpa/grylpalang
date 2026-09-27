@@ -30,13 +30,31 @@ void main() async {
       // audio_service asserts the pair, since "ongoing" only means anything for
       // a service that leaves the foreground when paused.
       androidNotificationOngoing: false,
-      // Must stay false: dropping foreground state on pause is one-way. Android
-      // 12+ forbids re-entering it from the background (dumpsys shows
-      // code:DENIED), so a pause with the screen locked would leave hour-long
-      // playback running as a plain background service — which Android's audio
-      // hardening warns it will mute. Keeping it foreground costs only a
-      // notification that persists while paused.
-      androidStopForegroundOnPause: false,
+      // True, and it has to be true. This is the *only* path that releases
+      // audio_service's PARTIAL_WAKE_LOCK while the app is running: the lock is
+      // taken in enterPlayingState and released in exitPlayingState (gated on
+      // this flag) or in onDestroy — and onDestroy never runs, because the
+      // plugin keeps a MediaBrowserService binding open for the app's lifetime
+      // and a bound service survives its own stopSelf(). `dumpsys activity
+      // services` shows exactly that: startRequested=false (stopSelf did run)
+      // next to a live binding, isForeground=true and the lock still held. With
+      // this false, every pause leaked a held wakelock until Android killed the
+      // app — measured at 4h17m with no audio at all, which is what the phone's
+      // battery warning was reporting.
+      //
+      // The earlier fear was that a pause with the screen locked could never
+      // re-enter the foreground, since Android 12+ blocks a background FGS
+      // start. It doesn't apply here: the platform grants a temporary allowlist
+      // precisely for this case — `dumpsys media_session` lists
+      // media_button_receiver_fgs_allowlist_duration_ms and
+      // media_session_calback_fgs_allowlist_duration_ms (10s each), and
+      // batterystats shows it being granted by name on a headset press
+      // (+tmpwhitelist=…KEYCODE_MEDIA_PREVIOUS). Pausing drops foreground with
+      // STOP_FOREGROUND_DETACH, so the notification stays on screen and the
+      // media session stays active; the Play that comes back through either of
+      // them carries that allowlist. (The "code:DENIED" cited before was
+      // mAllowWiu_byBindings, one per-reason field, not the verdict.)
+      androidStopForegroundOnPause: true,
     ),
   );
 
