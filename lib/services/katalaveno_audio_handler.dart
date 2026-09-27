@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 
@@ -24,6 +26,60 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
     // system media notification reflects what we're doing.
     player.playbackEventStream.listen(_emitPlaybackState);
     player.processingStateStream.listen((_) => _emitPlaybackState(player.playbackEvent));
+    player.playingStream.listen((playing) => playing ? _idleTimer?.cancel() : _armIdleStop());
+  }
+
+  // ── Idle teardown ─────────────────────────────────────────────────────────
+  //
+  // A paused session must keep the service in the foreground: Android 12+ has no
+  // exemption for a media button, so once foreground is dropped a headset Play
+  // from the background cannot legally bring it back and playback would run
+  // silently. The cost is a wakelock and a visible battery line for as long as
+  // the app stays paused — which, since nothing ever stopped it, was forever.
+  //
+  // So: pause keeps everything, and after [idleStopAfter] of it the session ends
+  // for real — the notification goes too, so coming back means the app. That is
+  // a fair trade for an idle wakelock that otherwise lasted until the user
+  // noticed it in the battery screen.
+  //
+  // This is a plain Timer, not an alarm: Doze may fire it late, which only means
+  // the service lives a little longer than asked.
+  Duration idleStopAfter = const Duration(minutes: 10);
+  Timer? _idleTimer;
+
+  void _armIdleStop() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    if (idleStopAfter <= Duration.zero) return;
+    // Nothing loaded means nothing to tear down (this fires at launch too).
+    if (player.audioSource == null) return;
+    _idleTimer = Timer(idleStopAfter, () {
+      if (player.playing) return;
+      unawaited(_endIdleSession());
+    });
+  }
+
+  /// Ends the session the way another screen claiming the player would, so the
+  /// owning screen resets its own state through the callback it already has —
+  /// position saved, in-flight render abandoned, flags cleared — while the
+  /// player and the foreground service are torn down here.
+  ///
+  /// The callback runs *before* the player is stopped, the reverse of a
+  /// hand-over: there is no incoming audio to protect here, and a screen saving
+  /// its position should see a live player when it does.
+  ///
+  /// The binding then goes too. A screen that kept it would still answer
+  /// `isActiveSession` and take its resume fast-path on the next Play — seeking
+  /// into a queue that no longer exists, which plays silence. Every screen binds
+  /// again when it plays, so nothing is lost; the per-tab starters, which is
+  /// what a cold Play goes through, are registered separately and stay.
+  Future<void> _endIdleSession() async {
+    _idleTimer = null;
+    final owner = _top;
+    owner?.onSessionLost?.call();
+    if (owner != null) unbind(owner.owner);
+    await player.stop();
+    await super.stop();
   }
 
   /// Pushes a binding onto the stack. If [owner] already has one, it's
@@ -130,6 +186,8 @@ class KatalavenoAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> stop() async {
+    _idleTimer?.cancel();
+    _idleTimer = null;
     if (_top?.onStop != null) {
       await _top!.onStop!();
     } else {
