@@ -21,6 +21,7 @@ import '../services/google_translate_tts.dart';
 import '../services/notification_service.dart';
 import '../services/sentence_bank_service.dart';
 import '../widgets.dart';
+import '../services/katalaveno_audio_handler.dart';
 
 class AppState extends ChangeNotifier {
   late AppStorage _storage;
@@ -218,7 +219,7 @@ class AppState extends ChangeNotifier {
     ]);
 
     _settings = results[0] as AppSettings;
-    _applyAiEngine();
+    _applyRuntimeSettings();
     // Which model has been answering, restored so the Settings readout is a
     // history rather than "since this launch".
     unawaited(AiService.loadUsage());
@@ -411,13 +412,17 @@ class AppState extends ChangeNotifier {
     debugPrint("saved all settings, words and snapshots");
   }
 
-  /// Points [AiService] at the generation the user picked. Called wherever
-  /// settings land, since the service holds it as process-wide state.
-  void _applyAiEngine() => AiService.engine = AiEngine.byId(_settings.aiEngineId);
+  /// Pushes settings that live in process-wide services rather than in the
+  /// widget tree: the AI generation, and how long a paused session may hold the
+  /// media service before it is torn down. Called wherever settings land.
+  void _applyRuntimeSettings() {
+    AiService.engine = AiEngine.byId(_settings.aiEngineId);
+    katalavenoAudio.idleStopAfter = Duration(minutes: _settings.audioIdleStopMinutes);
+  }
 
   Future<void> updateSettings(AppSettings s) async {
     _settings = s;
-    _applyAiEngine();
+    _applyRuntimeSettings();
     await _persist();
     await _rescheduleAll(firstOffset: const Duration(seconds: 30));
     notifyListeners();
@@ -426,7 +431,7 @@ class AppState extends ChangeNotifier {
   /// Persists settings without touching the notification schedule.
   Future<void> saveSettingsOnly(AppSettings s) async {
     _settings = s;
-    _applyAiEngine();
+    _applyRuntimeSettings();
     await _persist();
     notifyListeners();
   }
@@ -777,10 +782,29 @@ class AppState extends ChangeNotifier {
       past.removeRange(kMaxHistoryPast, past.length);
     }
 
-    _snapshots = [...past, ...future];
+    final next = [...past, ...future];
+    // Nothing moved: no disk write, no rebuild. This runs on a 30-second timer
+    // for as long as the app is open, and writing the whole snapshot list and
+    // notifying unconditionally meant a JSON encode + store write and a rebuild
+    // of every kept-alive tab twice a minute — including in the background,
+    // where the media service keeps the process awake enough to keep firing.
+    // That, not audio, was the battery drain the phone complained about.
+    if (_sameOrder(next)) return;
+
+    _snapshots = next;
     _storage.saveSnapshots(_snapshots);
 
     notifyListeners();
+  }
+
+  /// Whether [next] is the list already held, in the same order. Identity is
+  /// enough: the reordering above moves the very same objects around.
+  bool _sameOrder(List<NotificationSnapshot> next) {
+    if (next.length != _snapshots.length) return false;
+    for (var i = 0; i < next.length; i++) {
+      if (!identical(next[i], _snapshots[i])) return false;
+    }
+    return true;
   }
 
   Future<void> onAppResumed() async {

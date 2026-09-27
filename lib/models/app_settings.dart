@@ -34,6 +34,11 @@ class AppSettings {
   Duration interval;
   bool showTranslation;
   bool useDarkMode;
+  // Minutes paused before audio stops for real and the media service is torn
+  // down. A paused session has to keep the service in the foreground (see
+  // KatalavenoAudioHandler), and that is a wakelock the battery screen
+  // notices. 0 = never stop on its own.
+  int audioIdleStopMinutes;
   int simpleCount;
   int conjugatedCount;
   List<String> connectorWords;
@@ -128,6 +133,7 @@ class AppSettings {
     required this.interval,
     required this.showTranslation,
     required this.useDarkMode,
+    this.audioIdleStopMinutes = 10,
     required this.simpleCount,
     required this.conjugatedCount,
     required this.connectorWords,
@@ -193,6 +199,7 @@ class AppSettings {
     Duration? interval,
     bool? showTranslation,
     bool? useDarkMode,
+    int? audioIdleStopMinutes,
     int? simpleCount,
     int? conjugatedCount,
     List<String>? connectorWords,
@@ -257,6 +264,7 @@ class AppSettings {
       interval: interval ?? this.interval,
       showTranslation: showTranslation ?? this.showTranslation,
       useDarkMode: useDarkMode ?? this.useDarkMode,
+      audioIdleStopMinutes: audioIdleStopMinutes ?? this.audioIdleStopMinutes,
       simpleCount: simpleCount ?? this.simpleCount,
       conjugatedCount: conjugatedCount ?? this.conjugatedCount,
       connectorWords: connectorWords ?? this.connectorWords,
@@ -331,6 +339,7 @@ class AppSettings {
     'intervalSeconds': interval.inSeconds,
     'showTranslation': showTranslation,
     'useDarkMode': useDarkMode,
+    'audioIdleStopMinutes': audioIdleStopMinutes,
     'simpleCount': simpleCount,
     'conjugatedCount': conjugatedCount,
     'connectorWords': connectorWords,
@@ -401,6 +410,7 @@ class AppSettings {
       interval: Duration(seconds: (json['intervalSeconds'] as int?) ?? 3600),
       showTranslation: json['showTranslation'] as bool? ?? false,
       useDarkMode: json['useDarkMode'] as bool? ?? true,
+      audioIdleStopMinutes: json['audioIdleStopMinutes'] as int? ?? 10,
       simpleCount: json['simpleCount'] as int? ?? 3,
       conjugatedCount: json['conjugatedCount'] as int? ?? 20,
       connectorWords: (json['connectorWords'] as List?)?.cast<String>() ?? <String>[],

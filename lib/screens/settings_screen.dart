@@ -414,6 +414,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  static const List<int> _kIdleStopChoices = [0, 2, 5, 10, 20, 30, 60];
+
+  String _idleStopLabel(int minutes) {
+    if (minutes == 0) return 'Never';
+    if (minutes == 60) return '1 hour';
+    return '$minutes minutes';
+  }
+
   Widget _section(String title, List<Widget> children, {Key? sectionKey, ExpansibleController? controller}) {
     return Card(
       key: sectionKey,
@@ -563,6 +571,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 title: Text('Dark mode', style: titleStyle),
                 value: s.useDarkMode,
                 onChanged: (v) => state.updateSettings(s.copyWith(useDarkMode: v)),
+              ),
+            ]),
+
+            // ── Audio ───────────────────────────────────────
+            // Pause has to keep the media service alive (Android forbids a
+            // background restart, so a headset resume would play silently) —
+            // which means a paused session held a wakelock indefinitely. This
+            // is what ends it.
+            _section('Audio', [
+              Text(
+                'Paused audio keeps its media notification, and with it a small battery cost. '
+                'After this long paused, playback stops for real and the notification goes '
+                'away — start it again from the app.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: _kIdleStopChoices.contains(s.audioIdleStopMinutes) ? s.audioIdleStopMinutes : 10,
+                decoration: const InputDecoration(labelText: 'Stop after being paused for'),
+                items: [for (final m in _kIdleStopChoices) DropdownMenuItem(value: m, child: Text(_idleStopLabel(m)))],
+                onChanged: (v) => state.saveSettingsOnly(s.copyWith(audioIdleStopMinutes: v ?? 10)),
               ),
             ]),
 

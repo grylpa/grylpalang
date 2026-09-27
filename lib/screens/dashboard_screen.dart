@@ -19,6 +19,7 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  late final AppLifecycleListener _ticking;
   Timer? _timer;
 
   // Track which words are currently talking to the AI.
@@ -35,17 +36,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
       context.read<AppState>().refreshFromTime();
     });
 
-    // While this tab is visible, periodically refresh from time so the
-    // "Remaining" counters keep up with fired notifications.
+    // Keeps the "Remaining" counters up with fired notifications — but only
+    // while the app is actually on screen. Every tab is kept alive for the life
+    // of the app, so a timer started here otherwise ticks forever in the
+    // background, which is exactly the battery drain it isn't worth.
+    _ticking = AppLifecycleListener(
+      onStateChange: (state) => state == AppLifecycleState.resumed ? _startTicking() : _stopTicking(),
+    );
+    _startTicking();
+  }
+
+  void _startTicking() {
+    _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (!mounted) return;
       context.read<AppState>().refreshFromTime();
     });
   }
 
+  void _stopTicking() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
   @override
   void dispose() {
     _timer?.cancel();
+    _ticking.dispose();
     super.dispose();
   }
 
