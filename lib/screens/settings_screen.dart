@@ -695,7 +695,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 initialValue: AiEngine.byId(s.aiEngineId).id,
                 decoration: const InputDecoration(labelText: 'AI model'),
                 items: [for (final e in AiEngine.values) DropdownMenuItem(value: e.id, child: Text(e.label))],
-                onChanged: (v) => state.saveSettingsOnly(s.copyWith(aiEngineId: v ?? AiEngine.gemini25.id)),
+                onChanged: (v) => state.saveSettingsOnly(s.copyWith(aiEngineId: v ?? AiEngine.gemini3.id)),
               ),
               const SizedBox(height: 6),
               Text(AiEngine.byId(s.aiEngineId).description, style: Theme.of(context).textTheme.bodySmall),

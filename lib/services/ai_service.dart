@@ -24,7 +24,7 @@ class AiService {
   /// [AppState]) rather than threaded through each call: there is one engine per
   /// process, and passing it to forty call sites would only create forty chances
   /// to forget.
-  static AiEngine engine = AiEngine.gemini25;
+  static AiEngine engine = AiEngine.gemini3;
 
   static String _endpoint(String model) =>
       'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent';

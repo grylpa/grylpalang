@@ -18,27 +18,31 @@
 /// `thinkingLevel` enum. [AiService] adapts every request body to the selected
 /// engine, so no individual call site has to know which is in use.
 enum AiEngine {
-  gemini25(
-    id: '2.5',
-    label: 'Gemini 2.5',
-    description: 'Flash, falling back to Flash-Lite. The long-standing default.',
-    models: ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-    acceptsSampling: true,
-    thinkingLevel: null,
-  ),
+  // Default, and listed first so the dropdown opens on it. 3.8 has held up in
+  // use — it answers in the same register as 2.5 on this app's prompts, and the
+  // Listen generators' word-budget counting is reasoning work it does better.
   gemini3(
     id: '3.x',
     label: 'Gemini 3.8',
-    description: 'Newer and stronger: 3.8 Flash, stepping down through 3.7, 3.6 and 3.5 to 3.5 Flash-Lite.',
+    description: 'The default: 3.8 Flash, stepping down through 3.7, 3.6 and 3.5 to 3.5 Flash-Lite.',
     models: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'],
     // Documented as removed for 3.8. Omitting a parameter is always accepted;
     // sending an unsupported one can 400 — and the worst place to discover that
-    // is on the fallback path, so both models in the pair are treated alike.
+    // is on the fallback path, so every model in the chain is treated alike.
     acceptsSampling: false,
     // 'medium' is the default and makes the model reason before every answer,
     // which costs output tokens and latency on work this short. Low is enough
-    // for sentence generation and grading.
+    // for sentence generation and grading; the Listen generators override it
+    // per call, since counting new words against the seed list *is* reasoning.
     thinkingLevel: 'low',
+  ),
+  gemini25(
+    id: '2.5',
+    label: 'Gemini 2.5',
+    description: 'The older pair: Flash, falling back to Flash-Lite. Still here if 3.x misbehaves.',
+    models: ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    acceptsSampling: true,
+    thinkingLevel: null,
   );
 
   const AiEngine({
@@ -68,5 +72,5 @@ enum AiEngine {
   /// has no such control.
   final String? thinkingLevel;
 
-  static AiEngine byId(String? id) => AiEngine.values.firstWhere((e) => e.id == id, orElse: () => AiEngine.gemini25);
+  static AiEngine byId(String? id) => AiEngine.values.firstWhere((e) => e.id == id, orElse: () => AiEngine.gemini3);
 }
