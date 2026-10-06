@@ -1391,8 +1391,12 @@ are still working on it while the next sentence plays, which costs them the rest
 * Names of people and places do not count, nor do numbers.
 * A new word must be inferable from the sentence around it or from what has
   already happened. If it cannot be guessed, use a listed word instead.
-* When you cannot say something inside this limit, say something simpler. Never
-  spend the budget on a word the listener does not need.
+* The limit is on WORDS. It is not a limit on the story. A plot can be as
+  tense, as awkward or as funny as you like inside a tiny vocabulary — what two
+  people want from each other costs nothing to say. So when a sentence will not
+  fit, rewrite the sentence; never simplify what happens, and never pick the
+  duller of two events because it is easier to word.
+* Never spend the budget on a word the listener does not need.
 
 Before you answer, re-read what you have written. $check Rewrite anything over the
 limit. Do this check on the finished text, not from memory of intending to comply.
@@ -1446,18 +1450,16 @@ limit. Do this check on the finished text, not from memory of intending to compl
     // below, precisely so eight texts don't turn into eight versions of one
     // café scene. Gemini 3.x removes that control, so on those models the
     // spread has to be bought in the prompt instead: one concrete situation per
-    // text, the same trick [generateStory] uses.
-    // Shuffled once, then walked in order: re-shuffling per line would happily
-    // hand the same situation to two texts, which is the exact failure this is
-    // meant to prevent.
-    final shuffledSeeds = _storySeeds.toList()..shuffle();
+    // text, the same trick [generateStory] uses. See [_seedPairs] for why they
+    // are walked rather than drawn.
+    final scenes = _seedPairs(count);
     final situations = AiService.engine.acceptsSampling
         ? ''
         : '''
 
 ONE SITUATION PER TEXT (use them in order, one each — they are starting points,
 not plots, and none of them appears in the vocabulary list):
-${[for (var i = 0; i < count; i++) '  ${i + 1}. ${shuffledSeeds[i % shuffledSeeds.length]}'].join('\n')}
+${[for (var i = 0; i < count; i++) '  ${i + 1}. ${scenes[i]}'].join('\n')}
 ''';
 
     final prompt =
@@ -1483,7 +1485,7 @@ The learner knows every one of those phrases by heart. So:
 * You have real freedom in *what happens*: any everyday scene is fair game,
   whether or not the list hints at it. You have very little freedom in *which
   words say it* — see the ceiling below.
-${_vocabularyCeiling(budget: newWordsPerText, perPart: false)}
+${_vocabularyCeiling(budget: newWordsPerText, perPart: false)}$_tiredProps
 YOUR TASK
 Write $count different texts in $targetLanguage. Each one is a tiny, complete
 story.
@@ -1660,7 +1662,7 @@ budget — rewrite it before returning it rather than listing them all.
     // Given per generation rather than left to the model: asked to "be creative"
     // it reliably returns the same handful of gentle scenes, so the variety has
     // to come from the instruction.
-    final seedIdea = theme.trim().isNotEmpty ? theme.trim() : (_storySeeds.toList()..shuffle()).first;
+    final seedIdea = theme.trim().isNotEmpty ? theme.trim() : _seedPairs(1).first;
     final moodLine = mood.trim().isEmpty
         ? ''
         : '\nMood: ${mood.trim()} — let it set the tone and what is at stake. The seed idea is still what happens.';
@@ -1688,7 +1690,7 @@ NOT a list of topics to cover. They know every phrase on it by heart, so a story
 recognisably assembled out of them is recognised rather than understood, and is
 worthless as practice. Invent situations that appear nowhere in the list — the
 freedom is in what happens, not in which words say it.
-${_vocabularyCeiling(budget: newWordsPerPart, perPart: true)}
+${_vocabularyCeiling(budget: newWordsPerPart, perPart: true)}$_tiredProps
 YOUR TASK
 Write ONE short story in $targetLanguage — a real short story, the kind that
 would sit in a collection, not a language exercise.
@@ -1711,8 +1713,9 @@ WHAT MAKES THE STORY ACCEPTABLE
 1. Two or three named characters. Use their names and keep them straight
    throughout.
 2. Something is wrong by the end of part 1. Not "a lovely day at the market".
-3. Concrete physical detail — what is in the room, what someone is holding, what
-   the weather is doing. Dialogue is welcome.
+3. Concrete physical detail, taken from the place the seed names — what is in
+   the room, the noise, the weather, what people are doing with their hands.
+   Dialogue is welcome. Detail is scenery; it is never the plot.
 4. An ending that resolves the situation. NO moral, NO "and so they learned", NO
    narrator stepping in to explain the point.
 5. Sentences roughly as long as the phrases in the vocabulary list above.
@@ -1810,26 +1813,111 @@ Return JSON only.
     );
   }
 
-  /// Seed situations for [generateStory], one picked at random per run. Left to
-  /// itself the model returns the same few mild scenes over and over; a concrete
-  /// starting point is what produces the variety.
-  static const List<String> _storySeeds = [
-    'a misunderstanding between neighbours that gets out of hand',
-    'a small theft that turns out not to be a theft',
-    'a journey that goes wrong in an ordinary way',
-    'someone waiting for a person who does not come',
-    'a favour that costs far more than expected',
-    'an object that keeps turning up where it should not be',
-    'a secret kept for a good reason and found out anyway',
-    'two people who need the same thing at the same time',
-    'a letter or message that arrives much too late',
-    'a promise made carelessly and taken seriously',
-    'a stranger who knows more than they should',
-    'a repair that makes the problem worse',
-    'a celebration nobody is in the mood for',
-    'an animal that decides the outcome of something',
-    'a lie told to be kind, which then has to be maintained',
+  /// What a story is *about* — a situation between people, never an object.
+  ///
+  /// Two lists crossed rather than one walked, because the variety used to come
+  /// from `temperature: 1.0` and Gemini 3.x removes that control: with sampling
+  /// gone the seed is the *only* thing that differs between two runs on the same
+  /// vocabulary, so fifteen seeds meant fifteen stories. A shape and a place
+  /// drawn independently give a few hundred, and the place does real work — it
+  /// decides who is present and what they can do, which is most of what makes
+  /// one story unlike another.
+  ///
+  /// Every shape is a pressure between people. The earlier list had three
+  /// object-shaped seeds ('an object that keeps turning up', 'a small theft',
+  /// 'a message that arrives too late') and those are the ones that came back as
+  /// a parcel, a bag or a box — see [_tiredProps].
+  static const List<String> _storyShapes = [
+    'someone has to admit a mistake to the person who will mind most',
+    'two people need the same thing and only one can have it',
+    'a favour is asked that is awkward to refuse and worse to grant',
+    'someone waits for a person who does not come',
+    'a kind lie has to be kept up once it is believed',
+    'a decision made in a second has to be defended for an hour',
+    'someone turns up where they were not invited and will not leave',
+    'someone is taken for somebody else and lets it go on',
+    'a rule is broken for a reason that is hard to say out loud',
+    'help has to be asked of the person last argued with',
+    'a plan depends on somebody who cannot be relied on',
+    'someone says the thing everyone had agreed not to mention',
+    'two people who avoid each other are made to wait together',
+    'somebody is late for the one thing that cannot be repeated',
+    'a promise made carelessly is taken seriously',
+    'bad news has to be given and keeps not being given',
+    'someone is thanked for what another person did',
+    'a long-standing arrangement is changed by one person without asking',
+    'somebody is good at something nobody around them values',
+    'an apology is offered and not accepted',
   ];
+
+  /// Where it happens, and therefore who is in the room. Deliberately ordinary
+  /// and deliberately specific: a named place at a named time of day constrains
+  /// the scene, while 'a town' or 'a house' leaves the model free to drift back
+  /// to the same kitchen it always writes.
+  static const List<String> _storyPlaces = [
+    'a bus on a long route, late at night',
+    'a restaurant kitchen before it opens',
+    'an office queue where everybody has waited too long',
+    'a stairwell between two front doors',
+    'a market stall in the rain',
+    'a school corridor during a lesson',
+    'a car park after everyone else has gone',
+    'a waiting room, very early in the morning',
+    'a village square during a festival nobody is enjoying',
+    'a small shop ten minutes before closing',
+    'a train stopped between two stations',
+    'a flat being packed up to be left',
+    'a beach out of season',
+    'a kitchen table with a meal going cold',
+    'a building site on a day off',
+    'the back seat of a taxi in traffic',
+    'a hotel reception at four in the afternoon',
+    'a pharmacy with one customer and no stock',
+    'a football pitch after the game, in the dark',
+    'a workshop where a repair is taking far too long',
+  ];
+
+  /// [count] seeds, each one shape in one place.
+  ///
+  /// Both lists are shuffled once and then zipped, rather than drawn at random
+  /// per seed: a fresh draw per text would hand two texts in the same batch the
+  /// same shape often enough to matter, which is the exact failure this is here
+  /// to prevent. Walking them guarantees [count] distinct shapes and [count]
+  /// distinct places as long as count stays under the list lengths.
+  static List<String> _seedPairs(int count) {
+    final shapes = _storyShapes.toList()..shuffle();
+    final places = _storyPlaces.toList()..shuffle();
+    return [for (var i = 0; i < count; i++) '${shapes[i % shapes.length]} — in ${places[i % places.length]}'];
+  }
+
+  /// What a model reaches for when it is asked for a simple story in a small
+  /// vocabulary, and must not.
+  ///
+  /// The container is the one that matters. It is the cheapest plot device in
+  /// any language: nobody has to say what is inside, so it costs not one word
+  /// against the vocabulary ceiling while supplying a whole story's worth of
+  /// mystery. Under that ceiling it isn't a cliché the model happens to like,
+  /// it is the *optimal* answer — which is why it turned up in every story
+  /// rather than merely often, and why naming it is the only thing that stops
+  /// it.
+  static const String _tiredProps = '''
+
+WHAT NOT TO REACH FOR
+These are the defaults a story in a small vocabulary falls into. None of them
+may appear:
+* A box, parcel, package, envelope, bag or any container whose contents are the
+  point. No unopened thing, nobody wondering what is inside. It costs you
+  nothing to write and the listener nothing to follow, and that is the problem.
+* A lost or found object as the reason the story happens — keys, a wallet, a
+  phone, a letter. One may sit on a table; none may drive the plot.
+* A dream, a note that explains everything, a coincidence that solves the
+  problem, or a person who exists only to deliver information.
+* A moral, a lesson learned, or a closing line that tells the listener what to
+  think.
+The story has to work because of what two people want from each other. If you
+took every object out of your outline and it stopped being a story, write the
+outline again.
+''';
 
   /// The few-shot examples below are written in Greek script, so they only help
   /// when Greek is what's being learned — shown to a German learner they'd just
