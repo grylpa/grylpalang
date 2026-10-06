@@ -1409,6 +1409,12 @@ limit. Do this check on the finished text, not from memory of intending to compl
   static const int _kMaxSeedPhrases = 400;
   static const int _kMaxSeedChars = 20000;
 
+  /// Texts per HTTP request, and how many already-written openings a request is
+  /// told to steer away from. A run still over-fetches [_kFetchBatch]-many
+  /// texts; it just no longer ask for them all in one breath.
+  static const int _kTextsPerRequest = 8;
+  static const int _kMaxAvoidOpenings = 30;
+
   /// Generates listening-comprehension texts: long sentences or micro-stories
   /// in L2, each with its L1 translation.
   ///
@@ -1428,23 +1434,128 @@ limit. Do this check on the finished text, not from memory of intending to compl
     // The learner's choice, per generator (see [_kNewWordsPerText] for why the
     // short texts need their own).
     int newWordsPerText = _kNewWordsPerText,
+    // The `l2` of texts the learner already has, newest first — so a run does
+    // not quietly rewrite what earlier runs produced.
+    List<String> avoidTexts = const [],
   }) async {
     if (apiKey.trim().isEmpty) {
       throw Exception('AI API key is empty (set it in Settings).');
     }
     if (knownPhrases.isEmpty) return const [];
 
-    // Shuffled, so a bank too large for the budget still shows the model a
-    // different cross-section on every run instead of always its first slice.
+    // Several small requests rather than one big one. Asking for twenty-four
+    // micro-stories in a single response was most of why a batch read as
+    // variations of one text: under that much output pressure the model settles
+    // into a template, and on 3.x there is no `temperature` left to break it up
+    // — `_adaptBody` strips the 1.15 below, so the spread the parameter used to
+    // buy is simply gone. Each chunk re-shuffles the vocabulary pool and draws
+    // its own situations, so three chunks show the model three cross-sections
+    // of a large bank instead of the same slice three times, and each is told
+    // the openings of what the ones before it wrote. The cost is the vocabulary
+    // payload sent once per chunk instead of once per run — the very thing the
+    // reserve exists to avoid, now spent deliberately on variety.
+    final out = <({String l2, String l1})>[];
+    final openings = <String>{};
+    final avoid = <String>[];
+    for (final a in avoidTexts) {
+      if (a.trim().isEmpty) continue;
+      openings.add(_opening(a));
+      avoid.add(_firstWords(a));
+    }
+    Object? failure;
+    while (out.length < count) {
+      final want = min(_kTextsPerRequest, count - out.length);
+      List<({String l2, String l1})> chunk;
+      try {
+        chunk = await _listeningTextChunk(
+          apiKey: apiKey,
+          knownPhrases: knownPhrases,
+          knownLanguage: knownLanguage,
+          targetLanguage: targetLanguage,
+          count: want,
+          sentencesPerText: sentencesPerText,
+          newWordsPerText: newWordsPerText,
+          avoid: avoid.take(_kMaxAvoidOpenings).toList(),
+        );
+      } catch (e) {
+        // Keep what the earlier chunks produced: a short batch beats none, and
+        // the next press tries again.
+        failure = e;
+        break;
+      }
+      if (chunk.isEmpty) break;
+      var added = 0;
+      for (final t in chunk) {
+        // Near-duplicate, not exact. Two texts that open the same way and
+        // differ by a word are the same text to a listener, and `l2` equality
+        // never caught one of them.
+        if (!openings.add(_opening(t.l2))) continue;
+        out.add(t);
+        added++;
+      }
+      avoid.insertAll(0, chunk.map((t) => _firstWords(t.l2)));
+      // A chunk that was entirely duplicates means another one would be too.
+      if (added == 0) break;
+    }
+    if (out.isEmpty && failure != null) throw failure;
+    return out.take(count).toList();
+  }
+
+  /// A dedup key: the opening of a text, normalised to words. Long enough to
+  /// tell two scenes apart, short enough that a reworded duplicate still
+  /// collides with the original.
+  static String _opening(String text, {int words = 10}) => text
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^\p{L}\p{N}\s]', unicode: true), ' ')
+      .split(RegExp(r'\s+'))
+      .where((w) => w.isNotEmpty)
+      .take(words)
+      .join(' ');
+
+  /// The same opening, left readable, for showing the model what it has
+  /// already written.
+  static String _firstWords(String text, {int words = 12}) =>
+      text.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).take(words).join(' ');
+
+  /// One request's worth of texts; [count] here is the chunk size, not the run.
+  ///
+  /// [avoid] is the readable opening of every text the learner already has,
+  /// including the ones earlier chunks of this same run produced — the
+  /// micro-text counterpart of [generateStory]'s `avoidTitles`, and the only
+  /// thing that stops chunk three rewriting chunk one.
+  static Future<List<({String l2, String l1})>> _listeningTextChunk({
+    required String apiKey,
+    required List<String> knownPhrases,
+    required String knownLanguage,
+    required String targetLanguage,
+    required int count,
+    required int sentencesPerText,
+    required int newWordsPerText,
+    required List<String> avoid,
+  }) async {
+    // Re-shuffled per chunk, not per run: with a bank larger than the budget
+    // this is what makes successive chunks see different cross-sections.
     final pool = [...knownPhrases]..shuffle();
     final seeds = <String>[];
     var chars = 0;
     for (final phrase in pool) {
-      if (seeds.length >= _kMaxSeedPhrases || chars + phrase.length > _kMaxSeedChars) break;
+      if (seeds.length >= _kMaxSeedPhrases) break;
+      // `continue`, not `break`: one long phrase must not truncate the pool
+      // when shorter ones would still fit the budget.
+      if (chars + phrase.length > _kMaxSeedChars) continue;
       seeds.add(phrase);
       chars += phrase.length;
     }
     final vocabulary = seeds.map((x) => '  - $x').join('\n');
+    final avoidBlock = avoid.isEmpty
+        ? ''
+        : '''
+
+ALREADY WRITTEN FOR THIS LEARNER
+The openings of texts they already have. Do not retell any of these situations,
+and do not open a text the way any of them opens:
+${avoid.map((a) => '  - $a…').join('\n')}
+''';
 
     // Variety across a batch normally comes from temperature — raised to 1.15
     // below, precisely so eight texts don't turn into eight versions of one
@@ -1503,7 +1614,10 @@ WHAT MAKES A TEXT ACCEPTABLE
 4. It stands alone. No title, no preamble, no naming of themes. Start straight
    into the scene.
 5. Vary across the set: different people, places, moods, tenses and outcomes.
-   No two texts should open the same way or retell the same situation.$situations
+   No two texts should open the same way or retell the same situation. Spread
+   your word choice across the whole vocabulary list as well — reach into parts
+   of it you have not used yet. If several texts lean on the same handful of
+   phrases the set is wrong, even when the scenes differ.$situations$avoidBlock
 6. Write for the ear: natural connected speech, at an upper-beginner to
    intermediate level. No headings, bullet points, emoji, surrounding quotation
    marks, or parenthetical asides.
@@ -1606,6 +1720,12 @@ budget — rewrite it before returning it rather than listing them all.
     // If too few complied, fill up from the least-offending rather than
     // returning nothing: a batch the learner finds hard beats a batch that
     // doesn't exist, and the next run gets another chance.
+    // Shuffled before the over-budget ones are appended. The caller hands out
+    // the first few and banks the rest, so leaving `within` in the model's own
+    // order systematically gave the learner the batch's most conservative
+    // texts first — the ones that reuse the core vocabulary — which is exactly
+    // what reads as repetition.
+    within.shuffle();
     over.sort((a, b) => a.newWords.compareTo(b.newWords));
     final out = [...within, for (final o in over) (l2: o.l2, l1: o.l1)];
     return out.take(count).toList();
@@ -1887,7 +2007,12 @@ Return JSON only.
   static List<String> _seedPairs(int count) {
     final shapes = _storyShapes.toList()..shuffle();
     final places = _storyPlaces.toList()..shuffle();
-    return [for (var i = 0; i < count; i++) '${shapes[i % shapes.length]} — in ${places[i % places.length]}'];
+    // The place is staggered by the lap, so a [count] past the list lengths
+    // starts pairing differently instead of dealing pair 1 over again.
+    return [
+      for (var i = 0; i < count; i++)
+        '${shapes[i % shapes.length]} — in ${places[(i + i ~/ places.length) % places.length]}',
+    ];
   }
 
   /// What a model reaches for when it is asked for a simple story in a small

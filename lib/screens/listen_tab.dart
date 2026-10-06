@@ -435,6 +435,9 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
           count: want > _kFetchBatch ? want : _kFetchBatch,
           sentencesPerText: perText,
           newWordsPerText: s.listenNewWordsPerText,
+          // Reserve first: those are the freshest, and so the ones a new batch
+          // is most likely to echo. Capped inside AiService.
+          avoidTexts: [for (final st in reserve) st.l2, for (final st in _stories) st.l2],
         );
         final existing = {for (final st in _stories) st.l2, for (final st in reserve) st.l2};
         for (final text in texts) {
