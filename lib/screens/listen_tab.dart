@@ -401,7 +401,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         s = state.settings;
       }
     }
-    final want = s.listenTextsPerRun;
+    final want = s.listenTextsPerRun.clamp(1, AppSettings.kListenTextsPerRunMax);
     final perText = s.listenSentencesPerText;
     final sig = _reserveSigFor(subjects, perText, s.listenNewWordsPerText);
     var reserve = sig == _reserveSig ? [..._reserve] : <ListenStory>[];
@@ -808,7 +808,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// shape as the story dialog. Whatever is chosen here is remembered and is
   /// exactly what the automatic top-ups reuse.
   Future<({int want, int perText, int newWords})?> _askGenerateOptions(AppSettings s) async {
-    var want = s.listenTextsPerRun;
+    var want = s.listenTextsPerRun.clamp(1, AppSettings.kListenTextsPerRunMax);
     var perText = s.listenSentencesPerText;
     var newWords = s.listenNewWordsPerText;
     return showDialog<({int want, int perText, int newWords})>(
@@ -842,7 +842,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                   suffix: '',
                   value: want,
                   min: 1,
-                  max: 30,
+                  max: AppSettings.kListenTextsPerRunMax,
                   valueWidth: 80,
                   onSet: (v) => setSheet(() => want = v),
                 ),

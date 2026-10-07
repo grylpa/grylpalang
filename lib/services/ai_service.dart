@@ -1409,10 +1409,28 @@ limit. Do this check on the finished text, not from memory of intending to compl
   static const int _kMaxSeedPhrases = 400;
   static const int _kMaxSeedChars = 20000;
 
-  /// Texts per HTTP request, and how many already-written openings a request is
-  /// told to steer away from. A run still over-fetches [_kFetchBatch]-many
-  /// texts; it just no longer ask for them all in one breath.
-  static const int _kTextsPerRequest = 8;
+  /// How many HTTP requests one run may spend, and how many already-written
+  /// openings a request is told to steer away from.
+  ///
+  /// A run asks for its whole count in **one** request and only makes a second
+  /// to top up a shortfall. It used to split the run into fixed 8-text chunks,
+  /// which was a mistake: every request re-sends the entire ~20k-character
+  /// vocabulary, and Gemini's free tier caps tokens *per minute*, so three or
+  /// four of them back-to-back exhausted the quota, every model in the chain
+  /// returned 429, and the later chunks died — each after burning its full
+  /// `_maxTotalWait` walking the chain. Asking for 25 failed outright; asking
+  /// for 20 returned 8 after several minutes. One request per run is what the
+  /// quota actually affords, and it is also what the reserve was designed
+  /// around.
+  static const int _kMaxRequestsPerRun = 2;
+
+  /// Most texts one request may ask for. 24 is not a guess — it is the size
+  /// `_kFetchBatch` asked for in a single call for months, so it is known to
+  /// fit both the quota and the model's output limit. A larger ask risks a
+  /// response long enough to be truncated, which surfaces as a JSON decode
+  /// failure rather than anything self-explanatory, so anything above this
+  /// spills into the second pass.
+  static const int _kMaxTextsPerRequest = 24;
   static const int _kMaxAvoidOpenings = 30;
 
   /// Generates listening-comprehension texts: long sentences or micro-stories
@@ -1443,17 +1461,14 @@ limit. Do this check on the finished text, not from memory of intending to compl
     }
     if (knownPhrases.isEmpty) return const [];
 
-    // Several small requests rather than one big one. Asking for twenty-four
-    // micro-stories in a single response was most of why a batch read as
-    // variations of one text: under that much output pressure the model settles
-    // into a template, and on 3.x there is no `temperature` left to break it up
-    // — `_adaptBody` strips the 1.15 below, so the spread the parameter used to
-    // buy is simply gone. Each chunk re-shuffles the vocabulary pool and draws
-    // its own situations, so three chunks show the model three cross-sections
-    // of a large bank instead of the same slice three times, and each is told
-    // the openings of what the ones before it wrote. The cost is the vocabulary
-    // payload sent once per chunk instead of once per run — the very thing the
-    // reserve exists to avoid, now spent deliberately on variety.
+    // One request for the whole count, and at most one more to top up a
+    // shortfall (see [_kMaxRequestsPerRun]). The variety this generator needed
+    // comes from things that cost no extra requests at all: `_seedPairs` gives
+    // every text its own shape and place, `avoid` carries the openings of what
+    // the learner already has, `within.shuffle()` stops the blandest texts
+    // being handed out first, and dedup is on the normalised opening. Splitting
+    // the run into more requests was the one change that bought variety with
+    // quota, and the quota could not pay.
     final out = <({String l2, String l1})>[];
     final openings = <String>{};
     final avoid = <String>[];
@@ -1463,8 +1478,8 @@ limit. Do this check on the finished text, not from memory of intending to compl
       avoid.add(_firstWords(a));
     }
     Object? failure;
-    while (out.length < count) {
-      final want = min(_kTextsPerRequest, count - out.length);
+    for (var pass = 0; pass < _kMaxRequestsPerRun && out.length < count; pass++) {
+      final want = min(count - out.length, _kMaxTextsPerRequest);
       List<({String l2, String l1})> chunk;
       try {
         chunk = await _listeningTextChunk(
@@ -1494,7 +1509,7 @@ limit. Do this check on the finished text, not from memory of intending to compl
         added++;
       }
       avoid.insertAll(0, chunk.map((t) => _firstWords(t.l2)));
-      // A chunk that was entirely duplicates means another one would be too.
+      // A pass that produced nothing new means another would too.
       if (added == 0) break;
     }
     if (out.isEmpty && failure != null) throw failure;
