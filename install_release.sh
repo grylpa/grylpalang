@@ -42,10 +42,40 @@ for arg in "$@"; do
   esac
 done
 
+# Stamp recording the pubspec.lock a successful build was made from. Lives in
+# build/, so `flutter clean` takes it with it — then the next run cleans once
+# more, which is the harmless direction.
+STAMP="build/.last_build_pubspec_lock_sha"
+
 if [[ "$BUILD" -eq 1 ]]; then
+  # A dependency change needs a clean build before the APK can be trusted.
+  # Gradle's per-module build directory is keyed by the plugin's *name*, not
+  # its version, so a bump silently reuses the previous version's compiled
+  # classes while the manifest merges fresh. flutter_email_sender 10 -> 11 did
+  # exactly that: the APK's manifest declared a <provider> whose class the
+  # reused jar did not contain, and Android instantiates providers at process
+  # bind — so the app died with ClassNotFoundException on every launch, before
+  # a line of Dart ran, while the build itself reported success.
+  #
+  # Cleaning unconditionally, the way build_both.sh does, would be the wrong
+  # trade here: build_both runs once per release, while this is the inner
+  # development loop (~20s unchanged, ~70s after edits, ~108s clean). So the
+  # clean is gated on pubspec.lock having actually changed, which is the only
+  # thing that can spring the trap.
+  LOCK_SHA="$(sha256sum pubspec.lock | cut -d' ' -f1)"
+  if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$LOCK_SHA" ]]; then
+    echo "Dependencies changed since the last build (or no record of one) — cleaning first."
+    set -x
+    flutter clean
+    set +x
+  fi
   set -x
   flutter build apk --release --flavor dev --target-platform android-arm64
   set +x
+  # Only after a build that succeeded: a failure leaves the stamp stale (or
+  # absent) so the next run cleans again.
+  mkdir -p "$(dirname "$STAMP")"
+  printf '%s' "$LOCK_SHA" > "$STAMP"
 fi
 
 if [[ ! -f "$APK" ]]; then
