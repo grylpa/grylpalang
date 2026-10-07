@@ -22,6 +22,17 @@ class AppSettings {
   static const int kListenPauseAfterMediumSecDefault = 3;
   static const int kListenPauseBeforeNextSecDefault = 3;
   static const int kListenTextsPerRunDefault = 8;
+
+  /// Ceiling on [listenTextsPerRun], mirroring `AiService._kMaxTextsPerRequest`.
+  ///
+  /// Above this a run needs a second request, and every request re-sends the
+  /// whole ~20k-character vocabulary — which is what exhausted the free tier's
+  /// per-minute token quota and made a 25-text run fail outright. Nothing is
+  /// lost by capping here: a run already over-fetches `_kFetchBatch` (24) and
+  /// banks the surplus, so asking for 8 delivers 8 *and* leaves 16 instant
+  /// top-ups, while asking for more than 24 delivers them all at once, leaves
+  /// no reserve, and costs an extra request. Lower is strictly better.
+  static const int kListenTextsPerRunMax = 24;
   static const int kListenSentencesPerTextDefault = 2;
   static const int kListenStorySentencesDefault = 48;
   static const int kListenStoryPartSentencesDefault = 2;
@@ -446,8 +457,13 @@ class AppSettings {
       listenPauseBeforeNextSec: (json['listenPauseBeforeNextSec'] as int?) ?? kListenPauseBeforeNextSecDefault,
       // `listenTextsPerSubject` was the per-subject count before one run
       // started covering every selected subject at once.
+      // Clamped, not merely defaulted: the dialog used to allow 30, so an
+      // install can have a stored value this build must not honour.
       listenTextsPerRun:
-          (json['listenTextsPerRun'] as int?) ?? (json['listenTextsPerSubject'] as int?) ?? kListenTextsPerRunDefault,
+          (((json['listenTextsPerRun'] as int?) ??
+                  (json['listenTextsPerSubject'] as int?) ??
+                  kListenTextsPerRunDefault))
+              .clamp(1, kListenTextsPerRunMax),
       listenSentencesPerText: (json['listenSentencesPerText'] as int?) ?? kListenSentencesPerTextDefault,
       listenStorySentences: (json['listenStorySentences'] as int?) ?? kListenStorySentencesDefault,
       listenStoryPartSentences: (json['listenStoryPartSentences'] as int?) ?? kListenStoryPartSentencesDefault,
