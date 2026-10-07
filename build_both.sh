@@ -6,10 +6,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# ARM-only build: --target-platform drops x86_64 (android-x64) from both the
-# .aab (smaller Play upload) and the .apk. The app supports ARM devices only —
-# x86_64 is emulators/ChromeOS, which we don't target.
-ABIS="android-arm,android-arm64"
+# Every ABI Flutter can build an engine for. x86_64 covers Chromebooks, Intel
+# tablets and emulators: no plugin in this project is ARM-only (the only native
+# plugin libs, libdartjni.so and libdatastore_shared_counter.so, ship x86_64),
+# and flutter_tts/just_audio/audio_service are Java wrappers over platform APIs,
+# so nothing about the audio path is architecture-bound.
+#
+# Keep this list and the packaging.jniLibs filter in android/app/build.gradle.kts
+# in step. Narrowing one without the other is what produced an x86_64 slice with
+# plugin libs and no Flutter engine — an artifact Play treats as x86_64-capable
+# and installs on devices it then crashes on.
+#
+# 32-bit x86 is deliberately absent: Flutter has no android-x86 target, so it
+# could never have an engine. build.gradle.kts filters it out of the packaging.
+ABIS="android-arm,android-arm64,android-x64"
 
 set -x
 flutter clean

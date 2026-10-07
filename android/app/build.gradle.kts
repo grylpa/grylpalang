@@ -49,25 +49,27 @@ android {
     // The launcher label comes from a manifest placeholder rather than a
     // per-flavor resValue: AGP 9 ships with the resValues build feature off, so
     // a generated string resource fails configuration outright.
-    // ARM only, deliberately — x86_64 is not a supported target.
+    // Every ABI Flutter can build an engine for: arm64-v8a, armeabi-v7a and
+    // x86_64. The one exclusion is 32-bit x86, which Flutter has no target for
+    // at all (`--target-platform` offers only android-arm, android-arm64 and
+    // android-x64) — so an x86 slice could never hold libflutter.so or
+    // libapp.so and would exist purely to make Play advertise a device the app
+    // cannot run on.
     //
-    // Three layers can drop an ABI and only this one does the job here.
-    // `--target-platform android-arm,android-arm64` in the build scripts
-    // governs Flutter's *own* libraries, and it works: libflutter.so and
-    // libapp.so were already arm-only. `defaultConfig.ndk.abiFilters` gates
-    // what *this module's* NDK/CMake build emits — and this module builds no
-    // native code, so it changed nothing at all. The two offenders arrive
-    // prebuilt inside plugin AARs (libdartjni.so from jni/jni_flutter,
-    // libdatastore_shared_counter.so from shared_preferences_android) and are
-    // merged in a later step that neither of those reaches. So every AAB and
-    // store APK used to advertise an x86_64 slice carrying ~123KB of plugin
-    // libs and no Flutter engine, which Play reads as x86_64 support: an
-    // emulator or a ChromeOS device would have been served an install that
-    // crashes on launch. `packaging.jniLibs` is the merge step's own filter,
-    // which is why it is the one that removes them.
+    // That is the trap this block exists to prevent, and it is worth naming,
+    // because the obvious fixes do not reach it. `--target-platform` governs
+    // only what Flutter *compiles*; plugin JNI (libdartjni.so,
+    // libdatastore_shared_counter.so) arrives prebuilt inside AARs and is
+    // merged later, and `defaultConfig.ndk.abiFilters` gates only this
+    // module's own NDK output, of which there is none. So narrowing
+    // --target-platform without filtering here is what used to leave an
+    // x86_64 directory holding ~123KB of plugin libs and no engine: Play read
+    // that as x86_64 support and would have served an emulator or a ChromeOS
+    // device an install that crashed on launch. packaging.jniLibs is the merge
+    // step's own filter, which is why it is the one that works.
     packaging {
         jniLibs {
-            excludes += listOf("lib/x86/**", "lib/x86_64/**")
+            excludes += listOf("lib/x86/**")
         }
     }
 
