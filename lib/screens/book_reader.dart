@@ -688,6 +688,15 @@ class _BookReaderState extends State<BookReader> {
                   for (final loc in orderedLocales)
                     ExpansionTile(
                       title: Text('$loc  (${groups[loc]!.length})'),
+                      // Open when it holds the current pick, so the sheet never
+                      // opens with the chosen voice hidden inside a collapsed
+                      // folder — and still open when it is the only folder.
+                      // `initiallyExpanded` applies on the first build only, so
+                      // picking a voice elsewhere afterwards cannot make folders
+                      // open or shut under the finger.
+                      initiallyExpanded:
+                          orderedLocales.length == 1 ||
+                          groups[loc]!.any((v) => '${v['name']}__SEP__${v['locale']}' == (picks[lookupLocale] ?? '')),
                       children: [
                         for (var i = 0; i < groups[loc]!.length; i++) voiceTile(groups[loc]![i], lookupLocale, i),
                       ],
