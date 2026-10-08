@@ -38,6 +38,26 @@ class AppSettings {
   static const int kListenStoryPartSentencesDefault = 2;
   static const int kListenPauseAfterKnownSecDefault = 1;
   static const int kListenThirdPassRatePctDefault = 60;
+
+  // Listen's Google-voice speed steps. The Google Translate endpoint has only
+  // three paces (see [GoogleTtsSpeed]), so in that mode a pass picks one of
+  // them instead of a percentage: 0 = Off, 1 = Slow, 2 = Medium, 3 = Fast.
+  // Stored apart from the `…RatePct` fields on purpose — the two modes have
+  // different value spaces, and overwriting one with the other would throw
+  // away whichever tuning the user is not currently looking at.
+  /// A target-voice id ([listenVoiceId], [sentenceBankTargetVoice]) meaning the
+  /// Google Translate voice rather than an installed one. A sentinel inside the
+  /// same field — not a second flag — so "natural" and "an installed voice"
+  /// cannot both be set: one field holds one selection. It can never collide
+  /// with a real id, which always carries the '__SEP__' locale separator.
+  static const String kVoiceGoogle = '__google__';
+
+  static const int kListenGoogleStepOff = 0;
+  static const int kListenGoogleStepMax = 3;
+  static const int kListenGoogleSlowStepDefault = 1; // Slow
+  static const int kListenGoogleMediumStepDefault = 2; // Medium
+  static const int kListenGoogleThirdStepDefault = 1; // Slow
+  static const int kListenGoogleFullStepDefault = 3; // Fast
   static const int kListenPauseAfterThirdSecDefault = 2;
 
   String knownLanguage;
@@ -89,8 +109,26 @@ class AppSettings {
   bool listenDeleteTexts;
   bool listenDeleteStories;
   bool listenDeleteTitles;
-  List<String> listenVoiceIds; // target-language voices to rotate through (empty = all installed)
+  int listenGoogleSlowStep; // 1st pass, as a [GoogleTtsSpeed] step
+  int listenGoogleMediumStep; // 2nd pass
+  int listenGoogleThirdStep; // 3rd pass
+  int listenGoogleFullStep; // final pass — never Off, so a text always has audio
+  // The one voice for the target language: '' = automatic (the engine picks by
+  // gender), [kVoiceGoogle] = the Google Translate voice, or a
+  // 'name__SEP__locale' id. Single, like [listenKnownVoice] — Listen used to
+  // rotate a list of them per text, but a phone typically installs one real
+  // voice per language (Greek reports three entries that are all the same
+  // speaker), so the rotation bought nothing and let incoherent combinations
+  // like "natural plus local" be selected.
+  String listenVoiceId;
   String listenKnownVoice; // known-language voice for the translation pass ('' = automatic)
+
+  /// Whether Listen speaks the target language with the Google Translate voice.
+  /// Derived, so it cannot disagree with [listenVoiceId].
+  bool get listenUsesGoogleVoice => listenVoiceId == kVoiceGoogle;
+
+  /// The same for the Sentence Bank's translation clips.
+  bool get sentenceBankUsesGoogleVoice => sentenceBankTargetVoice == kVoiceGoogle;
   bool listenUseMediumPass; // play the 2nd (faster) target pass
   bool listenUseSlowAfterKnown; // the 3rd pass: target again after the translation, before the full-speed one
   int listenThirdPassRatePct; // its own speed — not tied to the 1st pass
@@ -117,6 +155,12 @@ class AppSettings {
   String sentenceBankUrl; // URL to fetch sentence_bank.yaml (empty = use bundled asset)
   String sentenceBankVoiceGender; // 'male' | 'female' (fallback when no explicit source voice)
   String sentenceBankSourceVoice; // chosen source-language TTS voice "namelocale" ('' = auto)
+  // The Sentence Bank's *translation* voice, same three states as
+  // [listenVoiceId]: '' = automatic, [kVoiceGoogle] = natural, or a
+  // 'name__SEP__locale' id. Kept separate from Listen's so the two tabs can
+  // differ; it replaces a hard-coded "Greek always uses Google" rule that no
+  // setting could reach.
+  String sentenceBankTargetVoice;
   bool sentenceBankSpeakSource; // in auto mode, speak the source sentence before the translation
   int? sentenceBankTtsRepeatCountOverride; // overrides tts_repeat_count from YAML (null = use YAML value)
   int? sentenceBankSourcePauseOverride; // overrides auto_source_pause from YAML (null = use YAML value)
@@ -160,6 +204,7 @@ class AppSettings {
     required this.sentenceBankUrl,
     required this.sentenceBankVoiceGender,
     this.sentenceBankSourceVoice = '',
+    this.sentenceBankTargetVoice = '',
     required this.sentenceBankSpeakSource,
     this.sentenceBankTtsRepeatCountOverride,
     this.sentenceBankSourcePauseOverride,
@@ -183,7 +228,11 @@ class AppSettings {
     this.listenDeleteTexts = true,
     this.listenDeleteStories = true,
     this.listenDeleteTitles = false,
-    this.listenVoiceIds = const [],
+    this.listenGoogleSlowStep = kListenGoogleSlowStepDefault,
+    this.listenGoogleMediumStep = kListenGoogleMediumStepDefault,
+    this.listenGoogleThirdStep = kListenGoogleThirdStepDefault,
+    this.listenGoogleFullStep = kListenGoogleFullStepDefault,
+    this.listenVoiceId = '',
     this.listenKnownVoice = '',
     this.listenUseMediumPass = true,
     this.listenUseSlowAfterKnown = true,
@@ -226,6 +275,7 @@ class AppSettings {
     String? sentenceBankUrl,
     String? sentenceBankVoiceGender,
     String? sentenceBankSourceVoice,
+    String? sentenceBankTargetVoice,
     bool? sentenceBankSpeakSource,
     Object? sentenceBankTtsRepeatCountOverride = _keep,
     Object? sentenceBankSourcePauseOverride = _keep,
@@ -249,7 +299,11 @@ class AppSettings {
     bool? listenDeleteTexts,
     bool? listenDeleteStories,
     bool? listenDeleteTitles,
-    List<String>? listenVoiceIds,
+    int? listenGoogleSlowStep,
+    int? listenGoogleMediumStep,
+    int? listenGoogleThirdStep,
+    int? listenGoogleFullStep,
+    String? listenVoiceId,
     String? listenKnownVoice,
     bool? listenUseMediumPass,
     bool? listenUseSlowAfterKnown,
@@ -291,6 +345,7 @@ class AppSettings {
       sentenceBankUrl: sentenceBankUrl ?? this.sentenceBankUrl,
       sentenceBankVoiceGender: sentenceBankVoiceGender ?? this.sentenceBankVoiceGender,
       sentenceBankSourceVoice: sentenceBankSourceVoice ?? this.sentenceBankSourceVoice,
+      sentenceBankTargetVoice: sentenceBankTargetVoice ?? this.sentenceBankTargetVoice,
       sentenceBankSpeakSource: sentenceBankSpeakSource ?? this.sentenceBankSpeakSource,
       sentenceBankTtsRepeatCountOverride: identical(sentenceBankTtsRepeatCountOverride, _keep)
           ? this.sentenceBankTtsRepeatCountOverride
@@ -320,7 +375,11 @@ class AppSettings {
       listenDeleteTexts: listenDeleteTexts ?? this.listenDeleteTexts,
       listenDeleteStories: listenDeleteStories ?? this.listenDeleteStories,
       listenDeleteTitles: listenDeleteTitles ?? this.listenDeleteTitles,
-      listenVoiceIds: listenVoiceIds ?? this.listenVoiceIds,
+      listenGoogleSlowStep: listenGoogleSlowStep ?? this.listenGoogleSlowStep,
+      listenGoogleMediumStep: listenGoogleMediumStep ?? this.listenGoogleMediumStep,
+      listenGoogleThirdStep: listenGoogleThirdStep ?? this.listenGoogleThirdStep,
+      listenGoogleFullStep: listenGoogleFullStep ?? this.listenGoogleFullStep,
+      listenVoiceId: listenVoiceId ?? this.listenVoiceId,
       listenKnownVoice: listenKnownVoice ?? this.listenKnownVoice,
       listenUseMediumPass: listenUseMediumPass ?? this.listenUseMediumPass,
       listenUseSlowAfterKnown: listenUseSlowAfterKnown ?? this.listenUseSlowAfterKnown,
@@ -366,6 +425,7 @@ class AppSettings {
     'sentenceBankUrl': sentenceBankUrl,
     'sentenceBankVoiceGender': sentenceBankVoiceGender,
     'sentenceBankSourceVoice': sentenceBankSourceVoice,
+    'sentenceBankTargetVoice': sentenceBankTargetVoice,
     'sentenceBankSpeakSource': sentenceBankSpeakSource,
     'sentenceBankTtsRepeatCountOverride': sentenceBankTtsRepeatCountOverride,
     'sentenceBankSourcePauseOverride': sentenceBankSourcePauseOverride,
@@ -389,7 +449,11 @@ class AppSettings {
     'listenDeleteTexts': listenDeleteTexts,
     'listenDeleteStories': listenDeleteStories,
     'listenDeleteTitles': listenDeleteTitles,
-    'listenVoiceIds': listenVoiceIds,
+    'listenGoogleSlowStep': listenGoogleSlowStep,
+    'listenGoogleMediumStep': listenGoogleMediumStep,
+    'listenGoogleThirdStep': listenGoogleThirdStep,
+    'listenGoogleFullStep': listenGoogleFullStep,
+    'listenVoiceId': listenVoiceId,
     'listenKnownVoice': listenKnownVoice,
     'listenUseMediumPass': listenUseMediumPass,
     'listenUseSlowAfterKnown': listenUseSlowAfterKnown,
@@ -409,6 +473,39 @@ class AppSettings {
     'booksForceShortSentences': booksForceShortSentences,
     'booksVoiceByLocale': booksVoiceByLocale,
   };
+
+  /// The Sentence Bank's translation voice for an install that predates the
+  /// setting, preserving what that install was *already doing*.
+  ///
+  /// Before this existed, the choice was a hard-coded `{'el'}` set: a Greek
+  /// target always went to the Google voice and everything else was
+  /// synthesized. So a Greek install migrates to [kVoiceGoogle] and any other
+  /// to Automatic — otherwise upgrading would silently move a Greek learner
+  /// *off* the better voice they have been listening to, which is the same
+  /// unasked-for change as moving someone onto it.
+  static String _readSbTargetVoice(Map<String, dynamic> json) {
+    final direct = json['sentenceBankTargetVoice'] as String?;
+    if (direct != null) return direct;
+    // Compared by name, not by locale: 'Greek' is the only language that maps
+    // to 'el', and the alternative is importing the TTS service into a model.
+    final lang = json['targetLanguage'] as String? ?? 'Greek';
+    return lang == 'Greek' ? kVoiceGoogle : '';
+  }
+
+  /// Resolves the single target voice from any shape an install may hold.
+  ///
+  /// Three predecessors, newest first: the `listenVoiceId` this build writes;
+  /// the short-lived `listenTargetUseGoogleTts` flag; and `listenVoiceIds`, the
+  /// rotating list. A list holding *every* installed voice meant "let the
+  /// engine choose", which is what '' now means, so only a list of exactly one
+  /// carries a deliberate choice worth keeping.
+  static String _readListenVoiceId(Map<String, dynamic> json) {
+    final direct = json['listenVoiceId'] as String?;
+    if (direct != null) return direct;
+    if (json['listenTargetUseGoogleTts'] as bool? ?? false) return kVoiceGoogle;
+    final legacy = (json['listenVoiceIds'] as List?)?.cast<String>() ?? const [];
+    return legacy.length == 1 ? legacy.first : '';
+  }
 
   factory AppSettings.fromJson(Map<String, dynamic> json) {
     final startM = (json['dndStartMinutes'] as int?) ?? (22 * 60);
@@ -437,6 +534,7 @@ class AppSettings {
       sentenceBankUrl: json['sentenceBankUrl'] as String? ?? '',
       sentenceBankVoiceGender: json['sentenceBankVoiceGender'] as String? ?? 'female',
       sentenceBankSourceVoice: json['sentenceBankSourceVoice'] as String? ?? '',
+      sentenceBankTargetVoice: _readSbTargetVoice(json),
       sentenceBankSpeakSource: json['sentenceBankSpeakSource'] as bool? ?? true,
       // Migration: if the new override key is absent, fall back to the
       // pre-override `sentenceBankTtsRepeatCount` value so the user's choice
@@ -473,7 +571,26 @@ class AppSettings {
       listenDeleteTexts: json['listenDeleteTexts'] as bool? ?? true,
       listenDeleteStories: json['listenDeleteStories'] as bool? ?? true,
       listenDeleteTitles: json['listenDeleteTitles'] as bool? ?? false,
-      listenVoiceIds: (json['listenVoiceIds'] as List?)?.cast<String>() ?? const [],
+      // Clamped: an out-of-range step would index past the label list.
+      listenGoogleSlowStep: ((json['listenGoogleSlowStep'] as int?) ?? kListenGoogleSlowStepDefault).clamp(
+        kListenGoogleStepOff,
+        kListenGoogleStepMax,
+      ),
+      listenGoogleMediumStep: ((json['listenGoogleMediumStep'] as int?) ?? kListenGoogleMediumStepDefault).clamp(
+        kListenGoogleStepOff,
+        kListenGoogleStepMax,
+      ),
+      listenGoogleThirdStep: ((json['listenGoogleThirdStep'] as int?) ?? kListenGoogleThirdStepDefault).clamp(
+        kListenGoogleStepOff,
+        kListenGoogleStepMax,
+      ),
+      // Floor of 1, not 0: the final pass is what guarantees a text has audio
+      // at all, so it has no Off.
+      listenGoogleFullStep: ((json['listenGoogleFullStep'] as int?) ?? kListenGoogleFullStepDefault).clamp(
+        kListenGoogleStepOff + 1,
+        kListenGoogleStepMax,
+      ),
+      listenVoiceId: _readListenVoiceId(json),
       listenKnownVoice: json['listenKnownVoice'] as String? ?? '',
       listenUseMediumPass: json['listenUseMediumPass'] as bool? ?? true,
       listenUseSlowAfterKnown: json['listenUseSlowAfterKnown'] as bool? ?? true,
@@ -518,6 +635,14 @@ class AppSettings {
       modeReverse: true,
       sentenceBankUrl: '',
       sentenceBankVoiceGender: 'female',
+      // A fresh install speaks the language being learned with the natural
+      // voice: it is markedly clearer than a typical installed voice, and it
+      // degrades to an installed one by itself when offline or when a text is
+      // too long for one request. The constructor default stays '' so this
+      // choice lives in exactly one visible place, and [fromJson] keeps '' so
+      // an upgrade is never moved onto a cloud voice silently.
+      listenVoiceId: kVoiceGoogle,
+      sentenceBankTargetVoice: kVoiceGoogle,
       sentenceBankSpeakSource: true,
       sentenceBankShuffle: true,
       sentenceBankTargetFirst: false,

@@ -101,6 +101,17 @@ class TtsSynthService {
   String _key(String langCode, String voiceKey, double rate, String text) =>
       sha1.convert(utf8.encode('$langCode|$voiceKey|p7|r$rate|$text')).toString();
 
+  /// The cache key's voice component.
+  ///
+  /// An explicitly chosen voice keys by itself, so its clips are never affected
+  /// by anything here. A voice chosen *automatically* keys by the gender plus a
+  /// scoring version, because the key cannot name a voice that
+  /// [applyGenderedVoice] has not resolved yet — so when that scoring changes,
+  /// nothing else would tell an old clip from a new one and a bank would play
+  /// half in each voice. Bumping the suffix re-renders exactly the automatic
+  /// clips and leaves every hand-picked one cached.
+  static String _voiceKey(String voiceId, String gender) => voiceId.isNotEmpty ? voiceId : '$gender~auto2';
+
   /// The cached clip path for these parameters if it's already on disk; null
   /// otherwise. Never synthesizes — used to pre-count real work for a progress
   /// bar instead of marching through cache hits.
@@ -114,7 +125,7 @@ class TtsSynthService {
     try {
       final dir = await _ensureDir();
       final file = File(
-        '${dir.path}/${_key(langCode, voiceId.isNotEmpty ? voiceId : gender, rate, speakable(text, langCode))}.wav',
+        '${dir.path}/${_key(langCode, _voiceKey(voiceId, gender), rate, speakable(text, langCode))}.wav',
       );
       return await file.exists() ? file.path : null;
     } catch (_) {
@@ -135,9 +146,7 @@ class TtsSynthService {
     double rate = kSourceSpeechRate,
   }) async {
     final dir = await _ensureDir();
-    final file = File(
-      '${dir.path}/${_key(langCode, voiceId.isNotEmpty ? voiceId : gender, rate, speakable(text, langCode))}.wav',
-    );
+    final file = File('${dir.path}/${_key(langCode, _voiceKey(voiceId, gender), rate, speakable(text, langCode))}.wav');
     // Reuse a cached clip only if it's a plausibly-real WAV. A previously
     // failed/timed-out synthesis can leave a 0-byte or header-only file; a valid
     // clip is always >20 KB (the 500ms silence pad alone is that big). Serving
@@ -332,15 +341,31 @@ class TtsSynthService {
         final ri = regionPrefs.indexOf(vRegion);
         if (ri >= 0) score += (regionPrefs.length - ri) * 100;
 
+        // An on-device voice beats a server-side one. Weighted between a region
+        // step (100) and the gender bonuses (≤22) on purpose: it can never
+        // override an accent preference, but it always settles a tie that the
+        // gender heuristic cannot — and the ties are what made this pick the
+        // *first* voice the engine happened to list. It matters beyond
+        // determinism: synthesizeToFile on a '-network' voice can fail or
+        // render differently with no connection, and every clip here is a file.
+        if (vName.contains('-local')) score += 50;
+
+        // 'female' contains 'male', so every male test runs against a copy with
+        // the female markers removed. Without this a '#female_1' voice collects
+        // the male penalty (-20) in female mode and the male bonus (+8) in male
+        // mode, which is why a gender-neutral alias like 'en-US-language' used
+        // to outscore every real female voice and win the default.
+        final maleName = vName.replaceAll('female', 'F');
+
         // Explicit gender field (most reliable).
         if (vGender == gender) score += 10;
 
         // Android Google TTS: names like "el-gr-x-elm-local" (m=male, a=female)
         // or "en-us-x-sfg#male_1-local" / "#female".
         if (gender == 'male') {
-          if (vName.contains('#male') || vName.contains('male_')) score += 8;
+          if (maleName.contains('#male') || maleName.contains('male_')) score += 8;
           if (RegExp(r'-x-\w*m\w*-').hasMatch(vName)) score += 5;
-          if (vName.contains('male')) score += 4;
+          if (maleName.contains('male')) score += 4;
           // iOS: known male voice names (heuristic — male voices are usually men's names).
           if (vName.contains('nikos') ||
               vName.contains('jorge') ||
@@ -370,8 +395,8 @@ class TtsSynthService {
               vName.contains('moira'))
             score += 6;
           // Penalise obvious male names.
-          if (vName.contains('#male') ||
-              vName.contains('male_') ||
+          if (maleName.contains('#male') ||
+              maleName.contains('male_') ||
               vName.contains('nikos') ||
               vName.contains('daniel') ||
               vName.contains('thomas'))

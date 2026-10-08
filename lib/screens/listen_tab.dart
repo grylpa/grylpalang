@@ -13,9 +13,11 @@ import '../services/auto_playlist_controller.dart';
 import '../services/katalaveno_audio_handler.dart';
 import '../services/listen_service.dart';
 import '../services/sentence_bank_service.dart';
+import '../services/google_translate_tts.dart';
 import '../services/tts_synth_service.dart';
 import '../state/app_state.dart';
 import '../widgets.dart';
+import '../widgets/voice_picker.dart';
 import '../models/app_tab.dart';
 
 /// Listen mode — listening comprehension rather than vocabulary.
@@ -41,6 +43,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   late final ListenService _service;
   late final SentenceBankService _bankService;
   final _playlist = AutoPlaylistController();
+  final _googleTts = GoogleTranslateTts();
+  late final _preview = VoicePreview(yieldAudio: _playlist.pause);
   StreamSubscription<int>? _ordinalSub;
   StreamSubscription<bool>? _playingSub;
 
@@ -152,6 +156,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     _ordinalSub?.cancel();
     _playingSub?.cancel();
     _playlist.dispose();
+    // Its own player, not the shared one — nothing else will release it.
+    _preview.dispose();
     super.dispose();
   }
 
@@ -555,11 +561,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       return;
     }
     final s = context.read<AppState>().settings;
-    final voices = await _targetVoices(s.targetLanguage);
+    final voice = await _targetVoice(s.targetLanguage);
     for (final st in added) {
       if (!mounted || !katalavenoAudio.isActiveSession(this)) return;
-      final vi = st.isStoryPart ? st.storyId.hashCode.abs() : st.key.hashCode.abs();
-      final clips = await _clipsFor(st, voices.isEmpty ? '' : voices[vi % voices.length], s);
+      final clips = await _clipsFor(st, voice, s);
       if (clips == null || !mounted) continue;
       // Taken only once the clips exist, so two appends can't claim one slot.
       final ord = _queueKeys.length;
@@ -1141,14 +1146,22 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// pack is reported up front instead of surfacing as "could not prepare
   /// audio" after a long synthesis run.
   Future<void> _checkSpeechAvailability(AppSettings s) async {
-    final sig = '${s.targetLanguage}¦${s.knownLanguage}';
+    // The voice is part of the signature: the natural voice makes an uninstalled
+    // target language speakable, so switching to it has to re-run this rather
+    // than leave the "install a voice" notice up.
+    final sig = '${s.targetLanguage}¦${s.knownLanguage}¦${s.listenVoiceId}';
     if (sig == _speechCheckedFor) return;
     _speechCheckedFor = sig;
     final target = await TtsSynthService.instance.isLanguageAvailable(localeForLanguage(s.targetLanguage));
     final known = await TtsSynthService.instance.isLanguageAvailable(localeForLanguage(s.knownLanguage));
     if (!mounted) return;
     setState(() {
-      _targetSpeechOk = target;
+      // The natural voice is fetched, not synthesized, so it needs no language
+      // pack at all — gating it on one would blank the screen over a voice the
+      // mode does not use. A text too long for one request still falls back to
+      // local synthesis and will be dropped, which costs that text rather than
+      // the whole mode.
+      _targetSpeechOk = target || s.listenUsesGoogleVoice;
       _knownSpeechOk = known;
     });
   }
@@ -1172,31 +1185,61 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     s.listenThirdPassRatePct,
     s.listenPauseAfterThirdSec,
     s.listenPauseAfterKnownSec,
-    s.listenVoiceIds.join('+'),
+    s.listenVoiceId,
     s.listenKnownVoice,
     s.sentenceBankVoiceGender,
+    s.listenGoogleSlowStep,
+    s.listenGoogleMediumStep,
+    s.listenGoogleThirdStep,
+    s.listenGoogleFullStep,
   ].join('¦');
 
-  /// Voices to rotate through for the target language: the user's picks, or
-  /// every installed voice when they haven't chosen any. One voice per story
-  /// (not per playback pass) — the three speeds are the *same* utterance, and
-  /// changing speaker mid-story would obscure that.
-  Future<List<String>> _targetVoices(String targetLang) async {
-    final chosen = context.read<AppState>().settings.listenVoiceIds;
-    if (chosen.isNotEmpty) return chosen;
+  /// The voice id to pass to [_clipsFor] for the target language.
+  ///
+  /// '' means "let the engine choose by gender", which is also the answer when
+  /// the stored voice is no longer installed — the user may have removed a
+  /// language pack since picking it, and `setVoice` on a voice the engine does
+  /// not have leaves whatever was configured last, so every clip would come out
+  /// in some arbitrary other voice.
+  Future<String> _targetVoice(String targetLang) async {
+    final chosen = context.read<AppState>().settings.listenVoiceId;
+    // Google needs no device voice, and '' needs no lookup.
+    if (chosen.isEmpty || chosen == AppSettings.kVoiceGoogle) return '';
     final byLocale = await TtsSynthService.instance.voicesByLocale(langCodeForLanguage(targetLang));
-    return [
+    final installed = {
       for (final entry in byLocale.entries)
         for (final v in entry.value) '${v['name']}__SEP__${entry.key}',
-    ];
+    };
+    return installed.contains(chosen) ? chosen : '';
   }
+
+  /// Maps a stored Google speed step (1-3) to the endpoint's pace.
+  static GoogleTtsSpeed _gSpeed(int step) => switch (step) {
+    1 => GoogleTtsSpeed.slow,
+    2 => GoogleTtsSpeed.medium,
+    _ => GoogleTtsSpeed.fast,
+  };
+
+  /// The percentage the on-device engine needs to approximate a Google step —
+  /// used only when a Google fetch fails and the clip falls back to local
+  /// synthesis, so the pace stays roughly where the user set it.
+  static int _gFallbackPct(int step) => switch (step) {
+    1 => 72,
+    2 => 83,
+    _ => 100,
+  };
 
   /// Builds the clips for one story, or null if it can't be voiced.
   Future<List<ClipSpec>?> _clipsFor(ListenStory story, String voice, AppSettings s) async {
     final tgtCode = langCodeForLanguage(s.targetLanguage);
     final tgtLocale = localeForLanguage(s.targetLanguage);
+    // The Google voice is used only when it's switched on *and* the text fits
+    // one request (the endpoint truncates past ~200 chars). A longer text falls
+    // back to on-device for every one of its passes rather than per pass, so
+    // the speaker never changes inside a single text.
+    final useGoogle = s.listenUsesGoogleVoice && _googleTts.canSpeak(story.l2);
     try {
-      Future<String> target(int pct) => TtsSynthService.instance.synthToFile(
+      Future<String> device(int pct) => TtsSynthService.instance.synthToFile(
         story.l2,
         langCode: tgtCode,
         locale: tgtLocale,
@@ -1204,13 +1247,42 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         gender: s.sentenceBankVoiceGender,
         rate: _rate(pct),
       );
-      final slow = await target(s.listenSlowRatePct);
+      // A transient endpoint failure (it rate-limits bursts) drops to local
+      // synthesis for that clip instead of losing the text.
+      Future<String> google(int step) async {
+        try {
+          return await _googleTts.ensureFile(story.l2, tgtCode, speed: _gSpeed(step));
+        } catch (_) {
+          return await device(_gFallbackPct(step));
+        }
+      }
+
+      /// One target pass. In Google mode [step] chooses the pace and 0 is Off;
+      /// on device [pct] is the pace and [on] whether the pass plays at all.
+      Future<String?> target({required bool on, required int pct, required int step}) async {
+        if (useGoogle) return step == AppSettings.kListenGoogleStepOff ? null : await google(step);
+        return on ? await device(pct) : null;
+      }
+
       // Skipped entirely when switched off — not synthesized and then dropped.
-      final medium = s.listenUseMediumPass ? await target(s.listenMediumRatePct) : null;
+      final slow = await target(on: true, pct: s.listenSlowRatePct, step: s.listenGoogleSlowStep);
+      final medium = await target(
+        on: s.listenUseMediumPass,
+        pct: s.listenMediumRatePct,
+        step: s.listenGoogleMediumStep,
+      );
       // Its own speed now, so its own render — though the cache is keyed by
       // speed, so matching the 1st pass still costs nothing extra.
-      final third = s.listenUseSlowAfterKnown ? await target(s.listenThirdPassRatePct) : null;
-      final full = await target(s.listenFullRatePct);
+      final third = await target(
+        on: s.listenUseSlowAfterKnown,
+        pct: s.listenThirdPassRatePct,
+        step: s.listenGoogleThirdStep,
+      );
+      final full = await target(on: true, pct: s.listenFullRatePct, step: s.listenGoogleFullStep);
+      // Both floors guarantee one of these exists (device mode passes on: true,
+      // and the Google full step is clamped above Off), so this only fires if
+      // one of those invariants is ever broken.
+      if (slow == null && medium == null && third == null && full == null) return null;
       // The translation is the only optional clip: without a known-language
       // voice the exercise still works (the target passes), so a failure here
       // drops one clip rather than the whole text.
@@ -1229,14 +1301,14 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       // Slow → [faster] → translation → [slow again] → full speed. The two
       // bracketed passes are optional; nothing is ever reordered.
       return [
-        ClipSpec.file(slow),
-        ClipSpec.silence(s.listenPauseAfterSlowSec),
+        // The 1st pass is optional only in Google mode, where Off is one of the
+        // four speed values; on device it is always rendered.
+        if (slow != null) ...[ClipSpec.file(slow), ClipSpec.silence(s.listenPauseAfterSlowSec)],
         if (medium != null) ...[ClipSpec.file(medium), ClipSpec.silence(s.listenPauseAfterMediumSec)],
         if (known != null) ...[ClipSpec.file(known), ClipSpec.silence(s.listenPauseAfterKnownSec)],
         // The 3rd pass: the target again, now that the meaning is known.
         if (third != null) ...[ClipSpec.file(third), ClipSpec.silence(s.listenPauseAfterThirdSec)],
-        ClipSpec.file(full),
-        ClipSpec.silence(s.listenPauseBeforeNextSec),
+        if (full != null) ...[ClipSpec.file(full), ClipSpec.silence(s.listenPauseBeforeNextSec)],
       ];
     } catch (_) {
       return null;
@@ -1294,7 +1366,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     });
 
     try {
-      final voices = await _targetVoices(s.targetLanguage);
+      final voice = await _targetVoice(s.targetLanguage);
       await _playlist.beginDynamicClips(ordinalCount: stories.length, loop: true);
       // Ordinal i is stories[i] for the lifetime of this queue, whatever happens
       // to the bank afterwards.
@@ -1312,13 +1384,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         // Built from the resume position and wrapping around, so playback can
         // start on the text the user left off at rather than at the top.
         final i = (from + n) % stories.length;
-        // The voice follows the story's own index, so it doesn't change
-        // depending on where the build happened to start. Every part of a long
-        // story shares one voice instead — a narrator that changed mid-chapter
-        // would sound like the recording had been spliced.
         final story = stories[i];
-        final vi = story.isStoryPart ? story.storyId.hashCode.abs() : i;
-        final clips = await _clipsFor(story, voices.isEmpty ? '' : voices[vi % voices.length], s);
+        final clips = await _clipsFor(story, voice, s);
         if (!mounted || token != _buildToken) return;
 
         if (clips == null) {
@@ -2020,18 +2087,11 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
 
   // ── Voices ────────────────────────────────────────────────────────────────
 
-  Future<void> _preview(String locale, String voiceName, double rate) async {
-    // The shared player holds audio focus; a live utterance over it is
-    // inaudible on some devices, so the playlist yields first.
-    await _playlist.pause();
-    await TtsSynthService.instance.speak(kVoiceSample, locale: locale, voiceName: voiceName, rate: rate);
-  }
-
   /// Voice picker for both languages at once.
   ///
-  /// Target language is multi-select — Listen rotates one voice per text, so
-  /// picking several is the normal case. The known language is single-select
-  /// (it only ever speaks the translation), matching the Sentences tab's picker.
+  /// The natural voice is offered for the target language only — see
+  /// [VoicePickerSheet]. The known language speaks one line per text and an
+  /// installed voice covers it.
   Future<void> _showVoicePicker() async {
     final state = context.read<AppState>();
     final s = state.settings;
@@ -2039,30 +2099,45 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     final knownByLocale = await TtsSynthService.instance.voicesByLocale(langCodeForLanguage(s.knownLanguage));
     if (!mounted) return;
 
-    final result = await showModalBottomSheet<({List<String> target, String known})>(
+    final result = await showModalBottomSheet<VoiceChoice>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (ctx) => _VoicePickerSheet(
+      builder: (ctx) => VoicePickerSheet(
         targetLang: s.targetLanguage,
-        knownLang: s.knownLanguage,
+        targetBlurb: 'Speaks the text itself. One voice only.',
+        otherLang: s.knownLanguage,
+        otherBlurb: 'Speaks the translation. One voice only.',
         targetByLocale: targetByLocale,
-        knownByLocale: knownByLocale,
-        initialTarget: s.listenVoiceIds,
-        initialKnown: s.listenKnownVoice,
-        targetRate: _rate(s.listenMediumRatePct),
-        onPreview: _preview,
+        otherByLocale: knownByLocale,
+        initialTarget: s.listenVoiceId,
+        initialOther: s.listenKnownVoice,
+        onPreviewVoice: (key, lang, {locale = '', voiceName = ''}) => _preview.voice(
+          key,
+          lang,
+          locale: locale,
+          voiceName: voiceName,
+          gender: s.sentenceBankVoiceGender,
+          onError: _previewFailed,
+        ),
+        onPreviewNatural: (key) => _preview.natural(key, s.targetLanguage, onError: _previewFailed),
+        onStopPreview: _preview.stop,
       ),
     );
 
     await TtsSynthService.instance.stop();
+    // The sheet is gone; a preview still sounding would outlive its own button.
+    await _preview.stop();
     if (result == null || !mounted) return;
     _pause();
-    await state.saveSettingsOnly(
-      state.settings.copyWith(listenVoiceIds: result.target, listenKnownVoice: result.known),
-    );
+    await state.saveSettingsOnly(state.settings.copyWith(listenVoiceId: result.target, listenKnownVoice: result.other));
     if (!mounted) return;
-    setState(() => _cancelBuild()); // different voices → different clips
+    setState(() => _cancelBuild()); // a different voice → different clips
+  }
+
+  void _previewFailed(Object e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not play that voice: $e')));
   }
 
   // ── Settings ──────────────────────────────────────────────────────────────
@@ -2076,6 +2151,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         child: Consumer<AppState>(
           builder: (ctx, state, _) {
             final s = state.settings;
+            final google = s.listenUsesGoogleVoice;
             void set(AppSettings updated) => state.saveSettingsOnly(updated);
             return SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -2087,8 +2163,15 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                   const SizedBox(height: 12),
                   Text('Each text', style: Theme.of(ctx).textTheme.titleSmall),
                   Text(
-                    'Plays these steps from top to bottom. Speed is a percentage '
-                    'of normal speaking pace.',
+                    google
+                        // Named, not numeric, because these three are all the
+                        // endpoint has — the paces beside them are measured.
+                        ? 'Plays these steps from top to bottom. The ${s.targetLanguage} '
+                              'voice is the Google one, which has only three paces: '
+                              'Slow (72%), Medium (83%) and Fast (100% — normal). '
+                              'Switch it off under ⋮ → Voices to set speeds freely.'
+                        : 'Plays these steps from top to bottom. Speed is a percentage '
+                              'of normal speaking pace.',
                     style: Theme.of(ctx).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 8),
@@ -2097,6 +2180,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                     language: s.targetLanguage,
                     speed: s.listenSlowRatePct,
                     onSpeed: (v) => set(s.copyWith(listenSlowRatePct: v)),
+                    googleStep: google ? s.listenGoogleSlowStep : null,
+                    onGoogleStep: (v) => set(s.copyWith(listenGoogleSlowStep: v)),
                     pause: s.listenPauseAfterSlowSec,
                     onPause: (v) => set(s.copyWith(listenPauseAfterSlowSec: v)),
                   ),
@@ -2107,6 +2192,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                     onToggle: (v) => set(s.copyWith(listenUseMediumPass: v)),
                     speed: s.listenMediumRatePct,
                     onSpeed: (v) => set(s.copyWith(listenMediumRatePct: v)),
+                    googleStep: google ? s.listenGoogleMediumStep : null,
+                    onGoogleStep: (v) => set(s.copyWith(listenGoogleMediumStep: v)),
                     pause: s.listenPauseAfterMediumSec,
                     onPause: (v) => set(s.copyWith(listenPauseAfterMediumSec: v)),
                   ),
@@ -2123,6 +2210,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                     onToggle: (v) => set(s.copyWith(listenUseSlowAfterKnown: v)),
                     speed: s.listenThirdPassRatePct,
                     onSpeed: (v) => set(s.copyWith(listenThirdPassRatePct: v)),
+                    googleStep: google ? s.listenGoogleThirdStep : null,
+                    onGoogleStep: (v) => set(s.copyWith(listenGoogleThirdStep: v)),
                     pause: s.listenPauseAfterThirdSec,
                     onPause: (v) => set(s.copyWith(listenPauseAfterThirdSec: v)),
                   ),
@@ -2131,6 +2220,11 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                     language: s.targetLanguage,
                     speed: s.listenFullRatePct,
                     onSpeed: (v) => set(s.copyWith(listenFullRatePct: v)),
+                    googleStep: google ? s.listenGoogleFullStep : null,
+                    onGoogleStep: (v) => set(s.copyWith(listenGoogleFullStep: v)),
+                    // The one pass with no Off: without it a text could end up
+                    // with no target audio at all.
+                    googleAllowOff: false,
                     pause: s.listenPauseBeforeNextSec,
                     onPause: (v) => set(s.copyWith(listenPauseBeforeNextSec: v)),
                   ),
@@ -2187,6 +2281,9 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// bottom. A switched-off step stays in place, greyed, rather than vanishing:
   /// controls that disappear and reappear make the layout jump, and hide what
   /// switching the step back on would bring.
+  /// Labels for the Google-voice speed steps, indexed by the stored step.
+  static const List<String> _kGoogleStepLabels = ['Off', 'Slow', 'Medium', 'Fast'];
+
   Widget _passCard(
     BuildContext ctx, {
     required String language,
@@ -2194,10 +2291,18 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     ValueChanged<bool>? onToggle,
     int? speed,
     ValueChanged<int>? onSpeed,
+    // Set instead of [speed] in Google mode: the endpoint has three paces, so
+    // the pass picks one by name rather than a percentage. 0 is Off, which is
+    // why the checkbox is dropped — it would duplicate the first value.
+    int? googleStep,
+    ValueChanged<int>? onGoogleStep,
+    // False on the final pass: something has to play, so it has no Off.
+    bool googleAllowOff = true,
     required int pause,
     required ValueChanged<int> onPause,
   }) {
-    final enabled = on ?? true;
+    // In Google mode the step *is* the on/off state; elsewhere the checkbox is.
+    final enabled = googleStep != null ? googleStep != AppSettings.kListenGoogleStepOff : (on ?? true);
     final theme = Theme.of(ctx);
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -2218,7 +2323,9 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                 SizedBox(
                   width: 40,
                   height: 40,
-                  child: on == null ? null : Checkbox(value: on, onChanged: (v) => onToggle?.call(v ?? true)),
+                  child: on == null || googleStep != null
+                      ? null
+                      : Checkbox(value: on, onChanged: (v) => onToggle?.call(v ?? true)),
                 ),
                 Text(
                   language,
@@ -2230,7 +2337,22 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
               padding: const EdgeInsets.only(left: 12),
               child: Column(
                 children: [
-                  if (speed != null)
+                  if (googleStep != null)
+                    _stepper(
+                      ctx,
+                      label: 'Speed',
+                      suffix: '',
+                      value: googleStep,
+                      min: googleAllowOff ? AppSettings.kListenGoogleStepOff : AppSettings.kListenGoogleStepOff + 1,
+                      max: AppSettings.kListenGoogleStepMax,
+                      // Named values, so the box needs room for "Medium".
+                      valueWidth: 72,
+                      display: (v) => _kGoogleStepLabels[v],
+                      // Never greyed: it is the control that turns the pass
+                      // back on, so disabling it at Off would strand it there.
+                      onSet: (v) => onGoogleStep?.call(v),
+                    )
+                  else if (speed != null)
                     _stepper(
                       ctx,
                       label: 'Speed',
@@ -2315,7 +2437,6 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
 /// text runs for many seconds, which is far too long to audition a voice, let
 /// alone to compare two. Digits are read in the voice's own language, so this
 /// sounds like the right language without shipping sample text per language.
-const String kVoiceSample = '1, 2, 3, 4, 5.';
 
 /// The Listen voices sheet.
 ///
@@ -2323,188 +2444,3 @@ const String kVoiceSample = '1, 2, 3, 4, 5.';
 /// the selection is genuinely this sheet's state, and owning it here is what
 /// guarantees a tap repaints every row that depends on it (the check moving off
 /// "Automatic" being the visible one).
-class _VoicePickerSheet extends StatefulWidget {
-  const _VoicePickerSheet({
-    required this.targetLang,
-    required this.knownLang,
-    required this.targetByLocale,
-    required this.knownByLocale,
-    required this.initialTarget,
-    required this.initialKnown,
-    required this.targetRate,
-    required this.onPreview,
-  });
-
-  final String targetLang;
-  final String knownLang;
-  final Map<String, List<Map>> targetByLocale;
-  final Map<String, List<Map>> knownByLocale;
-  final List<String> initialTarget;
-  final String initialKnown;
-  final double targetRate;
-  final Future<void> Function(String locale, String voiceName, double rate) onPreview;
-
-  @override
-  State<_VoicePickerSheet> createState() => _VoicePickerSheetState();
-}
-
-class _VoicePickerSheetState extends State<_VoicePickerSheet> {
-  late final List<String> _allTargetIds;
-  late Set<String> _target;
-  late String _known;
-
-  static String _id(String name, String locale) => '${name}__SEP__$locale';
-
-  @override
-  void initState() {
-    super.initState();
-    _allTargetIds = [
-      for (final e in widget.targetByLocale.entries)
-        for (final v in e.value) _id('${v['name']}', e.key),
-    ];
-    // An empty stored list *means* "all", so open with them all ticked rather
-    // than all blank — an all-unchecked list that still plays every voice is
-    // exactly the confusing state this avoids.
-    _target = {...widget.initialTarget.where(_allTargetIds.contains)};
-    if (_target.isEmpty) _target = {..._allTargetIds};
-    _known = widget.initialKnown;
-  }
-
-  Widget _sectionTitle(String title, String blurb, {Widget? trailing}) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 8, 8, 4),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: Theme.of(context).textTheme.titleSmall),
-              Text(blurb, style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        ),
-        ?trailing,
-      ],
-    ),
-  );
-
-  Widget _previewBtn(String locale, String name, double rate) => IconButton(
-    icon: const Icon(Icons.play_arrow_outlined),
-    tooltip: 'Hear this voice',
-    onPressed: () => widget.onPreview(locale, name, rate),
-  );
-
-  static const _empty = Padding(
-    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-    child: Text(
-      'No voices installed for this language. Add one in Android Settings → '
-      'System → Languages & input → Text-to-speech output.',
-    ),
-  );
-
-  /// One locale group. Matches the Sentences picker: an expander per locale,
-  /// rows labelled `Voice n` over the engine's own name — the only thing that
-  /// tells two otherwise identical rows apart.
-  Widget _localeGroup(String locale, List<Map> voices, bool expanded, Widget Function(int, String) row) =>
-      ExpansionTile(
-        title: Text('$locale  (${voices.length})'),
-        initiallyExpanded: expanded,
-        children: [for (var i = 0; i < voices.length; i++) row(i, '${voices[i]['name']}')],
-      );
-
-  @override
-  Widget build(BuildContext context) {
-    final allOn = _target.length == _allTargetIds.length;
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: Row(
-              children: [
-                Text('Voices', style: Theme.of(context).textTheme.titleMedium),
-                const Spacer(),
-                Text(
-                  '${_target.length}/${_allTargetIds.length} ${widget.targetLang}',
-                  style: Theme.of(context).textTheme.labelMedium,
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 8),
-          Flexible(
-            child: ListView(
-              shrinkWrap: true,
-              children: [
-                _sectionTitle(
-                  widget.targetLang,
-                  'Each text is spoken by the next voice in this list. '
-                  'These are the voices installed on this phone.',
-                  trailing: TextButton(
-                    onPressed: () => setState(() => _target = allOn ? {} : {..._allTargetIds}),
-                    child: Text(allOn ? 'None' : 'All'),
-                  ),
-                ),
-                if (widget.targetByLocale.isEmpty) _empty,
-                for (final entry in widget.targetByLocale.entries)
-                  _localeGroup(entry.key, entry.value, widget.targetByLocale.length == 1, (i, name) {
-                    final id = _id(name, entry.key);
-                    return CheckboxListTile(
-                      dense: true,
-                      contentPadding: const EdgeInsets.only(left: 24, right: 8),
-                      title: Text('Voice ${i + 1}'),
-                      subtitle: Text(name, overflow: TextOverflow.ellipsis),
-                      value: _target.contains(id),
-                      secondary: _previewBtn(entry.key, name, widget.targetRate),
-                      onChanged: (on) => setState(() => on == true ? _target.add(id) : _target.remove(id)),
-                    );
-                  }),
-                const Divider(height: 16),
-                _sectionTitle(widget.knownLang, 'Speaks the translation. One voice only.'),
-                ListTile(
-                  dense: true,
-                  contentPadding: const EdgeInsets.only(left: 16, right: 8),
-                  title: const Text('Automatic'),
-                  subtitle: const Text('Let the engine choose'),
-                  trailing: _known.isEmpty ? const Icon(Icons.check) : null,
-                  onTap: () => setState(() => _known = ''),
-                ),
-                if (widget.knownByLocale.isEmpty) _empty,
-                for (final entry in widget.knownByLocale.entries)
-                  _localeGroup(entry.key, entry.value, widget.knownByLocale.length == 1, (i, name) {
-                    final id = _id(name, entry.key);
-                    return ListTile(
-                      dense: true,
-                      contentPadding: const EdgeInsets.only(left: 24, right: 8),
-                      leading: _previewBtn(entry.key, name, kSourceSpeechRate),
-                      title: Text('Voice ${i + 1}'),
-                      subtitle: Text(name, overflow: TextOverflow.ellipsis),
-                      trailing: _known == id ? const Icon(Icons.check) : null,
-                      onTap: () => setState(() => _known = id),
-                    );
-                  }),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                const Spacer(),
-                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: () => Navigator.pop(context, (target: _target.toList(), known: _known)),
-                  child: const Text('Apply'),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
