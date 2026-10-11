@@ -326,8 +326,8 @@ class AiService {
 
   // "The model is overloaded" (5xx) is momentary, unlike a quota refusal.
   // Stepping straight down the chain for it means the best model is barely ever
-  // used — a story written by 3.5-flash when 3.8 would have answered a couple of
-  // seconds later. So a 5xx is retried on the *same* model first; a 429 gets no
+  // used — a story written by 3.5-flash-lite when 3.8 would have answered a
+  // couple of seconds later. So a 5xx is retried on the *same* model first; a 429 gets no
   // such retry, since a quota refusal repeats.
   static const int _kOverloadRetries = 2;
   static const Duration _kOverloadBackoff = Duration(seconds: 2);
@@ -591,24 +591,7 @@ Guidance for score:
     };
 
     final resp = await queryModel(apiKey, body);
-    if (resp.statusCode != 200) _throwAiError(resp, 'evaluatePrediction');
-
-    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-    final candidates = decoded['candidates'] as List?;
-    if (candidates == null || candidates.isEmpty) {
-      throw Exception('AI returned no candidates for evaluatePrediction');
-    }
-
-    final content = candidates.first['content'] as Map<String, dynamic>?;
-    final parts = content?['parts'] as List?;
-    if (parts == null || parts.isEmpty) {
-      throw Exception('AI returned empty content for evaluatePrediction');
-    }
-
-    final text = (parts.first['text'] as String? ?? '').trim();
-    if (text.isEmpty) {
-      throw Exception('AI returned empty text for evaluatePrediction');
-    }
+    final text = requireReplyText(resp, 'evaluatePrediction');
 
     final out = jsonDecode(text);
     if (out is! Map) throw Exception('AI returned non-object JSON for evaluatePrediction');
@@ -849,29 +832,16 @@ USER INPUT: "$input"
     };
 
     final resp = await queryModel(apiKey, body);
-    if (resp.statusCode != 200) {
-      return input; // fail soft
-    }
+    // Fails soft throughout: [replyText] is null for a non-200 and for a body
+    // that won't parse, so every "no answer" lands on the same return.
+    final text = replyText(resp);
+    if (text == null) return input;
 
-    try {
-      final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-      final candidates = decoded['candidates'] as List?;
-      if (candidates == null || candidates.isEmpty) return input;
-      final content = candidates.first['content'] as Map<String, dynamic>?;
-      final parts = content?['parts'] as List?;
-      if (parts == null || parts.isEmpty) return input;
-      final text = (parts.first['text'] as String? ?? '').trim();
-      if (text.isEmpty) return input;
+    final normalized = text.split('\n').first.trim();
+    if (normalized.isEmpty) return input;
 
-      final normalized = text.split('\n').first.trim();
-      if (normalized.isEmpty) return input;
-
-      // Update cache
-      cache?[key] = normalized;
-      return normalized;
-    } catch (_) {
-      return input;
-    }
+    cache?[key] = normalized;
+    return normalized;
   }
 
   //   // Translate a single word from known language (L1) into target language (L2).
@@ -1118,18 +1088,7 @@ The JSON object must be:
     };
 
     final resp = await queryModel(apiKey, body);
-    if (resp.statusCode != 200) _throwAiError(resp, 'generateWordAndSentences');
-
-    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-    final candidates = decoded['candidates'] as List?;
-    if (candidates == null || candidates.isEmpty) throw Exception('AI returned no candidates');
-
-    final content = candidates.first['content'] as Map<String, dynamic>?;
-    final parts = content?['parts'] as List?;
-    if (parts == null || parts.isEmpty) throw Exception('AI returned no content parts');
-
-    final text = (parts.first['text'] as String? ?? '').trim();
-    if (text.isEmpty) throw Exception('AI returned empty text');
+    final text = requireReplyText(resp, 'generateWordAndSentences');
 
     final parsed = _parseWordAndSentencesJson(
       jsonString: text,
@@ -1271,27 +1230,7 @@ Example of the format (structure only):
 
     final resp = await queryModel(apiKey, body);
 
-    if (resp.statusCode != 200) {
-      _throwAiError(resp, 'generateSentences');
-      // throw Exception('AI error ${resp.statusCode}: ${resp.body}');
-    }
-
-    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-    final candidates = decoded['candidates'] as List?;
-    if (candidates == null || candidates.isEmpty) {
-      throw Exception('AI returned no candidates');
-    }
-
-    final content = candidates.first['content'] as Map<String, dynamic>?;
-    final parts = content?['parts'] as List?;
-    if (parts == null || parts.isEmpty) {
-      throw Exception('AI returned no content parts');
-    }
-
-    final text = parts.first['text'] as String? ?? '';
-    if (text.isEmpty) {
-      throw Exception('AI returned empty text');
-    }
+    final text = requireReplyText(resp, 'generateSentences');
 
     // final match = RegExp(r'\[[\s\S]*\]').firstMatch(text);
     // if (match == null) {
@@ -1701,13 +1640,7 @@ budget — rewrite it before returning it rather than listing them all.
     };
 
     final resp = await queryModel(apiKey, body, thinking: _kListenThinking);
-    if (resp.statusCode != 200) _throwAiError(resp, 'generateListeningTexts');
-
-    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-    final parts =
-        ((decoded['candidates'] as List?)?.firstOrNull?['content'] as Map<String, dynamic>?)?['parts'] as List?;
-    final text = (parts?.firstOrNull?['text'] as String? ?? '').trim();
-    if (text.isEmpty) throw Exception('AI returned no listening texts');
+    final text = requireReplyText(resp, 'generateListeningTexts');
 
     late List<dynamic> list;
     try {
@@ -1915,13 +1848,7 @@ Return JSON only.
     };
 
     final resp = await queryModel(apiKey, body, thinking: _kListenThinking);
-    if (resp.statusCode != 200) _throwAiError(resp, 'generateStory');
-
-    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-    final respParts =
-        ((decoded['candidates'] as List?)?.firstOrNull?['content'] as Map<String, dynamic>?)?['parts'] as List?;
-    final text = (respParts?.firstOrNull?['text'] as String? ?? '').trim();
-    if (text.isEmpty) throw Exception('AI returned no story');
+    final text = requireReplyText(resp, 'generateStory');
 
     late Map<String, dynamic> map;
     try {
@@ -2107,27 +2034,7 @@ TASK:
 
     final resp = await queryModel(apiKey, body);
 
-    if (resp.statusCode != 200) {
-      // throw Exception('AI error ${resp.statusCode}: ${resp.body}');
-      _throwAiError(resp, 'normalizeWordToTargetScript');
-    }
-
-    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-    final candidates = decoded['candidates'] as List?;
-    if (candidates == null || candidates.isEmpty) {
-      throw Exception('AI returned no candidates for connector word');
-    }
-
-    final content = candidates.first['content'] as Map<String, dynamic>?;
-    final parts = content?['parts'] as List?;
-    if (parts == null || parts.isEmpty) {
-      throw Exception('AI returned empty content for connector word');
-    }
-
-    final text = (parts.first['text'] as String? ?? '').trim();
-    if (text.isEmpty) {
-      throw Exception('AI returned empty text for connector word');
-    }
+    final text = requireReplyText(resp, 'normalizeWordToTargetScript');
 
     final firstLine = text.split('\n').first.trim();
     return firstLine;
@@ -2135,6 +2042,92 @@ TASK:
 
   /// Simple key test for SettingsScreen.
   /// Returns true if Gemini replies with 200 OK.
+  /// Translates whole blocks of text between two languages, keeping each result
+  /// aligned with the block it came from.
+  ///
+  /// Listen's file import is what needs this: that material is the user's own
+  /// text, so only one side of the l2/l1 pair exists and the other has to be
+  /// produced — unlike every generator here, which returns both sides at once.
+  ///
+  /// Items go out as **JSON**, not as the numbered plain list the Sentence
+  /// Bank's batch translator uses: a block here is several sentences and may
+  /// contain newlines, which a "1. …" list has no way to delimit. Results are
+  /// realigned by the model's own `n` rather than by position, for the same
+  /// reason the bank does it — one dropped or reordered item would otherwise
+  /// shift every translation after it onto the wrong text, which reads as
+  /// plausible output and is almost impossible to notice. A slot the model
+  /// never answered comes back as an empty string, and what to do about that is
+  /// the caller's call: a story cannot survive a hole, a list of independent
+  /// texts can.
+  static Future<List<String>> translateTexts({
+    required String apiKey,
+    required List<String> texts,
+    required String fromLanguage,
+    required String toLanguage,
+  }) async {
+    if (apiKey.trim().isEmpty) throw Exception('AI API key is empty (set it in Settings).');
+    if (texts.isEmpty) return const [];
+
+    final items = jsonEncode([
+      for (var i = 0; i < texts.length; i++) {'n': i + 1, 's': texts[i]},
+    ]);
+    final prompt =
+        '''
+Translate each item below from $fromLanguage to $toLanguage.
+
+Rules:
+- Return ONLY a JSON array of objects, each {"n": <the item's number>, "t": <its translation>}.
+- Keep the same "n" each item was given. Do not merge, drop, or reorder items.
+- Translate the item in full — every sentence of it, in the same order, and the
+  same number of sentences out as in.
+- Natural, faithful prose in $toLanguage: not word-for-word, and never a summary.
+- No commentary, no notes, no markdown.
+
+Items (JSON):
+$items
+''';
+
+    final body = {
+      'contents': [
+        {
+          'parts': [
+            {'text': prompt},
+          ],
+        },
+      ],
+      'generationConfig': {
+        'responseMimeType': 'application/json',
+        'responseSchema': {
+          'type': 'array',
+          'items': {
+            'type': 'object',
+            'properties': {
+              'n': {'type': 'integer'},
+              't': {'type': 'string'},
+            },
+            'required': ['n', 't'],
+          },
+        },
+        // Stripped on 3.x by [_adaptBody]; kept for the engines that take it,
+        // where a translation wants the least invention available.
+        'temperature': 0.2,
+      },
+    };
+
+    final resp = await queryModel(apiKey, body);
+    final decoded = jsonDecode(requireReplyText(resp, 'translateTexts'));
+    if (decoded is! List) throw Exception('AI returned non-array JSON for translateTexts');
+    final out = List<String>.filled(texts.length, '');
+    for (final item in decoded) {
+      if (item is! Map) continue;
+      final raw = item['n'];
+      final idx = (raw is int ? raw : int.tryParse('$raw') ?? 0) - 1;
+      if (idx < 0 || idx >= out.length) continue;
+      out[idx] = (item['t'] as String? ?? '').trim();
+    }
+    return out;
+  }
+
   static Future<bool> testApiKey(String apiKey) async {
     final key = apiKey.trim();
     if (key.isEmpty) return false;
@@ -2151,6 +2144,52 @@ TASK:
 
     final resp = await queryModel(apiKey, body);
     return resp.statusCode == 200;
+  }
+
+  /// The reply's text and the model that produced it, from a single decode.
+  ///
+  /// This is the **only** place in the app that knows the wire shape of a
+  /// reply. It used to be hand-written at nine call sites across this file and
+  /// `sentence_bank_service.dart`, which is why they had drifted: each threw
+  /// its own wording for the same failure, some wrapped `jsonDecode` in a try
+  /// and some let a `FormatException` escape raw, and all nine read
+  /// `parts.first`.
+  ///
+  /// That last one was a latent bug, now fixed here for every caller at once:
+  /// a reply split across several parts lost everything after the first, and
+  /// since all of these payloads are JSON a dropped tail is a *parse failure*
+  /// rather than partial content. So the parts are **joined**.
+  ///
+  /// Both fields are null when the body isn't the JSON this expects, a non-200
+  /// included. A caller that wants the status to raise goes through
+  /// [requireReplyText]; one that fails soft reads null as "no answer" and
+  /// needs no try/catch of its own.
+  static ({String? text, String? modelVersion}) replyOf(http.Response resp) {
+    if (resp.statusCode != 200) return (text: null, modelVersion: null);
+    try {
+      final decoded = jsonDecode(resp.body);
+      if (decoded is! Map) return (text: null, modelVersion: null);
+      final parts = ((decoded['candidates'] as List?)?.firstOrNull?['content'] as Map?)?['parts'] as List?;
+      final text = (parts ?? const [])
+          .map((part) => (part is Map ? part['text'] as String? : null) ?? '')
+          .join()
+          .trim();
+      return (text: text.isEmpty ? null : text, modelVersion: decoded['modelVersion'] as String?);
+    } catch (_) {
+      return (text: null, modelVersion: null);
+    }
+  }
+
+  /// [replyOf]'s text alone, for a caller that doesn't care which model answered.
+  static String? replyText(http.Response resp) => replyOf(resp).text;
+
+  /// [replyText] for the callers that throw: the app's own error for a non-200
+  /// (via [_throwAiError], so a quota or bad-key message still reaches the UI)
+  /// and one uniform exception for a 200 that carried no text. [what] names the
+  /// call in both, which is what the failure log in Settings shows.
+  static String requireReplyText(http.Response resp, String what) {
+    if (resp.statusCode != 200) _throwAiError(resp, what);
+    return replyOf(resp).text ?? (throw Exception('AI returned no text for $what'));
   }
 
   static Never _throwAiError(http.Response resp, String where) {

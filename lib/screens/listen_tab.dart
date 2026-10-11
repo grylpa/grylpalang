@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
@@ -77,6 +78,12 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// "…ing" label land on the button that was actually pressed. Both buttons are
   /// disabled while either runs, but only one should look busy.
   bool _generatingStory = false;
+
+  /// A file import is running. It holds [_generating] too (which locks the ⋮
+  /// menu and the subject picker), but neither action button should start
+  /// spinning for it — the work is a translation, not either generator, and the
+  /// app-wide `AiActivityBanner` is already reporting it.
+  bool _importing = false;
 
   // ── Live queue & wear ─────────────────────────────────────────────────────
   // Ordinal → text key for the running queue. Ordinals used to be positions in
@@ -1611,6 +1618,514 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     );
   }
 
+  // ── Loading your own material from a file ─────────────────────────────────
+
+  /// Opens the picker for a plain-text file and returns its name stem and
+  /// contents.
+  ///
+  /// Plain text only, deliberately: the two importers below ask the learner
+  /// what language the text is in and how to cut it up, which is exactly the
+  /// metadata a structured format would have carried. There is nothing for a
+  /// YAML schema to add here, and a bank file loaded into Listen would be a
+  /// different feature (the Sentences tab already has it).
+  Future<({String stem, String content})?> _pickTextFile() async {
+    const group = XTypeGroup(label: 'Text', extensions: ['txt']);
+    XFile? picked;
+    try {
+      picked = await openFile(acceptedTypeGroups: [group]);
+    } catch (_) {
+      if (mounted) lpSnack(context, 'Could not open the file picker.', 4000);
+      return null;
+    }
+    if (picked == null || !mounted) return null;
+    String content;
+    try {
+      content = await picked.readAsString();
+    } catch (_) {
+      if (mounted) lpSnack(context, 'Could not read the file.', 4000);
+      return null;
+    }
+    final name = picked.name;
+    final dot = name.lastIndexOf('.');
+    return (stem: dot > 0 ? name.substring(0, dot) : name, content: content);
+  }
+
+  /// Abbreviations that are **always** mid-sentence, because a name always
+  /// follows them. Tested as a whole lowercased token, not with `\b…\.`: Dart's
+  /// `\b` is the ECMAScript ASCII word boundary even under `unicode: true`, so
+  /// every Greek entry in a `\b`-anchored pattern silently never matched.
+  static const Set<String> _kTitleAbbrevs = {
+    'mr.',
+    'mrs.',
+    'ms.',
+    'dr.',
+    'prof.',
+    'st.',
+    'jr.',
+    'sr.',
+    'sra.',
+    'srta.',
+    'dra.',
+    'sig.',
+    'sig.ra',
+    'dott.',
+    'dott.ssa',
+    'avv.',
+    'ing.',
+    'no.',
+    'κ.',
+  };
+
+  /// Abbreviations that are *usually* mid-sentence but legitimately end one
+  /// ("… trains, etc. Then they left."). Distinguished by what comes next: a
+  /// lowercase word continues the sentence, anything else ends it. The titles
+  /// above can't use that test — "Mr. Smith" is followed by a capital too —
+  /// which is exactly why the two sets are separate.
+  static const Set<String> _kMidSentenceAbbrevs = {
+    'etc.',
+    'e.g.',
+    'i.e.',
+    'vs.',
+    'κλπ.',
+    'κ.λπ.',
+    'π.χ.',
+    'δηλ.',
+    'ud.',
+    'uds.',
+    'ecc.',
+    'p.ej.',
+    'aprox.',
+  };
+
+  static final RegExp _kInitial = RegExp(r'^\p{L}\.$', unicode: true);
+  static final RegExp _kStartsLower = RegExp(r'^\p{Ll}', unicode: true);
+  static final RegExp _kLeadingJunk = RegExp(r'^[^\p{L}\p{N}]+', unicode: true);
+  static final RegExp _kGreekScript = RegExp(r'[Ͱ-Ͽἀ-῿]');
+
+  /// Sentence boundary. The `[”"»’)\]]*` is not decoration: a period inside a
+  /// closing quote (`He said, "Go away." Then …`) puts the quote, not the
+  /// period, before the space, and without it that is not a boundary at all.
+  ///
+  /// Greek needs its own pattern because `;` is its **question mark** and must
+  /// split, where in English it separates clauses and must not ("I came; I
+  /// saw." is one sentence). `·` (ano teleia) is left out of both: it is Greek's
+  /// semicolon, not a full stop. Chosen by script rather than by the language
+  /// the dialog asks about, because the count is shown *in* that dialog and so
+  /// has to exist before the question is put.
+  static final RegExp _kSplitLatin = RegExp(r'(?<=[.!?…][”"»’)\]]*)\s+');
+  static final RegExp _kSplitGreek = RegExp(r'(?<=[.!?…;][”"»’)\]]*)\s+');
+  static final RegExp _kLineEnd = RegExp(r'[.!?;…·][”"»’)\]]*$');
+
+  /// The last whitespace-delimited token, lowercased with leading punctuation
+  /// stripped, for the abbreviation tests.
+  static String _lastToken(String s) {
+    final parts = s.split(RegExp(r'\s+'));
+    return parts.isEmpty ? '' : parts.last.replaceAll(_kLeadingJunk, '').toLowerCase();
+  }
+
+  /// Whether what has accumulated so far runs on into [next] rather than ending.
+  static bool _runsOn(String sofar, String next) {
+    final token = _lastToken(sofar);
+    // An initial — "he met J. Fowler" — is always mid-sentence.
+    if (_kTitleAbbrevs.contains(token) || _kInitial.hasMatch(token)) return true;
+    if (_kMidSentenceAbbrevs.contains(token)) return _kStartsLower.hasMatch(next);
+    return false;
+  }
+
+  /// Splits plain text into sentences, for cutting a story into parts.
+  ///
+  /// Done locally rather than by asking the model, for two reasons: the part
+  /// size is given in sentences, so the count has to be known *before* the one
+  /// AI call the import makes, and a division the learner can predict from
+  /// looking at their own file beats one they cannot.
+  ///
+  /// A blank line is a hard boundary no abbreviation rule may cross. Within a
+  /// paragraph, newlines collapse to spaces and the split is on punctuation —
+  /// right for wrapped prose, and wrong for a file that is already one item per
+  /// line with no full stops, where it would return one giant "sentence" per
+  /// paragraph. So when **most lines don't end in terminal punctuation**, the
+  /// lines themselves are the sentences. That test, rather than comparing the
+  /// two counts, is what keeps wrapped prose working: prose also has more lines
+  /// than sentences, so a count comparison would pick the wrong branch for it
+  /// every time.
+  static List<String> _splitSentences(String text) {
+    final lines = [
+      for (final l in text.split('\n'))
+        if (l.trim().isNotEmpty) l.trim(),
+    ];
+    if (lines.length >= 2 && lines.where(_kLineEnd.hasMatch).length * 2 < lines.length) return lines;
+
+    final splitter = _kGreekScript.hasMatch(text) ? _kSplitGreek : _kSplitLatin;
+    final out = <String>[];
+    for (final para in text.split(RegExp(r'\n\s*\n'))) {
+      final flat = para.replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (flat.isEmpty) continue;
+      final pieces = [
+        for (final piece in flat.split(splitter))
+          if (piece.trim().isNotEmpty) piece.trim(),
+      ];
+      String? pending;
+      for (var i = 0; i < pieces.length; i++) {
+        final joined = pending == null ? pieces[i] : '$pending ${pieces[i]}';
+        if (i + 1 < pieces.length && _runsOn(joined, pieces[i + 1])) {
+          pending = joined;
+          continue;
+        }
+        out.add(joined);
+        pending = null;
+      }
+      if (pending != null) out.add(pending);
+    }
+    return out;
+  }
+
+  /// Every imported text is tagged with **all** selectable subjects.
+  ///
+  /// `_playable` keeps a text only while one of its subjects is still selected,
+  /// which is right for generated material — it was written from that pool — and
+  /// wrong for a file, which came from no pool at all. Tagging it with
+  /// everything is what stops a later narrowing of the selection from hiding
+  /// material the learner loaded by hand. Empty would have been the honest
+  /// value and is unusable: `_playable` would drop it immediately, and the
+  /// import would vanish into the store.
+  List<String> get _importSubjects => _selectableSubjects;
+
+  /// Asks the known/target question both importers need.
+  ///
+  /// By name, never "known"/"target": the learner thinks in languages, and the
+  /// two labels are one tap apart with opposite consequences — getting it wrong
+  /// sends the text to be translated *into the language it is already in*.
+  ///
+  /// The **known** language sits on the left and is the default, for both
+  /// dialogs. Each remembers its own last answer
+  /// (`listenImportStoryInTarget` / `listenImportSentencesInTarget`), since a
+  /// story and a sentence list tend to arrive in different languages.
+  Widget _sourceLanguagePicker(
+    BuildContext ctx,
+    AppSettings s, {
+    required bool sourceIsTarget,
+    required ValueChanged<bool> onChanged,
+  }) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text('The file is written in', style: Theme.of(ctx).textTheme.bodySmall),
+      const SizedBox(height: 6),
+      SizedBox(
+        width: double.maxFinite,
+        child: SegmentedButton<bool>(
+          segments: [
+            ButtonSegment<bool>(value: false, label: Text(s.knownLanguage, overflow: TextOverflow.ellipsis)),
+            ButtonSegment<bool>(value: true, label: Text(s.targetLanguage, overflow: TextOverflow.ellipsis)),
+          ],
+          selected: {sourceIsTarget},
+          showSelectedIcon: false,
+          onSelectionChanged: (v) => onChanged(v.first),
+        ),
+      ),
+    ],
+  );
+
+  /// Part size and source language for an imported story. Mirrors the "Create a
+  /// story" dialog's stepper so the two read the same, and shares its setting
+  /// (`listenStoryPartSentences`) — a part is a part however it got here.
+  Future<({int perPart, bool sourceIsTarget})?> _askImportStoryOptions(AppSettings s, int sentenceCount) async {
+    var perPart = s.listenStoryPartSentences;
+    var sourceIsTarget = s.listenImportStoryInTarget;
+    return showDialog<({int perPart, bool sourceIsTarget})>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => AlertDialog(
+          title: const Text('Load story'),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+          contentPadding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('$sentenceCount sentences found. They will be split into parts and played in order.'),
+                const SizedBox(height: 16),
+                _stepper(
+                  ctx,
+                  label: 'Part size',
+                  suffix: ' sent.',
+                  value: perPart,
+                  min: 1,
+                  max: 10,
+                  valueWidth: 80,
+                  onSet: (v) => setSheet(() => perPart = v),
+                ),
+                const SizedBox(height: 4),
+                Text('${(sentenceCount / perPart).ceil()} parts of $perPart', style: Theme.of(ctx).textTheme.bodySmall),
+                const SizedBox(height: 16),
+                _sourceLanguagePicker(
+                  ctx,
+                  s,
+                  sourceIsTarget: sourceIsTarget,
+                  onChanged: (v) => setSheet(() => sourceIsTarget = v),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'The other language is translated for you — one AI call.',
+                  style: Theme.of(ctx).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, (perPart: perPart, sourceIsTarget: sourceIsTarget)),
+              child: const Text('Load'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Source language only: each line is its own text, so there is nothing to
+  /// decide about length.
+  Future<bool?> _askImportSentencesOptions(AppSettings s, int count) async {
+    var sourceIsTarget = s.listenImportSentencesInTarget;
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => AlertDialog(
+          title: const Text('Load sentences'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('$count lines found. Each becomes its own text.'),
+              const SizedBox(height: 16),
+              _sourceLanguagePicker(
+                ctx,
+                s,
+                sourceIsTarget: sourceIsTarget,
+                onChanged: (v) => setSheet(() => sourceIsTarget = v),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, sourceIsTarget), child: const Text('Load')),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Shared preamble: the key, a loaded bank, and no generation already running.
+  ({AppState state, AppSettings s})? _importPreflight() {
+    final state = context.read<AppState>();
+    final s = state.settings;
+    if (_generating) return null;
+    if (s.aiApiKey.trim().isEmpty) {
+      lpSnack(context, 'Set a Gemini API key in Settings first.', 4000);
+      return null;
+    }
+    if (_importSubjects.isEmpty) {
+      lpSnack(context, 'Load a sentence bank first — imported texts are filed against its subjects.', 5000);
+      return null;
+    }
+    return (state: state, s: s);
+  }
+
+  /// Loads a plain-text story: split into sentences, grouped into parts of the
+  /// chosen size, translated in one call, then committed exactly like a
+  /// generated story so the rest of the pipeline cannot tell the difference.
+  Future<void> _loadStoryFromFile() async {
+    final pre = _importPreflight();
+    if (pre == null) return;
+    var s = pre.s;
+    final file = await _pickTextFile();
+    if (file == null || !mounted) return;
+    final sentences = _splitSentences(file.content);
+    if (sentences.isEmpty) {
+      lpSnack(context, 'That file has no text in it.', 4000);
+      return;
+    }
+    final ask = await _askImportStoryOptions(s, sentences.length);
+    if (ask == null || !mounted) return;
+    // One write for both, so the remembered language survives even when the
+    // part size was left alone.
+    if (ask.perPart != s.listenStoryPartSentences || ask.sourceIsTarget != s.listenImportStoryInTarget) {
+      await pre.state.saveSettingsOnly(
+        s.copyWith(listenStoryPartSentences: ask.perPart, listenImportStoryInTarget: ask.sourceIsTarget),
+      );
+      if (!mounted) return;
+      s = pre.state.settings;
+    }
+
+    final chunks = <String>[];
+    for (var i = 0; i < sentences.length; i += ask.perPart) {
+      final end = i + ask.perPart > sentences.length ? sentences.length : i + ask.perPart;
+      chunks.add(sentences.sublist(i, end).join(' '));
+    }
+
+    _pause();
+    setState(() {
+      _generating = true;
+      _importing = true;
+    });
+    try {
+      final other = await AiService.translateTexts(
+        apiKey: s.aiApiKey,
+        texts: chunks,
+        fromLanguage: ask.sourceIsTarget ? s.targetLanguage : s.knownLanguage,
+        toLanguage: ask.sourceIsTarget ? s.knownLanguage : s.targetLanguage,
+      );
+      // All or nothing, unlike the sentence import: a story is one continuous
+      // narrative, so a part with no translation can neither be dropped (the
+      // thread breaks) nor kept (its "answer" pass would be silent). Better to
+      // import nothing and say so.
+      final missing = [
+        for (var i = 0; i < chunks.length; i++)
+          if (i >= other.length || other[i].isEmpty) i,
+      ];
+      if (missing.isNotEmpty) {
+        throw Exception('${missing.length} of ${chunks.length} parts came back untranslated — nothing was imported.');
+      }
+      final id = 'im${DateTime.now().millisecondsSinceEpoch}';
+      final added = [
+        for (var i = 0; i < chunks.length; i++)
+          ListenStory(
+            subjects: _importSubjects,
+            l2: ask.sourceIsTarget ? chunks[i] : other[i],
+            l1: ask.sourceIsTarget ? other[i] : chunks[i],
+            storyId: id,
+            part: i,
+            partCount: chunks.length,
+            // The file's own name, in both slots: it is the only title there
+            // is, and it belongs to neither language.
+            titleL2: file.stem,
+            titleL1: file.stem,
+          ),
+      ];
+      final all = _shuffledGroups([..._stories, ...added]);
+      await _service.saveStories(s.targetLanguage, all);
+      if (!mounted) return;
+      setState(() {
+        _stories = all;
+        _generating = false;
+        _importing = false;
+        _cancelBuild();
+      });
+      // Land on it: it was just loaded, so that is what the next Play wants.
+      final at = _playable.indexWhere((x) => x.key == added.first.key);
+      if (at >= 0) {
+        setState(() => _index = at);
+        unawaited(_service.savePosition(s.targetLanguage, added.first.key));
+      }
+      if (!mounted) return;
+      lpSnack(context, 'Loaded "${file.stem}" in ${added.length} parts.', 4000);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _generating = false;
+        _importing = false;
+      });
+      lpSnack(context, 'Could not load that story: $e', 6000);
+    }
+  }
+
+  /// Loads a plain-text file as independent texts, one per non-blank line —
+  /// the same rule the Sentences tab uses for a `.txt`, so a file written for
+  /// one of them works in the other.
+  Future<void> _loadSentencesFromFile() async {
+    final pre = _importPreflight();
+    if (pre == null) return;
+    final s = pre.s;
+    final file = await _pickTextFile();
+    if (file == null || !mounted) return;
+    final lines = {
+      for (final l in file.content.split('\n'))
+        if (l.trim().isNotEmpty) l.trim(),
+    }.toList();
+    if (lines.isEmpty) {
+      lpSnack(context, 'That file has no lines in it.', 4000);
+      return;
+    }
+    final sourceIsTarget = await _askImportSentencesOptions(s, lines.length);
+    if (sourceIsTarget == null || !mounted) return;
+    if (sourceIsTarget != s.listenImportSentencesInTarget) {
+      await pre.state.saveSettingsOnly(s.copyWith(listenImportSentencesInTarget: sourceIsTarget));
+      if (!mounted) return;
+    }
+
+    _pause();
+    setState(() {
+      _generating = true;
+      _importing = true;
+    });
+    try {
+      // Chunked by characters, not by count: a line here may be one word or a
+      // paragraph, and it is the response size that has to stay sane. Each
+      // chunk is its own request, so a long file costs several — the opposite
+      // of the story import, which is always exactly one.
+      const budget = 6000;
+      final other = <String>[];
+      var i = 0;
+      while (i < lines.length) {
+        final chunk = <String>[];
+        var chars = 0;
+        while (i < lines.length && (chunk.isEmpty || chars + lines[i].length <= budget)) {
+          chars += lines[i].length;
+          chunk.add(lines[i]);
+          i++;
+        }
+        other.addAll(
+          await AiService.translateTexts(
+            apiKey: s.aiApiKey,
+            texts: chunk,
+            fromLanguage: sourceIsTarget ? s.targetLanguage : s.knownLanguage,
+            toLanguage: sourceIsTarget ? s.knownLanguage : s.targetLanguage,
+          ),
+        );
+      }
+      // Here a hole *is* survivable: each line is a self-contained text, so an
+      // untranslated one is skipped and counted rather than failing the import.
+      final added = <ListenStory>[];
+      for (var j = 0; j < lines.length; j++) {
+        final t = j < other.length ? other[j] : '';
+        if (t.isEmpty) continue;
+        added.add(
+          ListenStory(subjects: _importSubjects, l2: sourceIsTarget ? lines[j] : t, l1: sourceIsTarget ? t : lines[j]),
+        );
+      }
+      if (added.isEmpty) throw Exception('nothing came back translated');
+      final all = _shuffledGroups([..._stories, ...added]);
+      await _service.saveStories(s.targetLanguage, all);
+      if (!mounted) return;
+      setState(() {
+        _stories = all;
+        _generating = false;
+        _importing = false;
+        _cancelBuild();
+      });
+      final at = _playable.indexWhere((x) => x.key == added.first.key);
+      if (at >= 0) {
+        setState(() => _index = at);
+        unawaited(_service.savePosition(s.targetLanguage, added.first.key));
+      }
+      if (!mounted) return;
+      final skipped = lines.length - added.length;
+      lpSnack(
+        context,
+        'Loaded ${added.length} texts from "${file.stem}"${skipped > 0 ? ' — $skipped skipped' : ''}.',
+        4000,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _generating = false;
+        _importing = false;
+      });
+      lpSnack(context, 'Could not load those sentences: $e', 6000);
+    }
+  }
+
   /// The ⋮ menu. Only what Listen actually has: voices, its playback settings,
   /// and clearing the generated bank. The Sentence Bank's URL / file loading /
   /// format items have no meaning here — the material is generated, not authored.
@@ -1638,6 +2153,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
             _showSettingsSheet();
           case 'clear':
             _clearTexts();
+          case 'loadstory':
+            _loadStoryFromFile();
+          case 'loadsentences':
+            _loadSentencesFromFile();
         }
       },
       itemBuilder: (_) => [
@@ -1645,6 +2164,11 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         item('settings', Icons.tune, 'Settings'),
         item('clear', Icons.delete_outline, 'Delete generated texts'),
         item('texts', Icons.list_alt_outlined, 'All texts', enabled: _playable.isNotEmpty),
+        // Gated on the key, not on a subject selection: imported material isn't
+        // built from the bank, but it still needs one AI call to produce the
+        // side of the pair the file doesn't have.
+        item('loadstory', Icons.auto_stories_outlined, 'Load story', enabled: _aiReady),
+        item('loadsentences', Icons.playlist_add, 'Load sentences', enabled: _aiReady),
       ],
     );
   }
@@ -1986,7 +2510,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   }
 
   Widget _generateButton() {
-    final busy = _generating && !_generatingStory;
+    final busy = _generating && !_generatingStory && !_importing;
     return _makeButton(
       onPressed: _generating || _selectedSubjects.isEmpty || !_aiReady ? null : _generate,
       icon: busy

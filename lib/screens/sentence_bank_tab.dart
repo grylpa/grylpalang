@@ -2077,8 +2077,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   /// Sentence Bank option: voice, settings, cloud URL, on-device file loading,
   /// and file management. Uses the app-wide themed (bordered) popup surface.
   Widget _buildVoiceButton() {
-    PopupMenuItem<String> item(String v, IconData icon, String label) => PopupMenuItem<String>(
+    PopupMenuItem<String> item(String v, IconData icon, String label, {bool enabled = true}) => PopupMenuItem<String>(
       value: v,
+      enabled: enabled,
       child: Row(children: [Icon(icon), const SizedBox(width: 12), Text(label)]),
     );
     return PopupMenuButton<String>(
@@ -2107,6 +2108,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             _openFormatGuide();
           case 'template':
             _emailStarterTemplate();
+          case 'export':
+            _emailSelectedSentences();
         }
       },
       itemBuilder: (ctx) => [
@@ -2117,6 +2120,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         item('manage', Icons.folder_open, 'Manage loaded files'),
         item('format', Icons.help_outline, 'Sentence bank format'),
         item('template', Icons.email_outlined, 'Email starter template'),
+        // Greyed rather than hidden when nothing is selected: an item that
+        // comes and goes makes the menu's other rows move under the finger.
+        item('export', Icons.forward_to_inbox, 'Email selected sentences', enabled: _selectedSubjects.isNotEmpty),
       ],
     );
   }
@@ -2148,6 +2154,92 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
             'the app via the Sentences tab ⋮ menu → "Load file from device" '
             '(or host it publicly and set its URL). The ⋮ → "Sentence bank '
             'format" guide explains every option.',
+        attachmentPaths: [file.path],
+      );
+      await FlutterEmailSender.send(mail);
+    } catch (e) {
+      if (mounted) lpSnack(context, 'Could not open email: $e', 5000);
+    }
+  }
+
+  /// Quotes a subject name or sentence for YAML. Everything goes out
+  /// double-quoted rather than bare because bank text freely contains ':',
+  /// '#', quotes and leading '-', each of which either changes what a plain
+  /// scalar parses as or makes the file invalid outright. Backslash is escaped
+  /// first, or it would re-escape the escapes added after it.
+  static String _yamlScalar(String s) =>
+      '"${s.replaceAll('\\', r'\\').replaceAll('"', r'\"').replaceAll('\n', r'\n')}"';
+
+  /// Writes the selected subjects out as a sentence-bank YAML and opens an
+  /// email with it attached, with no recipient — the user picks who gets it.
+  ///
+  /// The file carries **only** `subjects:` → `sentences:`: none of the
+  /// bank-level option scalars (`language`, the auto-mode delays, the TTS
+  /// repeat counts, `override_local`), and no `includes:` groups. The flat
+  /// shape costs nothing to produce, because a meta subject is never itself
+  /// selectable — selecting one selects its children — so every selected
+  /// subject is already a leaf and every sentence lands under the subject that
+  /// owns it.
+  ///
+  /// Two deliberate choices about *which* text goes out. Sentences are
+  /// exported **as authored**, inline directives included (`3, …`, `(hint)`,
+  /// `a/b`): the export is the material handed onward as input to something
+  /// else, so it has to be what was written rather than a flattened rendering
+  /// of it — [SbSentence.display] and [SbSentence.spoken] can both be derived
+  /// from the raw text and neither can be reversed back into it. That it also
+  /// happens to re-load through "Load file from device" unchanged is a
+  /// consequence, not the reason. And sentences the user has un-checked as
+  /// mastered are left out, since the menu offers to send what is *in play*,
+  /// which is the same set the picker counts.
+  Future<void> _emailSelectedSentences() async {
+    final bank = _bank;
+    if (bank == null || _selectedSubjects.isEmpty) {
+      lpSnack(context, 'Select at least one subject first', 3000);
+      return;
+    }
+    try {
+      final buf = StringBuffer('subjects:\n');
+      var sentenceCount = 0;
+      var subjectCount = 0;
+      // Bank order, not selection order, so the same selection always exports
+      // the same file.
+      for (final name in bank.subjectNames) {
+        if (!_selectedSubjects.contains(name)) continue;
+        final subject = bank.subjects[name];
+        if (subject is! LeafSubject) continue;
+        final kept = [
+          for (final s in subject.sentences)
+            if (!_excluded.contains(SbSentence.spoken(s))) s,
+        ];
+        if (kept.isEmpty) continue;
+        buf.writeln('  ${_yamlScalar(name)}:');
+        buf.writeln('    sentences:');
+        for (final s in kept) {
+          buf.writeln('      - ${_yamlScalar(s)}');
+          sentenceCount++;
+        }
+        subjectCount++;
+      }
+      if (sentenceCount == 0) {
+        lpSnack(context, 'Nothing to send — the selected subjects are empty', 4000);
+        return;
+      }
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/katalaveno_sentences.yml');
+      await file.writeAsString(buf.toString());
+      final plural = sentenceCount == 1 ? 'sentence' : 'sentences';
+      // Describes the payload and stops there. No instructions for loading it
+      // back into the app: the export's job is to get the material *out*, as
+      // input to whatever comes next — another tool, a hand edit, a plain-text
+      // file — and re-importing it is one possible use among those, not the
+      // point. Telling the recipient how to load it would misdescribe what they
+      // have been sent.
+      final mail = Email(
+        subject: 'Katalaveno — $sentenceCount $plural',
+        body:
+            '$sentenceCount $plural across $subjectCount '
+            '${subjectCount == 1 ? 'subject' : 'subjects'}, attached as YAML: '
+            'a `subjects` map, each subject holding its own list of sentences.',
         attachmentPaths: [file.path],
       );
       await FlutterEmailSender.send(mail);
