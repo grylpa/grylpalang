@@ -996,16 +996,15 @@ Sentence: $sentence
     };
 
     final resp = await AiService.queryModel(apiKey, body, allowFallback: allowFallback);
+    // The status check stays here rather than going through
+    // AiService.requireReplyText: a translation failure has to raise
+    // _translationError, which is what the retry/provenance logic reads.
     if (resp.statusCode != 200) throw _translationError(resp.statusCode, resp.body);
 
-    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-    final candidates = decoded['candidates'] as List?;
-    if (candidates == null || candidates.isEmpty) throw Exception('AI returned no candidates.');
-    final content = candidates.first['content'] as Map<String, dynamic>?;
-    final parts = content?['parts'] as List?;
-    if (parts == null || parts.isEmpty) throw Exception('AI returned no content.');
-    final model = decoded['modelVersion'] as String?;
-    final text = (parts.first['text'] as String? ?? '').trim();
+    final reply = AiService.replyOf(resp);
+    final model = reply.modelVersion;
+    final text = reply.text;
+    if (text == null) throw Exception('AI returned no content.');
     try {
       final obj = jsonDecode(text) as Map<String, dynamic>;
       final t = obj['t']?.toString().trim();
@@ -1068,15 +1067,11 @@ $numberedList
     // Surface a human-readable cause instead of silently returning source text.
     if (resp.statusCode != 200) throw _translationError(resp.statusCode, resp.body);
 
+    final reply = AiService.replyOf(resp);
+    final model = reply.modelVersion;
     try {
-      final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-      final model = decoded['modelVersion'] as String?;
-      final candidates = decoded['candidates'] as List?;
-      if (candidates == null || candidates.isEmpty) return (translations: sentences, model: model);
-      final content = candidates.first['content'] as Map<String, dynamic>?;
-      final parts = content?['parts'] as List?;
-      if (parts == null || parts.isEmpty) return (translations: sentences, model: model);
-      final text = (parts.first['text'] as String? ?? '').trim();
+      final text = reply.text;
+      if (text == null) return (translations: sentences, model: model);
       final list = jsonDecode(text) as List;
       // Realign by the model's own "n" rather than by position. The old code
       // paired result[i] with sentence[i]; if the model dropped, merged, or

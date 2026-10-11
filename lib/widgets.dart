@@ -231,7 +231,8 @@ class _AiActivityBannerState extends State<AiActivityBanner> {
   /// Without this the strip silently skips steps: a model that answers in
   /// milliseconds — an instant 429 is the common case — has its message
   /// overwritten before a frame is even drawn, so the user sees "asking 3.8",
-  /// then "3.7 rate-limited, trying 3.6", and never learns what 3.8 did.
+  /// then "3.6 rate-limited, trying 3.5-flash-lite", and never learns what 3.8
+  /// did.
   static const Duration _minDisplay = Duration(milliseconds: 900);
 
   DateTime _shownAt = DateTime.fromMillisecondsSinceEpoch(0);

@@ -99,6 +99,18 @@ class AppSettings {
   // reused by automatic replacements — unlike the theme, which is content:
   // reusing that would largely rewrite the same story.
   String listenStoryMood;
+  // Which language the last file loaded through Listen's ⋮ → Load story /
+  // Load sentences was written in: true = the target language, false = the
+  // known one. Remembered per dialog, because the two are used for different
+  // things — a story is usually something found in the language being learned,
+  // while a line-per-sentence list is usually written in the language you
+  // already have. Both default to the **known** language: it is the harmless
+  // way round to be wrong, since a file mislabelled as target gets "translated"
+  // into the language it is already in, which is obvious at a glance, where the
+  // reverse quietly produces a target-language text that is really a
+  // translation of itself.
+  bool listenImportStoryInTarget;
+  bool listenImportSentencesInTarget;
   // How many words a generated text / story part may introduce that the
   // learner has never seen. Their own settings because the two are read
   // differently: a story reuses its new words, a short text never does.
@@ -223,6 +235,8 @@ class AppSettings {
     this.listenStorySentences = kListenStorySentencesDefault,
     this.listenStoryPartSentences = kListenStoryPartSentencesDefault,
     this.listenStoryMood = '',
+    this.listenImportStoryInTarget = false,
+    this.listenImportSentencesInTarget = false,
     this.listenNewWordsPerText = 2,
     this.listenNewWordsPerPart = 2,
     this.listenDeleteTexts = true,
@@ -294,6 +308,8 @@ class AppSettings {
     int? listenStorySentences,
     int? listenStoryPartSentences,
     String? listenStoryMood,
+    bool? listenImportStoryInTarget,
+    bool? listenImportSentencesInTarget,
     int? listenNewWordsPerText,
     int? listenNewWordsPerPart,
     bool? listenDeleteTexts,
@@ -370,6 +386,8 @@ class AppSettings {
       listenStorySentences: listenStorySentences ?? this.listenStorySentences,
       listenStoryPartSentences: listenStoryPartSentences ?? this.listenStoryPartSentences,
       listenStoryMood: listenStoryMood ?? this.listenStoryMood,
+      listenImportStoryInTarget: listenImportStoryInTarget ?? this.listenImportStoryInTarget,
+      listenImportSentencesInTarget: listenImportSentencesInTarget ?? this.listenImportSentencesInTarget,
       listenNewWordsPerText: listenNewWordsPerText ?? this.listenNewWordsPerText,
       listenNewWordsPerPart: listenNewWordsPerPart ?? this.listenNewWordsPerPart,
       listenDeleteTexts: listenDeleteTexts ?? this.listenDeleteTexts,
@@ -444,6 +462,8 @@ class AppSettings {
     'listenStorySentences': listenStorySentences,
     'listenStoryPartSentences': listenStoryPartSentences,
     'listenStoryMood': listenStoryMood,
+    'listenImportStoryInTarget': listenImportStoryInTarget,
+    'listenImportSentencesInTarget': listenImportSentencesInTarget,
     'listenNewWordsPerText': listenNewWordsPerText,
     'listenNewWordsPerPart': listenNewWordsPerPart,
     'listenDeleteTexts': listenDeleteTexts,
@@ -566,6 +586,8 @@ class AppSettings {
       listenStorySentences: (json['listenStorySentences'] as int?) ?? kListenStorySentencesDefault,
       listenStoryPartSentences: (json['listenStoryPartSentences'] as int?) ?? kListenStoryPartSentencesDefault,
       listenStoryMood: json['listenStoryMood'] as String? ?? '',
+      listenImportStoryInTarget: json['listenImportStoryInTarget'] as bool? ?? false,
+      listenImportSentencesInTarget: json['listenImportSentencesInTarget'] as bool? ?? false,
       listenNewWordsPerText: json['listenNewWordsPerText'] as int? ?? 2,
       listenNewWordsPerPart: json['listenNewWordsPerPart'] as int? ?? 2,
       listenDeleteTexts: json['listenDeleteTexts'] as bool? ?? true,
