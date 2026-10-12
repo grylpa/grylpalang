@@ -51,7 +51,13 @@ enum GoogleTtsSpeed {
 class GoogleTranslateTts {
   static const _kHost = 'translate.google.com';
   static const _kPath = '/translate_tts';
-  static const _kMaxLen = 200; // endpoint truncates ~200 chars per request
+
+  /// The endpoint truncates at ~200 characters per request. Public because it
+  /// is a budget other code has to plan against, not only test after the fact:
+  /// Listen's story import sizes its parts so a part can be read in one request
+  /// (`_kImportPartChars`), since a part over this silently drops to the
+  /// on-device voice for every one of its passes.
+  static const kMaxLen = 200;
   static const _kMaxDiskEntries = 10000;
   static const _kEvictionBatch = 200; // delete this many at a time when over cap
   static const _kCacheDirName = 'google_tts_cache';
@@ -60,7 +66,7 @@ class GoogleTranslateTts {
   int? _diskCount;
 
   /// Returns true if [text] fits in a single endpoint request.
-  bool canSpeak(String text) => text.length <= _kMaxLen;
+  bool canSpeak(String text) => text.length <= kMaxLen;
 
   // The key for [GoogleTtsSpeed.fast] is deliberately byte-identical to the
   // pre-speed one ('$langCode|$text'): the Sentence Bank has thousands of Greek

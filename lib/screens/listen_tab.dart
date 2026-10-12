@@ -1697,9 +1697,65 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     'aprox.',
   };
 
+  /// Verbs of speech, for [_isAttribution]. English carries the weight because
+  /// it is the one language here that puts the subject *before* the verb in an
+  /// attribution ("Alexis asked"); in Greek, Spanish and Italian the inversion
+  /// ("ρώτησε ο Αλέξης") starts the piece lowercase, which that test catches on
+  /// its own. The list only has to cover what follows a closing quote, so it
+  /// stops at the verbs that actually do.
+  static const Set<String> _kSpeechVerbs = {
+    'said',
+    'asked',
+    'answered',
+    'replied',
+    'whispered',
+    'shouted',
+    'cried',
+    'called',
+    'added',
+    'continued',
+    'repeated',
+    'explained',
+    'murmured',
+    'laughed',
+    'thought',
+    'είπε',
+    'ρώτησε',
+    'απάντησε',
+    'ψιθύρισε',
+    'φώναξε',
+    'πρόσθεσε',
+    'συνέχισε',
+    'επανέλαβε',
+    'σκέφτηκε',
+    'dijo',
+    'preguntó',
+    'respondió',
+    'susurró',
+    'añadió',
+    'gritó',
+    'continuó',
+    'repitió',
+    'pensó',
+    'disse',
+    'chiese',
+    'rispose',
+    'sussurrò',
+    'aggiunse',
+    'gridò',
+    'continuò',
+    'ripeté',
+    'pensò',
+  };
+
   static final RegExp _kInitial = RegExp(r'^\p{L}\.$', unicode: true);
   static final RegExp _kStartsLower = RegExp(r'^\p{Ll}', unicode: true);
   static final RegExp _kLeadingJunk = RegExp(r'^[^\p{L}\p{N}]+', unicode: true);
+  static final RegExp _kTrailingJunk = RegExp(r'[^\p{L}\p{N}]+$', unicode: true);
+
+  /// A terminator sitting *inside* a closing quote — the ambiguous ending, and
+  /// the only one [_isAttribution] is consulted for.
+  static final RegExp _kQuotedEnd = RegExp(r'[.!?…][”"»’)\]]+$');
   static final RegExp _kGreekScript = RegExp(r'[Ͱ-Ͽἀ-῿]');
 
   /// Sentence boundary. The `[”"»’)\]]*` is not decoration: a period inside a
@@ -1728,18 +1784,71 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     return parts.isEmpty ? '' : parts.last.replaceAll(_kLeadingJunk, '').toLowerCase();
   }
 
+  /// A single token with its surrounding punctuation stripped, lowercased.
+  static String _bareWord(String word) =>
+      word.replaceAll(_kLeadingJunk, '').replaceAll(_kTrailingJunk, '').toLowerCase();
+
+  /// Whether [next] is the **attribution** of the quotation before it — "Alexis
+  /// asked.", "he whispered." — rather than a new sentence.
+  ///
+  /// Only ever asked after a [_kQuotedEnd], where the question is live: a quoted
+  /// question or exclamation keeps its own mark, so `“How was your day?” Alexis
+  /// asked.` offers a terminator, a closing quote and a space — a textbook
+  /// sentence boundary that isn't one. Nothing else in the splitter could see
+  /// that, which is why an imported story came out with `Alexis asked.` as a
+  /// sentence of its own, stranded at the head of the following part.
+  ///
+  /// A piece starting lowercase is attribution outright: no sentence in any of
+  /// these languages begins that way. A capitalised one has to be read, and the
+  /// only shape worth recognising is subject-then-verb-of-speech.
+  static bool _isAttribution(String next) {
+    if (_kStartsLower.hasMatch(next)) return true;
+    final words = next.split(RegExp(r'\s+'));
+    for (var i = 1; i < words.length && i <= 3; i++) {
+      if (_kSpeechVerbs.contains(_bareWord(words[i]))) return true;
+    }
+    return false;
+  }
+
   /// Whether what has accumulated so far runs on into [next] rather than ending.
   static bool _runsOn(String sofar, String next) {
     final token = _lastToken(sofar);
     // An initial — "he met J. Fowler" — is always mid-sentence.
     if (_kTitleAbbrevs.contains(token) || _kInitial.hasMatch(token)) return true;
     if (_kMidSentenceAbbrevs.contains(token)) return _kStartsLower.hasMatch(next);
+    // `… day?” Alexis asked.` is one sentence. Note the test is on the quote,
+    // not on the terminator alone: `“Take the key,” she said. “Then …”` ends on
+    // a bare full stop and *is* two sentences, which is why the closing quote
+    // has to be there for the question to be asked at all.
+    if (_kQuotedEnd.hasMatch(sofar)) return _isAttribution(next);
     return false;
   }
 
   /// How wide a line has to be before a column of them can be read as hard
   /// wrapping. A list of short phrases is not a narrowly wrapped paragraph.
   static const int _kMinWrapWidth = 45;
+
+  /// Characters a story part may reach before it is cut early, whatever the
+  /// chosen part size in sentences.
+  ///
+  /// A part size in sentences is the right control for *generated* material,
+  /// whose sentences are written to the length of the seed phrases — four of
+  /// them land around 200 characters. A learner's own prose is not: this was
+  /// measured on an imported story whose sentences run 85–150 characters, where
+  /// four made a part of **425**. Two things go wrong at once. Such a part is a
+  /// long thing to hold in your head between repetitions, and — the part that is
+  /// invisible — it is past [GoogleTranslateTts.kMaxLen], so the natural voice
+  /// cannot read it in one request and *every* pass of it silently falls back to
+  /// the on-device voice. Fourteen of that story's seventeen parts were over the
+  /// line.
+  ///
+  /// The budget sits below the 200 it is derived from, because the text that has
+  /// to fit is the **translation**, which does not exist yet when the cut is
+  /// made: the source is only a proxy for it, and Greek runs longer than the
+  /// English it came from. A single sentence over the budget is still kept whole
+  /// — there is nothing else to do with it — so this caps parts, it does not
+  /// guarantee them.
+  static const int _kImportPartChars = 180;
 
   /// A leading tab or two spaces — the other way a `.txt` marks a paragraph.
   static final RegExp _kIndent = RegExp(r'^(\t| {2,})');
@@ -1875,8 +1984,9 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     return out;
   }
 
-  /// Groups a story's sentences into parts of [perPart], **landing on a
-  /// paragraph break whenever one is within a sentence of the cut**.
+  /// Groups a story's sentences into parts of [perPart] — or fewer, where
+  /// [_kImportPartChars] runs out first — **landing on a paragraph break
+  /// whenever one is within a sentence of the cut**.
   ///
   /// A part is a narrative beat, and a fixed stride down the sentence list ends
   /// most of them mid-paragraph — which is much of what makes an imported
@@ -1897,13 +2007,21 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       sentences.addAll(para);
     }
     if (sentences.isEmpty) return const [];
+    int charsOf(int from, int to) => sentences.sublist(from, to).join(' ').length;
     final bounds = <int>[0];
     while (bounds.last < sentences.length) {
       final from = bounds.last;
-      var end = from + perPart;
-      if (end >= sentences.length) {
-        end = sentences.length;
-      } else {
+      final wanted = from + perPart;
+      var end = wanted < sentences.length ? wanted : sentences.length;
+      // The character budget is applied before the paragraph slide: a part cut
+      // short for length must not then be lengthened again to tidy a boundary.
+      for (var i = from + 1; i < end; i++) {
+        if (charsOf(from, i + 1) > _kImportPartChars) {
+          end = i;
+          break;
+        }
+      }
+      if (end == wanted) {
         for (final cand in [end, end - 1, end + 1]) {
           if (cand > from && cand <= sentences.length && paraStarts.contains(cand)) {
             end = cand;
@@ -1914,7 +2032,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       bounds.add(end);
     }
     final tail = bounds.last - bounds[bounds.length - 2];
-    if (bounds.length > 2 && (tail == 1 || tail * 3 <= perPart)) {
+    final folded = bounds.length > 2 ? charsOf(bounds[bounds.length - 3], bounds.last) : 0;
+    if (bounds.length > 2 && (tail == 1 || tail * 3 <= perPart) && folded <= _kImportPartChars) {
       bounds.removeAt(bounds.length - 2);
     }
     return [for (var i = 0; i + 1 < bounds.length; i++) sentences.sublist(bounds[i], bounds[i + 1]).join(' ')];
@@ -1982,6 +2101,12 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
           // the moment a cut slid onto a paragraph break.
           final parts = _groupIntoParts(paras, perPart);
           final preview = parts.isEmpty ? '' : parts.first;
+          // More parts than the division alone would give means something cut
+          // early — all but always the character budget, on a file whose
+          // sentences are long. Worth saying outright, because on such a file
+          // the stepper above stops changing anything and a control that
+          // silently does nothing is read as a bug.
+          final capped = parts.length > (sentenceCount / perPart).ceil();
           return AlertDialog(
             title: const Text('Load story'),
             insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
@@ -2005,7 +2130,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${parts.length} ${parts.length == 1 ? 'part' : 'parts'} of about $perPart',
+                    capped
+                        ? '${parts.length} parts — many stop short of $perPart sentences at about '
+                              '$_kImportPartChars characters, the most the natural voice reads in one go'
+                        : '${parts.length} ${parts.length == 1 ? 'part' : 'parts'} of about $perPart',
                     style: Theme.of(ctx).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 12),
