@@ -1716,6 +1716,11 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   static final RegExp _kSplitGreek = RegExp(r'(?<=[.!?…;][”"»’)\]]*)\s+');
   static final RegExp _kLineEnd = RegExp(r'[.!?;…·][”"»’)\]]*$');
 
+  /// Any sentence terminator that actually closes something, for [_isHardWrapped]'s
+  /// "is there punctuation here at all" test. Script-agnostic on purpose: it asks
+  /// whether the file is punctuated, not where its sentences end.
+  static final RegExp _kTerminator = RegExp(r'[.!?;…](?=\s|$)');
+
   /// The last whitespace-delimited token, lowercased with leading punctuation
   /// stripped, for the abbreviation tests.
   static String _lastToken(String s) {
@@ -1732,51 +1737,187 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     return false;
   }
 
-  /// Splits plain text into sentences, for cutting a story into parts.
+  /// How wide a line has to be before a column of them can be read as hard
+  /// wrapping. A list of short phrases is not a narrowly wrapped paragraph.
+  static const int _kMinWrapWidth = 45;
+
+  /// A leading tab or two spaces — the other way a `.txt` marks a paragraph.
+  static final RegExp _kIndent = RegExp(r'^(\t| {2,})');
+
+  /// The file's non-empty lines, grouped into paragraphs.
+  ///
+  /// A blank line is always a boundary. An indent is one too — that is how a
+  /// `.txt` with no blank lines between paragraphs marks them, and it is the
+  /// only boundary such a file has — but when the text is being [unwrapped] it
+  /// has to be a *minority* of lines first. A wrapped block quote indents every
+  /// line, and trusting that would give one paragraph per line: exactly the
+  /// shape the unwrap exists to repair. Where nothing is being joined there is
+  /// no such risk, so the ratio is not required.
+  static List<List<String>> _paragraphLines(String text, {required bool unwrapped}) {
+    final raw = [for (final l in text.split('\n')) l.replaceAll('\r', '')];
+    final body = [
+      for (final l in raw)
+        if (l.trim().isNotEmpty) l,
+    ];
+    final indented = body.where(_kIndent.hasMatch).length;
+    final useIndent = indented > 0 && (!unwrapped || indented * 5 < body.length * 3);
+    final out = <List<String>>[];
+    var cur = <String>[];
+    for (final line in raw) {
+      if (line.trim().isEmpty) {
+        if (cur.isNotEmpty) {
+          out.add(cur);
+          cur = <String>[];
+        }
+        continue;
+      }
+      if (cur.isNotEmpty && useIndent && _kIndent.hasMatch(line)) {
+        out.add(cur);
+        cur = <String>[];
+      }
+      cur.add(line.trim());
+    }
+    if (cur.isNotEmpty) out.add(cur);
+    return out;
+  }
+
+  /// Whether the file's newlines sit *inside* its sentences — i.e. the text is
+  /// hard wrapped and has to be unwrapped before it can be split at all.
+  ///
+  /// Decided on line **length**, which is the only signal that tells the two
+  /// shapes apart. Terminal punctuation cannot: a wrap column almost never
+  /// lands on a sentence end, so hard-wrapped prose and a list of unpunctuated
+  /// one-per-line phrases both present as "hardly any line ends in a full
+  /// stop". An earlier version tested exactly that and so sent *every* wrapped
+  /// file — Project Gutenberg's, any text editor's, a pasted email body — down
+  /// the one-sentence-per-line path, cutting the story into mid-clause
+  /// fragments; measured on one paragraph wrapped at 60, 72 and 80 columns, a
+  /// single line in eight ended in punctuation and all three widths took the
+  /// wrong branch. A file whose paragraphs are each one long line, which is
+  /// what copying out of a browser gives, happened to work, which is why the
+  /// test looked sound.
+  ///
+  /// Hard wrapping instead leaves a tight band of *long* lines just under the
+  /// wrap column, so a line counts as a wrap artifact when it is near that
+  /// width and does not end a sentence. The width is the **90th percentile**
+  /// rather than the maximum, so one unwrapped paragraph among wrapped ones
+  /// can't push the bar out of reach of the lines that are wrapped.
+  static bool _isHardWrapped(List<String> lines) {
+    if (lines.length < 3) return false;
+    final lengths = [for (final l in lines) l.length]..sort();
+    final width = lengths[((lengths.length - 1) * 9) ~/ 10];
+    if (width < _kMinWrapWidth) return false;
+    // Unwrapping only helps if there is punctuation to split the result on
+    // afterwards. A column of *long* unpunctuated phrases — a hand-written
+    // one-per-line file, the shape this whole branch exists for — otherwise
+    // clears the width test and gets joined into one enormous "sentence", which
+    // is worse than the fragments it replaced. One terminator per three lines
+    // sits far below wrapped prose (~0.7 per line at 72 columns, and ~0.36 even
+    // where the sentences run to 200 characters) and far above such a file,
+    // which has none at all.
+    if (_kTerminator.allMatches(lines.join('\n')).length * 3 < lines.length) return false;
+    final artifacts = lines.where((l) => l.length >= width * 0.75 && !_kLineEnd.hasMatch(l)).length;
+    return artifacts * 2 >= lines.length;
+  }
+
+  /// Splits plain text into paragraphs of sentences, for cutting a story into
+  /// parts.
   ///
   /// Done locally rather than by asking the model, for two reasons: the part
   /// size is given in sentences, so the count has to be known *before* the one
   /// AI call the import makes, and a division the learner can predict from
   /// looking at their own file beats one they cannot.
   ///
-  /// A blank line is a hard boundary no abbreviation rule may cross. Within a
-  /// paragraph, newlines collapse to spaces and the split is on punctuation —
-  /// right for wrapped prose, and wrong for a file that is already one item per
-  /// line with no full stops, where it would return one giant "sentence" per
-  /// paragraph. So when **most lines don't end in terminal punctuation**, the
-  /// lines themselves are the sentences. That test, rather than comparing the
-  /// two counts, is what keeps wrapped prose working: prose also has more lines
-  /// than sentences, so a count comparison would pick the wrong branch for it
-  /// every time.
-  static List<String> _splitSentences(String text) {
-    final lines = [
+  /// A paragraph break is a hard boundary no abbreviation rule may cross.
+  /// Inside a paragraph, hard-wrapped lines are joined and anything else keeps
+  /// its lines as units — and **either way every unit is then split on
+  /// punctuation**, so a file holding one terminated sentence per line comes
+  /// out identical down both paths and only a file with no terminal
+  /// punctuation at all depends on which was chosen.
+  static List<List<String>> _splitParagraphs(String text) {
+    final unwrap = _isHardWrapped([
       for (final l in text.split('\n'))
         if (l.trim().isNotEmpty) l.trim(),
-    ];
-    if (lines.length >= 2 && lines.where(_kLineEnd.hasMatch).length * 2 < lines.length) return lines;
-
+    ]);
+    final blocks = _paragraphLines(text, unwrapped: unwrap);
     final splitter = _kGreekScript.hasMatch(text) ? _kSplitGreek : _kSplitLatin;
-    final out = <String>[];
-    for (final para in text.split(RegExp(r'\n\s*\n'))) {
-      final flat = para.replaceAll(RegExp(r'\s+'), ' ').trim();
-      if (flat.isEmpty) continue;
-      final pieces = [
-        for (final piece in flat.split(splitter))
-          if (piece.trim().isNotEmpty) piece.trim(),
+    final out = <List<String>>[];
+    for (final block in blocks) {
+      final sentences = [
+        for (final unit in unwrap ? [block.join(' ')] : block) ..._sentencesOf(unit, splitter),
       ];
-      String? pending;
-      for (var i = 0; i < pieces.length; i++) {
-        final joined = pending == null ? pieces[i] : '$pending ${pieces[i]}';
-        if (i + 1 < pieces.length && _runsOn(joined, pieces[i + 1])) {
-          pending = joined;
-          continue;
-        }
-        out.add(joined);
-        pending = null;
-      }
-      if (pending != null) out.add(pending);
+      if (sentences.isNotEmpty) out.add(sentences);
     }
     return out;
+  }
+
+  /// One paragraph (or one line) split on punctuation, running on through the
+  /// abbreviations [_runsOn] knows about.
+  static List<String> _sentencesOf(String text, RegExp splitter) {
+    final flat = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (flat.isEmpty) return const [];
+    final pieces = [
+      for (final piece in flat.split(splitter))
+        if (piece.trim().isNotEmpty) piece.trim(),
+    ];
+    final out = <String>[];
+    String? pending;
+    for (var i = 0; i < pieces.length; i++) {
+      final joined = pending == null ? pieces[i] : '$pending ${pieces[i]}';
+      if (i + 1 < pieces.length && _runsOn(joined, pieces[i + 1])) {
+        pending = joined;
+        continue;
+      }
+      out.add(joined);
+      pending = null;
+    }
+    if (pending != null) out.add(pending);
+    return out;
+  }
+
+  /// Groups a story's sentences into parts of [perPart], **landing on a
+  /// paragraph break whenever one is within a sentence of the cut**.
+  ///
+  /// A part is a narrative beat, and a fixed stride down the sentence list ends
+  /// most of them mid-paragraph — which is much of what makes an imported
+  /// division feel arbitrary even where every sentence boundary is right. The
+  /// tolerance is deliberately one sentence and not more: the learner chose the
+  /// part size and has to still recognise it in the result.
+  ///
+  /// A final part too short to stand on its own is folded into the one before
+  /// it rather than left as a coda: always a single sentence, and up to a third
+  /// of the chosen size above that. Not *half*, which at a part size of four
+  /// folds a two-sentence tail into a part of six — a cure louder than the
+  /// complaint.
+  static List<String> _groupIntoParts(List<List<String>> paras, int perPart) {
+    final sentences = <String>[];
+    final paraStarts = <int>{};
+    for (final para in paras) {
+      paraStarts.add(sentences.length);
+      sentences.addAll(para);
+    }
+    if (sentences.isEmpty) return const [];
+    final bounds = <int>[0];
+    while (bounds.last < sentences.length) {
+      final from = bounds.last;
+      var end = from + perPart;
+      if (end >= sentences.length) {
+        end = sentences.length;
+      } else {
+        for (final cand in [end, end - 1, end + 1]) {
+          if (cand > from && cand <= sentences.length && paraStarts.contains(cand)) {
+            end = cand;
+            break;
+          }
+        }
+      }
+      bounds.add(end);
+    }
+    final tail = bounds.last - bounds[bounds.length - 2];
+    if (bounds.length > 2 && (tail == 1 || tail * 3 <= perPart)) {
+      bounds.removeAt(bounds.length - 2);
+    }
+    return [for (var i = 0; i + 1 < bounds.length; i++) sentences.sublist(bounds[i], bounds[i + 1]).join(' ')];
   }
 
   /// Every imported text is tagged with **all** selectable subjects.
@@ -1828,58 +1969,95 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// Part size and source language for an imported story. Mirrors the "Create a
   /// story" dialog's stepper so the two read the same, and shares its setting
   /// (`listenStoryPartSentences`) — a part is a part however it got here.
-  Future<({int perPart, bool sourceIsTarget})?> _askImportStoryOptions(AppSettings s, int sentenceCount) async {
+  Future<({int perPart, bool sourceIsTarget})?> _askImportStoryOptions(AppSettings s, List<List<String>> paras) async {
+    final sentenceCount = paras.fold(0, (n, para) => n + para.length);
     var perPart = s.listenStoryPartSentences;
     var sourceIsTarget = s.listenImportStoryInTarget;
     return showDialog<({int perPart, bool sourceIsTarget})>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) => AlertDialog(
-          title: const Text('Load story'),
-          insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
-          contentPadding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('$sentenceCount sentences found. They will be split into parts and played in order.'),
-                const SizedBox(height: 16),
-                _stepper(
-                  ctx,
-                  label: 'Part size',
-                  suffix: ' sent.',
-                  value: perPart,
-                  min: 1,
-                  max: 10,
-                  valueWidth: 80,
-                  onSet: (v) => setSheet(() => perPart = v),
-                ),
-                const SizedBox(height: 4),
-                Text('${(sentenceCount / perPart).ceil()} parts of $perPart', style: Theme.of(ctx).textTheme.bodySmall),
-                const SizedBox(height: 16),
-                _sourceLanguagePicker(
-                  ctx,
-                  s,
-                  sourceIsTarget: sourceIsTarget,
-                  onChanged: (v) => setSheet(() => sourceIsTarget = v),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'The other language is translated for you — one AI call.',
-                  style: Theme.of(ctx).textTheme.bodySmall,
-                ),
-              ],
+        builder: (ctx, setSheet) {
+          // The same grouping the import will use, recomputed as the stepper
+          // moves: a count derived from a division instead would drift from it
+          // the moment a cut slid onto a paragraph break.
+          final parts = _groupIntoParts(paras, perPart);
+          final preview = parts.isEmpty ? '' : parts.first;
+          return AlertDialog(
+            title: const Text('Load story'),
+            insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+            contentPadding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('$sentenceCount sentences found. They will be split into parts and played in order.'),
+                  const SizedBox(height: 16),
+                  _stepper(
+                    ctx,
+                    label: 'Part size',
+                    suffix: ' sent.',
+                    value: perPart,
+                    min: 1,
+                    max: 10,
+                    valueWidth: 80,
+                    onSet: (v) => setSheet(() => perPart = v),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${parts.length} ${parts.length == 1 ? 'part' : 'parts'} of about $perPart',
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 12),
+                  // The counts are exactly what the learner cannot check, and
+                  // the division is the thing most likely to be wrong — a file
+                  // can be shaped in ways no splitter handles. Shown here, a bad
+                  // split is obvious on sight and costs nothing but a Cancel;
+                  // found after the import it has already paid for a
+                  // translation call and filled the bank.
+                  Container(
+                    width: double.maxFinite,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('First part', style: Theme.of(ctx).textTheme.labelSmall),
+                        const SizedBox(height: 4),
+                        Text(
+                          preview.length > 320 ? '${preview.substring(0, 320)}…' : preview,
+                          style: Theme.of(ctx).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _sourceLanguagePicker(
+                    ctx,
+                    s,
+                    sourceIsTarget: sourceIsTarget,
+                    onChanged: (v) => setSheet(() => sourceIsTarget = v),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'The other language is translated for you — one AI call.',
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, (perPart: perPart, sourceIsTarget: sourceIsTarget)),
-              child: const Text('Load'),
-            ),
-          ],
-        ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, (perPart: perPart, sourceIsTarget: sourceIsTarget)),
+                child: const Text('Load'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1941,12 +2119,12 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     var s = pre.s;
     final file = await _pickTextFile();
     if (file == null || !mounted) return;
-    final sentences = _splitSentences(file.content);
-    if (sentences.isEmpty) {
+    final paras = _splitParagraphs(file.content);
+    if (paras.isEmpty) {
       lpSnack(context, 'That file has no text in it.', 4000);
       return;
     }
-    final ask = await _askImportStoryOptions(s, sentences.length);
+    final ask = await _askImportStoryOptions(s, paras);
     if (ask == null || !mounted) return;
     // One write for both, so the remembered language survives even when the
     // part size was left alone.
@@ -1958,11 +2136,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       s = pre.state.settings;
     }
 
-    final chunks = <String>[];
-    for (var i = 0; i < sentences.length; i += ask.perPart) {
-      final end = i + ask.perPart > sentences.length ? sentences.length : i + ask.perPart;
-      chunks.add(sentences.sublist(i, end).join(' '));
-    }
+    final chunks = _groupIntoParts(paras, ask.perPart);
 
     _pause();
     setState(() {
