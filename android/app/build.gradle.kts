@@ -101,6 +101,14 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
+            // AGP 9 minifies release builds by default, and R8 renames anything
+            // it isn't told to leave alone — including the Kotlin types that
+            // Pigeon JNI names in the method descriptors it looks up at runtime.
+            // Only this file is added, never `getDefaultProguardFile(...)`: the
+            // build has been shrinking happily on AGP's own built-in rules plus
+            // the consumer rules from each AAR, and listing a default set here
+            // would change what else R8 does to a shipping app.
+            proguardFiles("proguard-rules.pro")
         }
 
         debug {
