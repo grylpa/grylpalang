@@ -1009,10 +1009,16 @@ Sentence: $sentence
       final obj = jsonDecode(text) as Map<String, dynamic>;
       final t = obj['t']?.toString().trim();
       // Empty/parse failure → return the source so the caller treats it as a
-      // failure (uncached, retried) rather than displaying garbage.
-      if (t == null || t.isEmpty) return (text: sentence, model: model);
+      // failure (uncached, retried) rather than displaying garbage. Noted in
+      // the failure log on the way out: the retry is silent by design, which
+      // is right for the playlist and leaves nothing to look at afterwards.
+      if (t == null || t.isEmpty) {
+        AiService.noteBadReply(resp, 'translateSentence', 'reply held no translation');
+        return (text: sentence, model: model);
+      }
       return (text: t, model: model);
-    } catch (_) {
+    } catch (e) {
+      AiService.noteBadReply(resp, 'translateSentence', e);
       return (text: sentence, model: model);
     }
   }
@@ -1071,7 +1077,10 @@ $numberedList
     final model = reply.modelVersion;
     try {
       final text = reply.text;
-      if (text == null) return (translations: sentences, model: model);
+      if (text == null) {
+        AiService.noteBadReply(resp, 'translateBatch', null);
+        return (translations: sentences, model: model);
+      }
       final list = jsonDecode(text) as List;
       // Realign by the model's own "n" rather than by position. The old code
       // paired result[i] with sentence[i]; if the model dropped, merged, or
@@ -1092,7 +1101,8 @@ $numberedList
         translations: [for (var i = 0; i < sentences.length; i++) out[i].isEmpty ? sentences[i] : out[i]],
         model: model,
       );
-    } catch (_) {
+    } catch (e) {
+      AiService.noteBadReply(resp, 'translateBatch', e);
       return (translations: sentences, model: null);
     }
   }

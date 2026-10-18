@@ -330,6 +330,16 @@ class AiService {
   // couple of seconds later. So a 5xx is retried on the *same* model first; a 429 gets no
   // such retry, since a quota refusal repeats.
   static const int _kOverloadRetries = 2;
+
+  /// How many extra goes a model gets at producing a *usable* reply. One, where
+  /// an overloaded model gets two, because the two failures cost different
+  /// amounts and repeat for different reasons: a 5xx comes back in moments and
+  /// is genuinely momentary, while a truncated generation has already run for a
+  /// minute and will truncate again at the same ceiling unless something
+  /// varies. One retry is worth it — that is how often this clears in practice,
+  /// and it is the whole reason the third attempt by hand worked — and a second
+  /// would mostly spend another minute to say the same thing.
+  static const int _kUnusableRetries = 1;
   static const Duration _kOverloadBackoff = Duration(seconds: 2);
 
   /// Parses `error.details[].retryDelay` (e.g. "27s") from a 429 body.
@@ -405,6 +415,11 @@ class AiService {
           }
           http.Response? resp;
           var overloadTries = 0;
+          var unusableTries = 0;
+          // Why the last 200 was no good, null while it was fine. Declared out
+          // here because the chain walk below has to tell "this model answered
+          // badly" from "this model refused", and they arrive as the same code.
+          String? unusable;
           while (true) {
             try {
               resp = await _postAnnounced(
@@ -414,7 +429,7 @@ class AiService {
                 // A fallback is announced at once — something already went wrong.
                 // The very first attempt only announces itself if it turns out to
                 // be slow, so a normal quick call stays silent.
-                immediate: !(model == chain.first && attempt == 0 && overloadTries == 0),
+                immediate: !(model == chain.first && attempt == 0 && overloadTries + unusableTries == 0),
               );
             } on TimeoutException {
               // Treated exactly like a 5xx: this model isn't answering, the next
@@ -424,15 +439,47 @@ class AiService {
               resp = null;
               break;
             }
+            // A 200 the caller cannot parse is a failure of the request, not of
+            // the caller, so it is judged here beside the status code. It is
+            // logged at once: the whole point is that it stops being invisible,
+            // whether or not the retry below goes on to rescue it.
+            unusable = resp.statusCode == 200 ? _unusableReason(resp) : null;
+            if (unusable != null) {
+              _recordUse(model);
+              _recordFailure(model, 'unusable reply — $unusable');
+            }
             // Only an overloaded model earns another go at itself, and only
-            // while there is time left for it.
-            final overloaded = resp.statusCode >= 500;
-            if (!overloaded || overloadTries >= _kOverloadRetries || DateTime.now().isAfter(deadline)) break;
-            overloadTries++;
-            activity.value = '${_shortName(model)} busy — trying it again…';
-            await Future.delayed(_kOverloadBackoff * overloadTries);
+            // while there is time left for it. An unusable reply earns fewer.
+            final again = unusable != null
+                ? unusableTries < _kUnusableRetries
+                : resp.statusCode >= 500 && overloadTries < _kOverloadRetries;
+            if (!again || DateTime.now().isAfter(deadline)) break;
+            if (unusable != null) {
+              unusableTries++;
+              activity.value = '${_shortName(model)} answered incompletely — trying again…';
+            } else {
+              overloadTries++;
+              activity.value = '${_shortName(model)} busy — trying it again…';
+            }
+            await Future.delayed(_kOverloadBackoff * (overloadTries + unusableTries));
           }
           if (resp == null) continue;
+          if (unusable != null) {
+            // Like a 5xx: ask the next model. Kept as `last` so that if nobody
+            // does better the caller receives the real reply and reports what
+            // was wrong with it (`badReply`) instead of a generic outage.
+            _lastReason = '${_shortName(model)} answered incompletely';
+            last = resp;
+            // The one place the deadline is honoured on the first pass too. The
+            // others cost a fast refusal each; this one has already paid for a
+            // full generation per try, and walking a three-model chain after
+            // that is how a minute's wait becomes six.
+            if (DateTime.now().isAfter(deadline)) {
+              activity.value = '';
+              return resp;
+            }
+            continue;
+          }
           if (resp.statusCode == 200) {
             _recordUse(model);
             activity.value = '';
@@ -593,8 +640,13 @@ Guidance for score:
     final resp = await queryModel(apiKey, body);
     final text = requireReplyText(resp, 'evaluatePrediction');
 
-    final out = jsonDecode(text);
-    if (out is! Map) throw Exception('AI returned non-object JSON for evaluatePrediction');
+    late Object? out;
+    try {
+      out = jsonDecode(text);
+    } catch (e) {
+      badReply(resp, 'evaluatePrediction', e);
+    }
+    if (out is! Map) badReply(resp, 'evaluatePrediction', 'reply was not a JSON object');
     return out.cast<String, dynamic>();
   }
 
@@ -835,10 +887,16 @@ USER INPUT: "$input"
     // Fails soft throughout: [replyText] is null for a non-200 and for a body
     // that won't parse, so every "no answer" lands on the same return.
     final text = replyText(resp);
-    if (text == null) return input;
+    if (text == null) {
+      noteBadReply(resp, 'normalizeWordToTargetScript', null);
+      return input;
+    }
 
     final normalized = text.split('\n').first.trim();
-    if (normalized.isEmpty) return input;
+    if (normalized.isEmpty) {
+      noteBadReply(resp, 'normalizeWordToTargetScript', 'reply held no word');
+      return input;
+    }
 
     cache?[key] = normalized;
     return normalized;
@@ -1090,15 +1148,20 @@ The JSON object must be:
     final resp = await queryModel(apiKey, body);
     final text = requireReplyText(resp, 'generateWordAndSentences');
 
-    final parsed = _parseWordAndSentencesJson(
-      jsonString: text,
-      fallbackWord: l2.isNotEmpty ? l2 : l1,
-      fallbackKnownWord: l1,
-      connectorWords: connectorWords,
-    );
+    late ({String wordL2, String wordL1, WordType type, String typeLabel, List<WordSentence> sentences}) parsed;
+    try {
+      parsed = _parseWordAndSentencesJson(
+        jsonString: text,
+        fallbackWord: l2.isNotEmpty ? l2 : l1,
+        fallbackKnownWord: l1,
+        connectorWords: connectorWords,
+      );
+    } catch (e) {
+      badReply(resp, 'generateWordAndSentences', e);
+    }
     var sentences = parsed.sentences;
     if (sentences.length > total) sentences = sentences.take(total).toList();
-    if (sentences.isEmpty) throw Exception('AI returned empty sentences list');
+    if (sentences.isEmpty) badReply(resp, 'generateWordAndSentences', 'no sentences in the reply');
 
     return (
       wordL2: parsed.wordL2,
@@ -1238,12 +1301,11 @@ Example of the format (structure only):
     // }
     // final jsonString = match.group(0)!;
 
-    final jsonString = text.trim();
     late List<dynamic> list;
     try {
-      list = jsonDecode(jsonString) as List<dynamic>;
+      list = jsonDecode(text.trim()) as List<dynamic>;
     } catch (e) {
-      throw Exception('JSON decode failed: $e\nExtracted JSON:\n$jsonString');
+      badReply(resp, 'generateSentences', e);
     }
 
     if (list.length > total) {
@@ -1646,7 +1708,7 @@ budget — rewrite it before returning it rather than listing them all.
     try {
       list = jsonDecode(text) as List<dynamic>;
     } catch (e) {
-      throw Exception('JSON decode failed: $e');
+      badReply(resp, 'generateListeningTexts', e);
     }
 
     // Asking is not enough — the budget is checked here. A run fetches far more
@@ -1854,7 +1916,7 @@ Return JSON only.
     try {
       map = (jsonDecode(text) as Map).cast<String, dynamic>();
     } catch (e) {
-      throw Exception('JSON decode failed: $e');
+      badReply(resp, 'generateStory', e);
     }
 
     final out = <({String l2, String l1})>[];
@@ -1865,7 +1927,7 @@ Return JSON only.
       if (l2.isEmpty) continue;
       out.add((l2: l2, l1: l1));
     }
-    if (out.isEmpty) throw Exception('AI returned a story with no parts');
+    if (out.isEmpty) badReply(resp, 'generateStory', 'story came back with no parts');
 
     return (
       titleL2: (map['title_l2'] as String? ?? '').trim(),
@@ -2115,8 +2177,14 @@ $items
     };
 
     final resp = await queryModel(apiKey, body);
-    final decoded = jsonDecode(requireReplyText(resp, 'translateTexts'));
-    if (decoded is! List) throw Exception('AI returned non-array JSON for translateTexts');
+    final text = requireReplyText(resp, 'translateTexts');
+    late Object? decoded;
+    try {
+      decoded = jsonDecode(text);
+    } catch (e) {
+      badReply(resp, 'translateTexts', e);
+    }
+    if (decoded is! List) badReply(resp, 'translateTexts', 'reply was not a JSON array');
     final out = List<String>.filled(texts.length, '');
     for (final item in decoded) {
       if (item is! Map) continue;
@@ -2164,20 +2232,117 @@ $items
   /// included. A caller that wants the status to raise goes through
   /// [requireReplyText]; one that fails soft reads null as "no answer" and
   /// needs no try/catch of its own.
-  static ({String? text, String? modelVersion}) replyOf(http.Response resp) {
-    if (resp.statusCode != 200) return (text: null, modelVersion: null);
+  static ({String? text, String? modelVersion, String? finishReason}) replyOf(http.Response resp) {
+    const none = (text: null, modelVersion: null, finishReason: null);
+    if (resp.statusCode != 200) return none;
     try {
       final decoded = jsonDecode(resp.body);
-      if (decoded is! Map) return (text: null, modelVersion: null);
-      final parts = ((decoded['candidates'] as List?)?.firstOrNull?['content'] as Map?)?['parts'] as List?;
+      if (decoded is! Map) return none;
+      final candidate = (decoded['candidates'] as List?)?.firstOrNull as Map?;
+      final parts = (candidate?['content'] as Map?)?['parts'] as List?;
       final text = (parts ?? const [])
           .map((part) => (part is Map ? part['text'] as String? : null) ?? '')
           .join()
           .trim();
-      return (text: text.isEmpty ? null : text, modelVersion: decoded['modelVersion'] as String?);
+      return (
+        text: text.isEmpty ? null : text,
+        modelVersion: decoded['modelVersion'] as String?,
+        finishReason: candidate?['finishReason'] as String?,
+      );
     } catch (_) {
-      return (text: null, modelVersion: null);
+      return none;
     }
+  }
+
+  /// Why a 200 cannot be used, in a few words, or null when it can be.
+  ///
+  /// This is read **inside** [queryModel], which is the point: a reply that was
+  /// cut off or never written is a transient failure of the same kind as a 5xx,
+  /// and the model that produced it is the one to ask again. Until this existed
+  /// the status code was the only thing the chain walk looked at, so a 200
+  /// carrying a truncated answer was returned as a success, counted as one in
+  /// the usage tally, and left to fail in the caller's `jsonDecode` with
+  /// nothing written to the failure log — which is exactly how an unusable
+  /// reply could be reported to the user and leave no trace anywhere.
+  static String? _unusableReason(http.Response resp) {
+    final reply = replyOf(resp);
+    if (reply.text == null) return 'it carried no text';
+    return _finishProblem(reply.finishReason);
+  }
+
+  /// What a `finishReason` means for the usability of the reply, or null where
+  /// the reply is complete.
+  ///
+  /// `MAX_TOKENS` is the one worth knowing about by name. Every generator here
+  /// asks for `application/json` against a `responseSchema`, so the model
+  /// cannot answer with prose or a markdown fence — which leaves truncation as
+  /// essentially the only way the JSON fails to decode. On 3.x the model's
+  /// thinking tokens are spent from the same output budget as its answer, and
+  /// no call site sets `maxOutputTokens`, so the ceiling is the model's own
+  /// default and a long generation can genuinely reach it.
+  static String? _finishProblem(String? reason) => switch (reason) {
+    null || '' || 'STOP' || 'FINISH_REASON_UNSPECIFIED' => null,
+    'MAX_TOKENS' => "it was cut off at the model's output limit",
+    'SAFETY' => 'the model stopped on its safety filter',
+    'PROHIBITED_CONTENT' => 'the model refused the content',
+    'RECITATION' => 'the model stopped to avoid reciting its training data',
+    'MALFORMED_FUNCTION_CALL' => 'the model answered with a malformed call',
+    _ => 'the model stopped early ($reason)',
+  };
+
+  /// Head and tail of [s] on one line, for a log entry.
+  ///
+  /// The whole payload used to go into the *exception message*, which put a
+  /// 23-sentence generation into a snackbar and told the reader nothing. The
+  /// excerpt belongs in the log, where there is room for it and somewhere to
+  /// read it from.
+  static String _excerpt(String s, {int head = 120, int tail = 120}) {
+    final flat = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (flat.length <= head + tail + 3) return flat;
+    return '${flat.substring(0, head)} … ${flat.substring(flat.length - tail)}';
+  }
+
+  /// Reports a 200 whose content the caller could not use: writes it to the
+  /// failure log — naming the call, the model, why, and an excerpt — and throws
+  /// a short [AiException] fit for a snackbar.
+  ///
+  /// Every parse failure in this file goes through here, so "the model answered
+  /// but the answer was no good" is as visible in Settings as a 429 is. The
+  /// call is still counted in the usage tally, because the model did answer:
+  /// the tally says what was asked of whom, and this log says what came back.
+  static Never badReply(http.Response resp, String what, Object? cause) {
+    noteBadReply(resp, what, cause);
+    final reply = replyOf(resp);
+    final problem = reply.text == null ? 'no text in the reply' : _finishProblem(reply.finishReason);
+    throw AiException(
+      problem == null
+          ? 'The AI reply could not be read ($what). Please try again.'
+          : 'The AI reply was unusable — $problem. Please try again.',
+    );
+  }
+
+  /// [badReply] without the throw, for the callers that **fail soft**.
+  ///
+  /// Those are the ones this was most needed for: they return a fallback — the
+  /// input unchanged, or the source sentence in place of a translation — so
+  /// before this they were the only failures in the app that produced neither
+  /// an error on screen nor a line in any log. The result looks like success
+  /// and reads like stale data.
+  ///
+  /// A non-200 is skipped, because [queryModel] has already recorded the status
+  /// and this is about what came back in a reply that did arrive.
+  static void noteBadReply(http.Response resp, String what, Object? cause) {
+    if (resp.statusCode != 200) return;
+    final reply = replyOf(resp);
+    final why =
+        (reply.text == null ? 'no text in the reply' : _finishProblem(reply.finishReason)) ?? 'could not be read';
+    _recordFailure(
+      reply.modelVersion ?? (lastModel.isEmpty ? '(unknown model)' : lastModel),
+      '$what: reply $why'
+      '${reply.finishReason == null ? '' : ' [finishReason ${reply.finishReason}]'}'
+      '${cause == null ? '' : ' — $cause'}'
+      '${reply.text == null ? '' : ' — ${_excerpt(reply.text!)}'}',
+    );
   }
 
   /// [replyOf]'s text alone, for a caller that doesn't care which model answered.
@@ -2189,7 +2354,7 @@ $items
   /// call in both, which is what the failure log in Settings shows.
   static String requireReplyText(http.Response resp, String what) {
     if (resp.statusCode != 200) _throwAiError(resp, what);
-    return replyOf(resp).text ?? (throw Exception('AI returned no text for $what'));
+    return replyOf(resp).text ?? badReply(resp, what, null);
   }
 
   static Never _throwAiError(http.Response resp, String where) {
