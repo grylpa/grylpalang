@@ -21,6 +21,10 @@ import '../widgets.dart';
 import '../widgets/voice_picker.dart';
 import '../models/app_tab.dart';
 
+/// A generator's seed vocabulary in both languages — see
+/// [_ListenTabState._seedPool], which is the only thing that builds one.
+typedef _SeedPool = ({List<String> known, List<String> target});
+
 /// Listen mode — listening comprehension rather than vocabulary.
 ///
 /// Shares the Sentence Bank's *subjects* but nothing else: its own selection,
@@ -73,6 +77,13 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   int _index = 0;
 
   bool _generating = false;
+
+  /// What the pre-generation translation pass is doing, or null when none is
+  /// running — see [_fillTargetPool]. It takes over the label of whichever
+  /// action button was pressed, because that pass can run for minutes and a
+  /// button reading "Generating…" the whole time looks hung; `AiActivityBanner`
+  /// reports the model it is talking to but not how far through it is.
+  String? _seedFillLabel;
 
   /// Which of the two make-material actions is running, so the spinner and the
   /// "…ing" label land on the button that was actually pressed. Both buttons are
@@ -233,8 +244,14 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// The reserve is only valid for the selection *and* the length it was
   /// written at: serving texts made at 2 sentences after the user asked for 4
   /// would quietly ignore the request.
-  static String _reserveSigFor(Iterable<String> subjects, int perText, int newWords) =>
-      '${_sigFor(subjects)}#$perText#$newWords';
+  ///
+  /// [seeded] is in it for the same reason the budget is, and is the sharper
+  /// case: texts written from an English pool are precisely the ones that
+  /// overspend the new-word budget, so serving them to a request that asked to
+  /// be seeded from the learner's own target language would hand back the
+  /// problem the switch exists to solve.
+  static String _reserveSigFor(Iterable<String> subjects, int perText, int newWords, bool seeded) =>
+      '${_sigFor(subjects)}#$perText#$newWords${seeded ? '#t' : ''}';
 
   /// Every selectable subject — meta subjects are pure groups in the bank, so
   /// they're excluded here exactly as in the Sentences tab.
@@ -375,6 +392,93 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
 
   // ── Generation ────────────────────────────────────────────────────────────
 
+  /// The language the bank's sentences are written in. A bank declares its own
+  /// `language:` (defaulting to English), so this is not necessarily
+  /// [AppSettings.knownLanguage] — and it, not the setting, is what the
+  /// translation cache is keyed on.
+  String get _bankLanguage => _bank?.language ?? '';
+
+  /// The vocabulary pool for a generator, in both languages.
+  ///
+  /// `known` is every distinct sentence of [subjects] as the bank authors them —
+  /// the known-language list the generators have always been handed. `target`
+  /// is the part of that list the Sentence Bank has already translated, in the
+  /// target language and in the same order.
+  ///
+  /// `target` is a subset, and can easily be an empty one: the translation
+  /// cache is filled by the *Sentences* tab as it plays a subject, and Listen
+  /// keeps its own selection, so a subject the learner only ever listens to has
+  /// nothing stored for it. Which is why both dialogs report the coverage
+  /// rather than just offering the switch — it is the one thing the learner
+  /// cannot work out for themselves, and a pool of thirty sentences is worse
+  /// material than the four hundred English ones it would replace.
+  Future<_SeedPool> _seedPool(AppSettings s, List<String> subjects) async {
+    final known = {
+      for (final name in subjects)
+        for (final raw in _bank?.sentencesFor(name) ?? const []) SbSentence.spoken(raw),
+    }.toList();
+    final cached = await _bankService.cachedTranslations(
+      sentences: known,
+      // The bank's own declared `language:`, never [AppSettings.knownLanguage]
+      // — that is what the Sentences tab keys the translation cache on, and the
+      // two are free to differ (a bank defaults to English whatever the
+      // learner's own setting says). Getting this wrong does not fail loudly:
+      // every lookup simply misses and the switch reports zero coverage.
+      sourceLang: _bankLanguage,
+      targetLang: s.targetLanguage,
+    );
+    final target = <String>[];
+    for (final sentence in known) {
+      final tr = cached[sentence];
+      if (tr != null) target.add(tr);
+    }
+    return (known: known, target: target);
+  }
+
+  /// Translates every sentence of [pool] that has no stored target-language
+  /// text yet, then returns the pool again with the gap closed.
+  ///
+  /// Called only when the learner asked to be seeded from their own target
+  /// language — there is no reason to translate a bank we are about to ignore —
+  /// and only on a run that is actually going to the network, so a request the
+  /// reserve can already cover still costs nothing.
+  ///
+  /// It is the same `translateAllUncached` the Sentences tab runs as a
+  /// background prefetch, against the same cache, so a subject filled here is
+  /// filled for that tab too and neither pays twice. The cost is real and
+  /// front-loaded: one request per 30 uncached sentences before a word of the
+  /// text is written, which is why the dialog says how many there are rather
+  /// than discovering it afterwards. A sentence that fails is left uncached and
+  /// simply missing from the pool — the seed list is a sample, not a contract,
+  /// so a partial fill is still a target-language pool. Losing *every* one is
+  /// different, and the callers treat it as a failed run rather than quietly
+  /// generating from the known-language list: that would bank texts written
+  /// under the old regime against a signature claiming otherwise.
+  Future<_SeedPool> _fillTargetPool(AppSettings s, List<String> subjects, _SeedPool pool) async {
+    if (pool.target.length >= pool.known.length) return pool;
+    setState(() => _seedFillLabel = 'Translating…');
+    try {
+      await _bankService.translateAllUncached(
+        sentences: pool.known,
+        sourceLang: _bankLanguage,
+        targetLang: s.targetLanguage,
+        apiKey: s.aiApiKey,
+        onProgress: (done, total, attempt) {
+          // A retry pass is labelled as one: the count restarts at the
+          // leftovers, and a bar that jumps back to 0/12 unexplained reads as
+          // the whole thing starting over.
+          if (!mounted || total == 0) return;
+          setState(() => _seedFillLabel = '${attempt == 0 ? 'Translating' : 'Retrying'} $done/$total');
+        },
+      );
+    } finally {
+      // Including on the daily-quota throw, which is the one that propagates.
+      if (mounted) setState(() => _seedFillLabel = null);
+    }
+    if (!mounted) return pool;
+    return _seedPool(s, subjects);
+  }
+
   /// Hands the user their next batch of texts, fetching more only when the
   /// reserve can't cover it.
   ///
@@ -395,19 +499,23 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       return;
     }
     if (_generating) return;
+    var pool = await _seedPool(s, subjects);
+    if (!mounted) return;
     if (!auto) {
-      final ask = await _askGenerateOptions(s);
+      final ask = await _askGenerateOptions(s, pool);
       if (ask == null || !mounted) return;
       // Remembered — and reused as-is by the automatic top-ups, which have no
       // dialog to ask.
       if (ask.want != s.listenTextsPerRun ||
           ask.perText != s.listenSentencesPerText ||
-          ask.newWords != s.listenNewWordsPerText) {
+          ask.newWords != s.listenNewWordsPerText ||
+          ask.seedInTarget != s.listenSeedInTarget) {
         await state.saveSettingsOnly(
           s.copyWith(
             listenTextsPerRun: ask.want,
             listenSentencesPerText: ask.perText,
             listenNewWordsPerText: ask.newWords,
+            listenSeedInTarget: ask.seedInTarget,
           ),
         );
         if (!mounted) return;
@@ -416,7 +524,12 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     }
     final want = s.listenTextsPerRun.clamp(1, AppSettings.kListenTextsPerRunMax);
     final perText = s.listenSentencesPerText;
-    final sig = _reserveSigFor(subjects, perText, s.listenNewWordsPerText);
+    // Note this is the *intent*, not the current coverage: an empty cache is no
+    // longer a reason to fall back, because [_fillTargetPool] fills it first.
+    // It therefore also decides the reserve signature, which is what keeps the
+    // banked surplus honest about which pool wrote it.
+    final seeded = s.listenSeedInTarget && pool.known.isNotEmpty;
+    final sig = _reserveSigFor(subjects, perText, s.listenNewWordsPerText, seeded);
     var reserve = sig == _reserveSig ? [..._reserve] : <ListenStory>[];
 
     // An automatic top-up runs *during* playback, and must never pause it.
@@ -432,17 +545,24 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
         return;
       }
       try {
+        if (seeded) {
+          // Before anything is generated, and inside this try so a quota
+          // failure is reported exactly like a failed generation.
+          pool = await _fillTargetPool(s, subjects, pool);
+          if (!mounted) return;
+          if (pool.target.isEmpty) {
+            throw Exception('could not translate the sentences into ${s.targetLanguage}');
+          }
+        }
         final texts = await AiService.generateListeningTexts(
           apiKey: s.aiApiKey,
-          // One flat, de-duplicated pool across every selected subject. The
-          // subject boundaries are dropped on purpose: grouped seeds made the
-          // model build each story around a couple of phrases the learner
-          // already knows by heart, which is recognisable rather than
-          // comprehensible.
-          knownPhrases: {
-            for (final name in subjects)
-              for (final raw in _bank?.sentencesFor(name) ?? const []) SbSentence.spoken(raw),
-          }.toList(),
+          // One flat, de-duplicated pool across every selected subject (see
+          // [_seedPool]). The subject boundaries are dropped on purpose:
+          // grouped seeds made the model build each story around a couple of
+          // phrases the learner already knows by heart, which is recognisable
+          // rather than comprehensible.
+          knownPhrases: seeded ? pool.target : pool.known,
+          phrasesInTarget: seeded,
           knownLanguage: s.knownLanguage,
           targetLanguage: s.targetLanguage,
           count: want > _kFetchBatch ? want : _kFetchBatch,
@@ -693,22 +813,26 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       return;
     }
     if (_generating) return;
+    var pool = await _seedPool(s, subjects);
+    if (!mounted) return;
     var idea = '';
     if (!auto) {
-      final ask = await _askStoryOptions(s);
+      final ask = await _askStoryOptions(s, pool);
       if (ask == null || !mounted) return;
       // Remembered, so the next story — manual or automatic — starts from what
       // worked last time.
       if (ask.sentences != s.listenStorySentences ||
           ask.perPart != s.listenStoryPartSentences ||
           ask.mood != s.listenStoryMood ||
-          ask.newWords != s.listenNewWordsPerPart) {
+          ask.newWords != s.listenNewWordsPerPart ||
+          ask.seedInTarget != s.listenSeedInTarget) {
         await state.saveSettingsOnly(
           s.copyWith(
             listenStorySentences: ask.sentences,
             listenStoryPartSentences: ask.perPart,
             listenStoryMood: ask.mood,
             listenNewWordsPerPart: ask.newWords,
+            listenSeedInTarget: ask.seedInTarget,
           ),
         );
         if (!mounted) return;
@@ -720,6 +844,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     // the last idea: the same idea again would largely write the same story.
     final perPart = s.listenStoryPartSentences;
     final partCount = (s.listenStorySentences / perPart).round().clamp(3, 40);
+    // The intent, as in [_generate] — the gap is filled rather than dodged.
+    final seeded = s.listenSeedInTarget && pool.known.isNotEmpty;
 
     if (!auto) _pause();
     setState(() {
@@ -727,6 +853,13 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       _generatingStory = true;
     });
     try {
+      if (seeded) {
+        pool = await _fillTargetPool(s, subjects, pool);
+        if (!mounted) return;
+        if (pool.target.isEmpty) {
+          throw Exception('could not translate the sentences into ${s.targetLanguage}');
+        }
+      }
       // What to steer away from: the recent titles (which include retired
       // stories) first, then anything in the bank the list doesn't cover yet —
       // e.g. stories written before the list existed — newest first, capped.
@@ -740,10 +873,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       }.where((t) => t.trim().isNotEmpty).take(ListenService.kRecentStoryTitles).toList();
       final story = await AiService.generateStory(
         apiKey: s.aiApiKey,
-        knownPhrases: {
-          for (final name in subjects)
-            for (final raw in _bank?.sentencesFor(name) ?? const []) SbSentence.spoken(raw),
-        }.toList(),
+        knownPhrases: seeded ? pool.target : pool.known,
+        phrasesInTarget: seeded,
         knownLanguage: s.knownLanguage,
         targetLanguage: s.targetLanguage,
         parts: partCount,
@@ -819,17 +950,66 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// The text-generation settings, asked at the moment of generating — the same
   /// shape as the story dialog. Whatever is chosen here is remembered and is
   /// exactly what the automatic top-ups reuse.
-  Future<({int want, int perText, int newWords})?> _askGenerateOptions(AppSettings s) async {
+  /// The "build it from your `<target language>`" switch, shared by both
+  /// generator dialogs so their wording and their gap case cannot drift.
+  ///
+  /// It sits directly under the new-words stepper in both, because that is what
+  /// it acts on: the number does not change, only whether the model can count
+  /// against it rather than estimate.
+  ///
+  /// The subtitle's job is the **missing** count. Coverage is no longer a
+  /// precondition — [_fillTargetPool] translates the gap first — so what the
+  /// learner needs to know is not whether the switch works but what ticking it
+  /// costs: a translation pass over however many sentences have never been
+  /// played in the Sentences tab, before a word of the text is written. That is
+  /// the one number they cannot work out for themselves, and it is much better
+  /// read here than inferred from a button that sits on "Translating…" for two
+  /// minutes.
+  Widget _seedTile(
+    BuildContext ctx, {
+    required _SeedPool pool,
+    required AppSettings s,
+    required bool value,
+    required ValueChanged<bool> onSet,
+  }) {
+    final total = pool.known.length;
+    final missing = total - pool.target.length;
+    final source = _bankLanguage.isEmpty ? s.knownLanguage : _bankLanguage;
+    return CheckboxListTile(
+      value: total == 0 ? false : value,
+      onChanged: total == 0 ? null : (v) => onSet(v ?? false),
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      controlAffinity: ListTileControlAffinity.leading,
+      title: Text('Build it from your ${s.targetLanguage}'),
+      subtitle: Text(
+        'Seeds the AI with the ${s.targetLanguage} of these $total sentences instead of the '
+        '$source, so it counts new words against your own words instead of guessing which '
+        'ones you know.'
+        '${missing == 0 ? '' : ' $missing of them still need translating and will be done '
+                  'first — that takes a while.'}',
+      ),
+    );
+  }
+
+  Future<({int want, int perText, int newWords, bool seedInTarget})?> _askGenerateOptions(
+    AppSettings s,
+    _SeedPool pool,
+  ) async {
     var want = s.listenTextsPerRun.clamp(1, AppSettings.kListenTextsPerRunMax);
     var perText = s.listenSentencesPerText;
     var newWords = s.listenNewWordsPerText;
-    return showDialog<({int want, int perText, int newWords})>(
+    var seedInTarget = s.listenSeedInTarget;
+    return showDialog<({int want, int perText, int newWords, bool seedInTarget})>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) {
           // Live, because changing the length changes whether the reserve (made
           // at some particular length) can serve this request at all.
-          final spares = _reserveSig == _reserveSigFor(_selectedSubjects, perText, newWords) ? _reserve.length : 0;
+          final seeded = seedInTarget && pool.target.isNotEmpty;
+          final spares = _reserveSig == _reserveSigFor(_selectedSubjects, perText, newWords, seeded)
+              ? _reserve.length
+              : 0;
           // The spares are used first, so even a partial set is worth saying —
           // it is the difference between some texts arriving instantly and all
           // of them waiting on the network.
@@ -881,6 +1061,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                   display: (v) => v == 0 ? 'none' : '$v',
                   onSet: (v) => setSheet(() => newWords = v),
                 ),
+                _seedTile(ctx, pool: pool, s: s, value: seedInTarget, onSet: (v) => setSheet(() => seedInTarget = v)),
                 const SizedBox(height: 4),
                 Text(note, style: Theme.of(ctx).textTheme.bodySmall),
               ],
@@ -888,7 +1069,8 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               FilledButton(
-                onPressed: () => Navigator.pop(ctx, (want: want, perText: perText, newWords: newWords)),
+                onPressed: () =>
+                    Navigator.pop(ctx, (want: want, perText: perText, newWords: newWords, seedInTarget: seedInTarget)),
                 child: const Text('Generate'),
               ),
             ],
@@ -905,8 +1087,9 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
   /// The length is shown in sentences *and* in the parts it works out to, since
   /// the part size is the learner's own setting and is what they will actually
   /// hear.
-  Future<({String idea, String mood, int sentences, int perPart, int newWords})?> _askStoryOptions(
+  Future<({String idea, String mood, int sentences, int perPart, int newWords, bool seedInTarget})?> _askStoryOptions(
     AppSettings s,
+    _SeedPool pool,
   ) async {
     final ctl = TextEditingController();
     // Prefilled: a mood is a preference you keep, where a theme is a one-off.
@@ -914,103 +1097,116 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     var sentences = s.listenStorySentences;
     var perPart = s.listenStoryPartSentences;
     var newWords = s.listenNewWordsPerPart;
-    final result = await showDialog<({String idea, String mood, int sentences, int perPart, int newWords})>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) => AlertDialog(
-          title: const Text('Create a story'),
-          // Wider than a default dialog, with tighter padding inside it: the
-          // three length segments have to fit on one row without eliding their
-          // labels, which the stock content box can't manage.
-          insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
-          contentPadding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
-          // Scrollable, and not merely because the content is tall: the two text
-          // fields sit at the bottom, and without a scrollable ancestor Flutter
-          // has nowhere to scroll a focused field to — the keyboard simply
-          // covered the mood box.
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'One long story at your level, split into parts and played in '
-                  'order. Takes a moment to generate.',
+    var seedInTarget = s.listenSeedInTarget;
+    final result =
+        await showDialog<({String idea, String mood, int sentences, int perPart, int newWords, bool seedInTarget})>(
+          context: context,
+          builder: (ctx) => StatefulBuilder(
+            builder: (ctx, setSheet) => AlertDialog(
+              title: const Text('Create a story'),
+              // Wider than a default dialog, with tighter padding inside it: the
+              // three length segments have to fit on one row without eliding their
+              // labels, which the stock content box can't manage.
+              insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+              contentPadding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+              // Scrollable, and not merely because the content is tall: the two text
+              // fields sit at the bottom, and without a scrollable ancestor Flutter
+              // has nowhere to scroll a focused field to — the keyboard simply
+              // covered the mood box.
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'One long story at your level, split into parts and played in '
+                      'order. Takes a moment to generate.',
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.maxFinite,
+                      child: SegmentedButton<int>(
+                        segments: [
+                          for (final (label, n) in _kStoryLengths) ButtonSegment<int>(value: n, label: Text(label)),
+                        ],
+                        selected: {sentences},
+                        showSelectedIcon: false,
+                        onSelectionChanged: (v) => setSheet(() => sentences = v.first),
+                      ),
+                    ),
+                    // A story's own part size, separate from the micro-texts' — the
+                    // two are read differently: a self-contained text is drilled,
+                    // while a story part is a beat in a narrative and wants more room.
+                    _stepper(
+                      ctx,
+                      label: 'Part size',
+                      suffix: ' sent.',
+                      value: perPart,
+                      min: 1,
+                      max: 10,
+                      valueWidth: 80,
+                      onSet: (v) => setSheet(() => perPart = v),
+                    ),
+                    // Counted on a word's first appearance in the story, so a word brought
+                    // back in a later part costs nothing.
+                    _stepper(
+                      ctx,
+                      label: 'New words per part',
+                      suffix: '',
+                      value: newWords,
+                      min: 0,
+                      max: 6,
+                      valueWidth: 80,
+                      display: (v) => v == 0 ? 'none' : '$v',
+                      onSet: (v) => setSheet(() => newWords = v),
+                    ),
+                    _seedTile(
+                      ctx,
+                      pool: pool,
+                      s: s,
+                      value: seedInTarget,
+                      onSet: (v) => setSheet(() => seedInTarget = v),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$sentences sentences — about ${(sentences / perPart).round().clamp(3, 40)} parts of $perPart',
+                      style: Theme.of(ctx).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: ctl,
+                      autofocus: false,
+                      decoration: const InputDecoration(
+                        labelText: 'Story theme (optional)',
+                        hintText: 'e.g. a lost dog',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: moodCtl,
+                      autofocus: false,
+                      decoration: const InputDecoration(labelText: 'Mood (optional)', hintText: 'e.g. suspense, funny'),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.maxFinite,
-                  child: SegmentedButton<int>(
-                    segments: [
-                      for (final (label, n) in _kStoryLengths) ButtonSegment<int>(value: n, label: Text(label)),
-                    ],
-                    selected: {sentences},
-                    showSelectedIcon: false,
-                    onSelectionChanged: (v) => setSheet(() => sentences = v.first),
-                  ),
-                ),
-                // A story's own part size, separate from the micro-texts' — the
-                // two are read differently: a self-contained text is drilled,
-                // while a story part is a beat in a narrative and wants more room.
-                _stepper(
-                  ctx,
-                  label: 'Part size',
-                  suffix: ' sent.',
-                  value: perPart,
-                  min: 1,
-                  max: 10,
-                  valueWidth: 80,
-                  onSet: (v) => setSheet(() => perPart = v),
-                ),
-                // Counted on a word's first appearance in the story, so a word brought
-                // back in a later part costs nothing.
-                _stepper(
-                  ctx,
-                  label: 'New words per part',
-                  suffix: '',
-                  value: newWords,
-                  min: 0,
-                  max: 6,
-                  valueWidth: 80,
-                  display: (v) => v == 0 ? 'none' : '$v',
-                  onSet: (v) => setSheet(() => newWords = v),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '$sentences sentences — about ${(sentences / perPart).round().clamp(3, 40)} parts of $perPart',
-                  style: Theme.of(ctx).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: ctl,
-                  autofocus: false,
-                  decoration: const InputDecoration(labelText: 'Story theme (optional)', hintText: 'e.g. a lost dog'),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: moodCtl,
-                  autofocus: false,
-                  decoration: const InputDecoration(labelText: 'Mood (optional)', hintText: 'e.g. suspense, funny'),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, (
+                    idea: ctl.text.trim(),
+                    mood: moodCtl.text.trim(),
+                    sentences: sentences,
+                    perPart: perPart,
+                    newWords: newWords,
+                    seedInTarget: seedInTarget,
+                  )),
+                  child: const Text('Create'),
                 ),
               ],
             ),
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, (
-                idea: ctl.text.trim(),
-                mood: moodCtl.text.trim(),
-                sentences: sentences,
-                perPart: perPart,
-                newWords: newWords,
-              )),
-              child: const Text('Create'),
-            ),
-          ],
-        ),
-      ),
-    );
+        );
     ctl.dispose();
     moodCtl.dispose();
     return result;
@@ -2822,7 +3018,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       // a number here would go stale the moment it changed there. Whether the
       // spares made ahead cover the request is shown in the dialog too.
       label: busy
-          ? 'Generating…'
+          ? (_seedFillLabel ?? 'Generating…')
           : _stories.isEmpty
           ? 'Generate texts'
           : 'Generate texts',
@@ -2838,7 +3034,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       icon: _generatingStory
           ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
           : const Icon(Icons.auto_stories_outlined),
-      label: _generatingStory ? 'Creating…' : 'Create a story',
+      label: _generatingStory ? (_seedFillLabel ?? 'Creating…') : 'Create a story',
     );
   }
 

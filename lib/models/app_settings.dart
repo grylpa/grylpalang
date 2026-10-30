@@ -116,6 +116,20 @@ class AppSettings {
   // differently: a story reuses its new words, a short text never does.
   int listenNewWordsPerText;
   int listenNewWordsPerPart;
+  // Whether a generator is seeded with the learner's own target-language
+  // sentences instead of the known-language ones the bank is authored in.
+  //
+  // One setting for both generators, where the counts above are two: the
+  // counts differ because a story and a micro-text are read differently, while
+  // this is a fact about what the model can be told — and it is the same fact
+  // for either. It exists because the budget was being overspent for a reason
+  // no prompt could fix: given an English list, "a word the learner knows" is
+  // a judgement about what the English would translate to, and the model has
+  // to make it hundreds of times. Given the bank's cached translations it is a
+  // lookup instead. Off by default, and not only for an upgrade's sake: a
+  // fresh install has no translation cache, so there is nothing to seed from
+  // until the Sentences tab has played those subjects.
+  bool listenSeedInTarget;
   // The Delete dialog's last-used boxes. Titles default off: they are what
   // keeps new stories from repeating old ones, rarely part of starting over.
   bool listenDeleteTexts;
@@ -239,6 +253,7 @@ class AppSettings {
     this.listenImportSentencesInTarget = false,
     this.listenNewWordsPerText = 2,
     this.listenNewWordsPerPart = 2,
+    this.listenSeedInTarget = false,
     this.listenDeleteTexts = true,
     this.listenDeleteStories = true,
     this.listenDeleteTitles = false,
@@ -312,6 +327,7 @@ class AppSettings {
     bool? listenImportSentencesInTarget,
     int? listenNewWordsPerText,
     int? listenNewWordsPerPart,
+    bool? listenSeedInTarget,
     bool? listenDeleteTexts,
     bool? listenDeleteStories,
     bool? listenDeleteTitles,
@@ -390,6 +406,7 @@ class AppSettings {
       listenImportSentencesInTarget: listenImportSentencesInTarget ?? this.listenImportSentencesInTarget,
       listenNewWordsPerText: listenNewWordsPerText ?? this.listenNewWordsPerText,
       listenNewWordsPerPart: listenNewWordsPerPart ?? this.listenNewWordsPerPart,
+      listenSeedInTarget: listenSeedInTarget ?? this.listenSeedInTarget,
       listenDeleteTexts: listenDeleteTexts ?? this.listenDeleteTexts,
       listenDeleteStories: listenDeleteStories ?? this.listenDeleteStories,
       listenDeleteTitles: listenDeleteTitles ?? this.listenDeleteTitles,
@@ -466,6 +483,7 @@ class AppSettings {
     'listenImportSentencesInTarget': listenImportSentencesInTarget,
     'listenNewWordsPerText': listenNewWordsPerText,
     'listenNewWordsPerPart': listenNewWordsPerPart,
+    'listenSeedInTarget': listenSeedInTarget,
     'listenDeleteTexts': listenDeleteTexts,
     'listenDeleteStories': listenDeleteStories,
     'listenDeleteTitles': listenDeleteTitles,
@@ -590,6 +608,7 @@ class AppSettings {
       listenImportSentencesInTarget: json['listenImportSentencesInTarget'] as bool? ?? false,
       listenNewWordsPerText: json['listenNewWordsPerText'] as int? ?? 2,
       listenNewWordsPerPart: json['listenNewWordsPerPart'] as int? ?? 2,
+      listenSeedInTarget: json['listenSeedInTarget'] as bool? ?? false,
       listenDeleteTexts: json['listenDeleteTexts'] as bool? ?? true,
       listenDeleteStories: json['listenDeleteStories'] as bool? ?? true,
       listenDeleteTitles: json['listenDeleteTitles'] as bool? ?? false,

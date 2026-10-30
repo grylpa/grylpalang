@@ -736,6 +736,33 @@ class SentenceBankService {
     return cache[_cacheKey(sourceLang, targetLang, sentence)];
   }
 
+  /// The cached target-language text for each of [sentences] that has one,
+  /// keyed by the source sentence; sentences with no cached translation are
+  /// simply absent, so the map's size is the coverage.
+  ///
+  /// Reads the store **once**, which is the whole reason it exists alongside
+  /// [getCached]: Listen's generators look up a whole subject selection at a
+  /// time — hundreds of sentences — and [getCached] re-decodes the entire cache
+  /// per call. A translation equal to its source is treated as missing: that is
+  /// what a failed translation looks like coming back out of [translateBatch],
+  /// and a known-language sentence smuggled into a target-language vocabulary
+  /// list is exactly the thing those generators are trying to avoid.
+  Future<Map<String, String>> cachedTranslations({
+    required List<String> sentences,
+    required String sourceLang,
+    required String targetLang,
+  }) async {
+    if (sentences.isEmpty || sourceLang.toLowerCase() == targetLang.toLowerCase()) return const {};
+    final cache = await _loadCache();
+    final out = <String, String>{};
+    for (final sentence in sentences) {
+      final tr = cache[_cacheKey(sourceLang, targetLang, sentence)];
+      if (tr == null || tr.trim().isEmpty || tr.trim() == sentence.trim()) continue;
+      out[sentence] = tr;
+    }
+    return out;
+  }
+
   /// Translate [sentence] from [sourceLang] to [targetLang].
   /// Returns the cached translation if available; otherwise calls the AI and
   /// caches the result. When [force] is true the cache is bypassed and the fresh
