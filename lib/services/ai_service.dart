@@ -1404,6 +1404,45 @@ limit. Do this check on the finished text, not from memory of intending to compl
 ''';
   }
 
+  /// Told to a generator whose vocabulary list is in L2 rather than in the
+  /// language the bank is authored in. Shared by both generators for the same
+  /// reason [_vocabularyCeiling] is: a story and a batch of micro-texts are
+  /// heard by the same ears, and a rule on one and not the other just moves the
+  /// problem.
+  ///
+  /// It is what makes the ceiling enforceable. Given an English list, "a word
+  /// this learner knows" is a judgement about what the English would translate
+  /// to — made hundreds of times per text, on a model that has every incentive
+  /// to decide that a word it wants is probably fine — so the budget was being
+  /// overspent however the limit was worded. An L2 list turns the same question
+  /// into a lookup, and that is the whole of the fix: no number changes, only
+  /// what the model is comparing against.
+  ///
+  /// It also costs something, which is why it is not simply always on. The list
+  /// now contains sentences in the language being written, so copying one is
+  /// available in a way it never was before — hence the second half, and hence
+  /// the empty string in the other case rather than a reworded paragraph: with
+  /// the option off, both prompts are byte-for-byte what they were before it
+  /// existed.
+  static String _poolInTargetNote(String targetLanguage) =>
+      '''
+
+THIS LIST IS IN $targetLanguage
+It is not a description of the learner's level. It is the sentences they have
+already worked through, in the language you are writing in, so the words on it
+are literally the words they know.
+
+That makes the ceiling below something you can CHECK rather than estimate: a
+word in your text is new unless that word, or another form of that word, is
+somewhere on the list. Read the list and compare, word by word, before you
+answer. Do not reason about which word would be the natural equivalent, and do
+not assume a word is safe because it is a common one.
+
+It also shows you exactly which sentences to stay clear of. Take the words and
+leave the sentences: never reproduce one, never lightly reword one, and never
+chain several of them together.
+''';
+
   /// Maximum seed phrases fed to the generator, and the character budget they
   /// share. The point is a broad picture of the learner's vocabulary, so more
   /// is better — but not so much that the reference buries the instructions.
@@ -1443,6 +1482,12 @@ limit. Do this check on the finished text, not from memory of intending to compl
   /// already knows those phrases can simply recognise rather than decode. As
   /// one large unlabelled pool the list stops steering the plot and does what
   /// it should: describe the vocabulary and level the learner can follow.
+  ///
+  /// Those phrases are normally in [knownLanguage], which is how the bank is
+  /// authored. With [phrasesInTarget] the caller has substituted their cached
+  /// [targetLanguage] translations instead — same sentences, other side — and
+  /// the prompt says so. See [_poolInTargetNote] for why that matters more than
+  /// any wording of the limit itself.
   static Future<List<({String l2, String l1})>> generateListeningTexts({
     required String apiKey,
     required List<String> knownPhrases,
@@ -1450,6 +1495,7 @@ limit. Do this check on the finished text, not from memory of intending to compl
     required String targetLanguage,
     required int count,
     required int sentencesPerText,
+    bool phrasesInTarget = false,
     // The learner's choice, per generator (see [_kNewWordsPerText] for why the
     // short texts need their own).
     int newWordsPerText = _kNewWordsPerText,
@@ -1491,6 +1537,7 @@ limit. Do this check on the finished text, not from memory of intending to compl
           count: want,
           sentencesPerText: sentencesPerText,
           newWordsPerText: newWordsPerText,
+          phrasesInTarget: phrasesInTarget,
           avoid: avoid.take(_kMaxAvoidOpenings).toList(),
         );
       } catch (e) {
@@ -1547,6 +1594,7 @@ limit. Do this check on the finished text, not from memory of intending to compl
     required int count,
     required int sentencesPerText,
     required int newWordsPerText,
+    required bool phrasesInTarget,
     required List<String> avoid,
   }) async {
     // Re-shuffled per chunk, not per run: with a bank larger than the budget
@@ -1563,6 +1611,7 @@ limit. Do this check on the finished text, not from memory of intending to compl
       chars += phrase.length;
     }
     final vocabulary = seeds.map((x) => '  - $x').join('\n');
+    final poolNote = phrasesInTarget ? _poolInTargetNote(targetLanguage) : '';
     final avoidBlock = avoid.isEmpty
         ? ''
         : '''
@@ -1601,7 +1650,7 @@ Below is what this learner has studied, in one flat list with no topics or
 grouping — deliberately, so nothing steers you toward a particular theme. Read
 it as a picture of the words, structures, tenses and register they can follow.
 $vocabulary
-
+$poolNote
 HOW TO USE THAT LIST — READ THIS TWICE
 The learner knows every one of those phrases by heart. So:
 * A text assembled from them, or recognisably built around two or three of
@@ -1763,6 +1812,9 @@ budget — rewrite it before returning it rather than listing them all.
     required int parts,
     required int sentencesPerPart,
     int newWordsPerPart = _kNewWordsPerPart,
+    // As in [generateListeningTexts]: the seed pool is in [targetLanguage]
+    // rather than in [knownLanguage]. See [_poolInTargetNote].
+    bool phrasesInTarget = false,
     String theme = '',
     // How the story should feel. Separate from [theme] on purpose: a mood
     // alone ("suspense") is not a situation, and given only that the model
@@ -1789,6 +1841,7 @@ budget — rewrite it before returning it rather than listing them all.
       chars += phrase.length;
     }
     final vocabulary = seeds.map((x) => '  - $x').join('\n');
+    final poolNote = phrasesInTarget ? _poolInTargetNote(targetLanguage) : '';
     // Given per generation rather than left to the model: asked to "be creative"
     // it reliably returns the same handful of gentle scenes, so the variety has
     // to come from the instruction.
@@ -1813,7 +1866,7 @@ THE LEARNER'S ACTIVE VOCABULARY
 One flat list, no topics or grouping. Read it as a picture of the words,
 structures, tenses and register they can follow.
 $vocabulary
-
+$poolNote
 HOW TO USE THAT LIST — READ THIS TWICE
 It tells you their LEVEL. It is NOT a plot outline, NOT sentences to reuse, and
 NOT a list of topics to cover. They know every phrase on it by heart, so a story
