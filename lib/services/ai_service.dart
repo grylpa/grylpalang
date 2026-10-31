@@ -120,6 +120,7 @@ class AiService {
     String apiKey,
     dynamic body, {
     required bool immediate,
+    required Duration timeout,
   }) async {
     final name = _shortName(model);
     final because = _lastReason == null ? '' : '$_lastReason — ';
@@ -147,7 +148,7 @@ class AiService {
       activity.value = '$base  ${secs}s$note';
     });
     try {
-      return await _post(_endpoint(model), apiKey, body).timeout(_requestTimeout);
+      return await _post(_endpoint(model), apiKey, body).timeout(timeout);
     } finally {
       announce?.cancel();
       tick.cancel();
@@ -249,13 +250,6 @@ class AiService {
     } catch (_) {}
   }
 
-  /// Rewrites a request body for the selected engine.
-  ///
-  /// Done centrally, at the one place every request passes through, so a call
-  /// site can go on asking for the temperature it wants without knowing whether
-  /// the current model accepts one. Gemini 3.x removed the sampling parameters
-  /// and added a thinking level; sending a parameter a model doesn't take can
-  /// fail the request outright, so they are stripped rather than left to luck.
   /// How much the Listen generators are allowed to think.
   ///
   /// Their prompt asks the model to count new words against a 400-phrase list
@@ -266,6 +260,15 @@ class AiService {
   /// itself defaults to.
   static const String _kListenThinking = 'medium';
 
+  /// Rewrites a request body for the selected engine.
+  ///
+  /// Done centrally, at the one place every request passes through, so a call
+  /// site can go on asking for the temperature it wants without knowing whether
+  /// the current model accepts one. Gemini 3.x removed the sampling parameters
+  /// and added a thinking level, while 2.5 takes sampling and no level, so both
+  /// directions of that reshaping are live; sending a parameter a model doesn't
+  /// take can fail the request outright, so they are stripped rather than left
+  /// to luck.
   static Map<String, dynamic> _adaptBody(dynamic body, {String? thinking}) {
     if (body is! Map) return <String, dynamic>{};
     final out = Map<String, dynamic>.from(body);
@@ -323,6 +326,34 @@ class AiService {
   // finally got the answer. This is here only to catch a request that has truly
   // stopped answering.
   static const Duration _requestTimeout = Duration(seconds: 120);
+
+  // The floor under a clamped request budget.
+  //
+  // A request is bounded by what is left of the call's deadline (see
+  // [_requestBudget]) but never by *nothing*: a model that is going to refuse
+  // does it in milliseconds, and that refusal is worth having, since it is how
+  // the chain reaches a model that can answer. So a request made with the
+  // deadline already spent still gets long enough to say "rate-limited" —
+  // enough for every outcome except the slow generation the clamp exists to
+  // cut off.
+  static const Duration _kMinRequestBudget = Duration(seconds: 15);
+
+  /// How long the next request may take: [_requestTimeout], or the time left
+  /// before [deadline], whichever is sooner — floored at [_kMinRequestBudget].
+  ///
+  /// This is what makes [_maxTotalWait] mean anything. The deadline used to be
+  /// consulted only *between* requests, while each request carried the full
+  /// [_requestTimeout] of its own, so three models that each hung spent 360s
+  /// against a 150s budget — the "it takes forever to tell me it failed" case,
+  /// and one no check placed between requests could ever have caught, because
+  /// the entire overrun happens inside one of them. Clamping per request bounds
+  /// the whole call at roughly the deadline plus one floor, while still letting
+  /// the first model have its full minute when it is the only thing running.
+  static Duration _requestBudget(DateTime deadline) {
+    final left = deadline.difference(DateTime.now());
+    if (left >= _requestTimeout) return _requestTimeout;
+    return left > _kMinRequestBudget ? left : _kMinRequestBudget;
+  }
 
   // "The model is overloaded" (5xx) is momentary, unlike a quota refusal.
   // Stepping straight down the chain for it means the best model is barely ever
@@ -406,9 +437,13 @@ class AiService {
       for (var attempt = 0; attempt <= maxRetries; attempt++) {
         var dailyCapped = false;
         for (final model in chain) {
-          // Checked per model, not just per pass: without this the deadline only
-          // ever cut a *backoff* short, and a chain of slow requests sailed past
-          // it — which is exactly the "took forever" case.
+          // An early exit, and only once a pass has already been made: the
+          // chain is walked once whatever the clock says, because a model that
+          // refuses does it in milliseconds and that refusal is how the chain
+          // reaches one that answers. Gating this on `attempt > 0` is therefore
+          // deliberate — what keeps a *slow* chain inside the deadline is
+          // [_requestBudget] clamping each request, not this check, which can
+          // only ever fire between two of them.
           if (DateTime.now().isAfter(deadline) && attempt > 0) {
             activity.value = '';
             return last ?? _noAnswer();
@@ -421,6 +456,9 @@ class AiService {
           // badly" from "this model refused", and they arrive as the same code.
           String? unusable;
           while (true) {
+            // Held in a local because the catch below reports it: "timed out
+            // after 120s" was simply untrue of any request but the first.
+            final budget = _requestBudget(deadline);
             try {
               resp = await _postAnnounced(
                 model,
@@ -430,11 +468,12 @@ class AiService {
                 // The very first attempt only announces itself if it turns out to
                 // be slow, so a normal quick call stays silent.
                 immediate: !(model == chain.first && attempt == 0 && overloadTries + unusableTries == 0),
+                timeout: budget,
               );
             } on TimeoutException {
               // Treated exactly like a 5xx: this model isn't answering, the next
               // one might.
-              _recordFailure(model, 'timed out after ${_requestTimeout.inSeconds}s');
+              _recordFailure(model, 'timed out after ${budget.inSeconds}s');
               _lastReason = '${_shortName(model)} timed out';
               resp = null;
               break;
