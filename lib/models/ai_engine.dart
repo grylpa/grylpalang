@@ -30,11 +30,12 @@
 /// this is a type rather than a pair of endpoint strings: Gemini 3.x dropped
 /// `temperature` / `top_p` / `top_k` and replaced the thinking budget with a
 /// `thinkingLevel` enum, and `AiService._adaptBody` reshapes every request to
-/// whichever engine is live so no call site has to know. Both entries are now
-/// 3.x and so take the same parameters, which makes that machinery dormant
-/// rather than unnecessary — it is what let the second engine be swapped off
-/// 2.5 by editing this file alone, and the next divergence will land the same
-/// way.
+/// whichever engine is live so no call site has to know. That machinery is
+/// **live rather than dormant**, and the last entry in the list is why: 2.5 is
+/// the one engine here that still accepts sampling and takes no thinking level,
+/// so selecting it changes the shape of every request the app makes without a
+/// line changing at any call site. It is also what let the second engine be
+/// swapped off 2.5 by editing this file alone.
 enum AiEngine {
   // Default, and listed first so the dropdown opens on it. 3.8 has held up in
   // use once the Listen generators stopped forcing its thinking level down —
@@ -86,9 +87,9 @@ enum AiEngine {
     // the default" rather than one particular model, so it must survive 3.6
     // being swapped out the way 2.5 just was.
     id: 'prev',
-    // Named for the model, to stay parallel with the entry above it in a
-    // two-item dropdown — 'Gemini 3.8' beside 'Previous generation' reads as
-    // two different kinds of answer. The *role* is in the description, which
+    // Named for the model, to stay parallel with the other rows in the
+    // dropdown — 'Gemini 3.8' beside 'Previous generation' reads as two
+    // different kinds of answer. The *role* is in the description, which
     // has to be rewritten alongside [models] anyway; only [id] is stored, so
     // only [id] has to outlive a swap.
     label: 'Gemini 3.6',
@@ -104,6 +105,49 @@ enum AiEngine {
     // think slightly harder than it would by default — which is the point of it
     // being the last link rather than the first.
     thinkingLevel: 'low',
+  ),
+  // Last in the list and deliberately not the default: the 2.5 generation,
+  // listed for the one thing it still does better than anything above it — it
+  // **accepts sampling**. 3.x removed `temperature` / `top_p` / `top_k`, so on
+  // either engine above this one every value the call sites pass is stripped by
+  // `AiService._adaptBody`, and the only thing that differs between two runs on
+  // the same vocabulary is the seed situation. Here `temperature: 1.15` (the
+  // Listen texts) and `1.0` (a story) reach the wire again — the variety axis
+  // that `_seedPairs` and the avoid-lists were built to stand in for once it
+  // was lost.
+  //
+  // **It is not reachable by every install, and that is why it sits at the end
+  // rather than in the chain above.** Since 2026-09-18 Google serves 2.5 only
+  // to keys that have actively used it before: this project's original key
+  // qualifies, while a freshly pasted one gets a 404 from every link. That is
+  // what disqualified 2.5 as the *fallback* — a fallback has to be reachable by
+  // every install or it isn't one — but it does not disqualify it as a
+  // deliberate, last-listed choice made by someone whose key can still reach
+  // it. Settings → Advanced → **Test models** is how to tell which kind of key
+  // this is, and it reports the 404s per model instead of leaving them to be
+  // inferred from a failed generation.
+  //
+  // Pro leads here, unlike the Flash-led chains above, because reaching Pro is
+  // the entire reason for choosing this entry. Its free-tier allowance is far
+  // tighter and it is slower, so the two Flash links behind it are doing real
+  // work rather than padding out the chain.
+  gemini25Pro(
+    // Not '2.5': that id is already spoken for by an install that picked the
+    // old second engine, and [byId] maps it to [geminiPrev] because it meant
+    // "the generation below the default". This is a request for 2.5 *itself*,
+    // which is a different thing to have asked for.
+    id: '2.5-pro',
+    label: 'Gemini 2.5 Pro',
+    description: 'Older, and only for keys that used 2.5 before: 2.5 Pro, falling back through 2.5 Flash.',
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    // The only engine here that takes one — see the note above, which is the
+    // reason this entry exists at all.
+    acceptsSampling: true,
+    // 2.5 has no thinking *level*: it took an integer `thinkingBudget`, which
+    // nothing in the app has ever set. Null, so `_adaptBody` sends no
+    // `thinkingConfig` at all and the Listen generators' `thinking:` override
+    // is ignored here rather than translated into a parameter 2.5 would reject.
+    thinkingLevel: null,
   );
 
   const AiEngine({
