@@ -64,9 +64,65 @@ class SentenceBankService {
   static const String _kTranslationModelsKey = 'sentenceBankTranslationModels';
   static const String _kCachedYamlKey = 'sentenceBankCachedYaml';
 
-  /// True if [modelVersion] (from a Gemini response's `modelVersion` field) is
-  /// the weaker lite fallback — those translations are the upgrade candidates.
-  static bool isWeakModel(String? modelVersion) => modelVersion != null && modelVersion.toLowerCase().contains('lite');
+  /// Whether the translation recorded under [modelVersion] should be redone by
+  /// the current engine's primary model.
+  ///
+  /// Four things count as weak, and two of them were previously unreachable —
+  /// entries nothing in the app could ever repair:
+  ///
+  ///  * **No tag at all**, which predates model tracking.
+  ///  * **An empty tag.** Both AI write paths record `model ?? ''`, so every
+  ///    reply that carried no `modelVersion` stored `''` — and the old rule
+  ///    (`!= null && contains('lite')`) read that as *non*-weak. An entry of
+  ///    unknown provenance was therefore pinned permanently, which is strictly
+  ///    worse than carrying no tag, where the identical unknown is a candidate.
+  ///    `''` is now the weakest value there is, so those entries repair
+  ///    themselves on the next look-ahead pass.
+  ///  * **Any Lite**, in any generation. Matched on the *name* rather than on
+  ///    the chain, so a Lite left behind by a previous engine stays repairable
+  ///    after a switch.
+  ///  * **A non-primary link of the live chain** — which is the fallback that
+  ///    actually produces most of them, and the reason this rule was worth
+  ///    revisiting. The 3.x chain is 3.8-flash → 3.6-flash → 3.5-flash-lite, so
+  ///    a 429 on 3.8 yields `gemini-3.6-flash`: no "lite" anywhere in the name,
+  ///    hence frozen for good under the old rule. The upgrader exists to repair
+  ///    what a fallback wrote and was missing the common case — and the more
+  ///    often the primary is rate-limited, the more of the cache it missed.
+  ///
+  /// A model belonging to *another* engine's chain is deliberately **not** weak.
+  /// It is not evidence that a fallback happened, and treating it as such would
+  /// make every engine switch re-translate the entire bank. [_seededModelTag] is
+  /// not weak either: those pairs are authoritative and never came from the AI.
+  static bool isWeakModel(String? modelVersion) {
+    if (modelVersion == null) return true;
+    final m = modelVersion.trim().toLowerCase();
+    if (m.isEmpty) return true;
+    if (m == _seededModelTag) return false;
+
+    final chain = [for (final e in AiService.engine.models) e.trim().toLowerCase()];
+    // The primary's own output is never a candidate — upgrading it would mean
+    // asking the same model for the same sentence forever. Tested before the
+    // name below so that a chain which ever led with a Lite could not loop.
+    if (chain.isNotEmpty && _sameModel(m, chain.first)) return false;
+    if (m.contains('lite')) return true;
+    return chain.skip(1).any((link) => _sameModel(m, link));
+  }
+
+  /// Whether the recorded tag [recorded] names the model [modelId].
+  ///
+  /// Loose, but in one direction and only over a build suffix: the tag comes
+  /// from the *response*, which may pin a build the request's id did not name
+  /// (`…-flash` answered by `…-flash-001`), so an exact match would miss. The
+  /// extension has to look like a build — digits and dots — because `-lite`
+  /// extends a *sibling* id rather than naming the same model, and accepting it
+  /// here would hide the weakest link in the chain behind the strongest.
+  static bool _sameModel(String recorded, String modelId) {
+    final id = modelId.trim().toLowerCase();
+    if (id.isEmpty) return false;
+    if (recorded == id) return true;
+    if (!recorded.startsWith(id)) return false;
+    return RegExp(r'^[-_.][\d.]+$').hasMatch(recorded.substring(id.length));
+  }
 
   final SharedPreferencesAsync _prefs;
 
@@ -351,9 +407,10 @@ class SentenceBankService {
   }
 
   /// Among [sentences], returns those whose cached translation should be
-  /// upgraded with the primary model — i.e. it was produced by the weaker lite
-  /// fallback, or predates model tracking (no recorded model). Sentences not yet
-  /// translated are skipped (the normal translate flow handles those).
+  /// upgraded with the primary model, per [isWeakModel] — a Lite, a non-primary
+  /// link of the live chain, or provenance that was never recorded or came back
+  /// unknown. Sentences not yet translated are skipped (the normal translate
+  /// flow handles those).
   Future<List<String>> sentencesNeedingUpgrade({
     required List<String> sentences,
     required String sourceLang,
@@ -368,7 +425,7 @@ class SentenceBankService {
       final key = _cacheKey(sourceLang, targetLang, s);
       if (!cache.containsKey(key) || !seen.add(key)) continue;
       final m = models[key];
-      if (m == null || isWeakModel(m)) out.add(s);
+      if (isWeakModel(m)) out.add(s);
     }
     return out;
   }
@@ -798,7 +855,9 @@ class SentenceBankService {
     // Only cache a real translation — a result equal to the source means the AI
     // failed/echoed; caching it would poison the cache (and get spoken by the
     // target-language TTS). Leave it uncached so it retries next time. Record
-    // the model alongside it so the upgrader can later spot lite ones.
+    // the model alongside it so the upgrader can judge it later; '' stands for
+    // "the reply named no model", which [isWeakModel] now treats as the weakest
+    // value there is rather than as a model good enough to keep.
     if (result.text.trim() != sentence.trim()) {
       await _mergeIntoCache({key: result.text}, models: {key: result.model ?? ''});
     }
@@ -856,6 +915,7 @@ class SentenceBankService {
         if (tr.trim() != chunk[c].trim()) {
           final key = _cacheKey(sourceLang, targetLang, chunk[c]);
           additions[key] = tr;
+          // '' = the reply named no model; weak, so it is retried later.
           modelAdditions[key] = model ?? '';
         }
       }
