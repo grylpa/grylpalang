@@ -19,7 +19,21 @@ plugins {
 
 android {
     namespace = "com.grylpa.katalaveno"
-    compileSdk = flutter.compileSdkVersion
+    // Pinned rather than `flutter.compileSdkVersion`, which is still **36** in
+    // Flutter 3.50 (`FlutterExtension.kt`): flutter_local_notifications 23.0.0
+    // requires 37, so following Flutter's default would fail the build. Revert
+    // to `flutter.compileSdkVersion` once that default reaches 37, so the value
+    // is only ever pinned while it has to be.
+    //
+    // 37 is the *major* API level and deliberately not a minor (37.1 / 37.2):
+    // the plugin asks for the major, a minor needs AGP's separate
+    // `compileSdkMinor` — which Flutter's own `CompileSdkVersion` does not even
+    // model — and they share one build-tools (37.0.0), so a minor buys nothing
+    // here and only widens the surface for new deprecation warnings.
+    //
+    // `targetSdk` is untouched below, so **no runtime behaviour changes**: this
+    // only widens which APIs are visible at compile time.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
