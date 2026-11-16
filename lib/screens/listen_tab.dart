@@ -13,6 +13,7 @@ import '../services/ai_service.dart';
 import '../services/auto_playlist_controller.dart';
 import '../services/katalaveno_audio_handler.dart';
 import '../services/listen_service.dart';
+import '../services/retrieval_gap.dart';
 import '../services/sentence_bank_service.dart';
 import '../services/google_translate_tts.dart';
 import '../services/tts_synth_service.dart';
@@ -1385,6 +1386,7 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     s.listenPauseBeforeNextSec,
     s.listenUseMediumPass,
     s.listenUseSlowAfterKnown,
+    s.listenUseKnownPass,
     s.listenThirdPassRatePct,
     s.listenPauseAfterThirdSec,
     s.listenPauseAfterKnownSec,
@@ -1488,30 +1490,66 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
       if (slow == null && medium == null && third == null && full == null) return null;
       // The translation is the only optional clip: without a known-language
       // voice the exercise still works (the target passes), so a failure here
-      // drops one clip rather than the whole text.
+      // drops one clip rather than the whole text. Switched off it isn't
+      // synthesized at all rather than rendered and dropped — the same rule
+      // the target passes follow.
       String? known;
-      try {
-        known = await TtsSynthService.instance.synthToFile(
-          story.l1,
-          langCode: langCodeForLanguage(s.knownLanguage),
-          locale: localeForLanguage(s.knownLanguage),
-          voiceId: s.listenKnownVoice,
-          gender: s.sentenceBankVoiceGender,
-        );
-      } catch (_) {
-        known = null;
+      if (s.listenUseKnownPass) {
+        try {
+          known = await TtsSynthService.instance.synthToFile(
+            story.l1,
+            langCode: langCodeForLanguage(s.knownLanguage),
+            locale: localeForLanguage(s.knownLanguage),
+            voiceId: s.listenKnownVoice,
+            gender: s.sentenceBankVoiceGender,
+          );
+        } catch (_) {
+          known = null;
+        }
       }
+      // The gap that falls immediately *before* the known-language pass is the
+      // one the exercise turns on: it is the learner's only chance to commit to
+      // a reading of the text before the translation settles it, and hearing
+      // the answer without having tried is re-exposure rather than practice.
+      // A handful of seconds could never be that — the stepper's 3s default is
+      // read against a text that takes half a minute to say — so it is scaled
+      // to the text, with the user's setting as the floor (see
+      // [retrievalGapSec]). Whichever target pass is last before the
+      // translation owns it: the faster pass when it is on, else the slow one.
+      final gapBeforeKnown = known == null
+          ? null
+          : retrievalGapSec(
+              story.l2,
+              floor: medium != null ? s.listenPauseAfterMediumSec : s.listenPauseAfterSlowSec,
+              cap: kGapCapText,
+              factor: kGapFactorText,
+            );
+      final slowGap = (medium == null ? gapBeforeKnown : null) ?? s.listenPauseAfterSlowSec;
+      final mediumGap = gapBeforeKnown ?? s.listenPauseAfterMediumSec;
       // Slow → [faster] → translation → [slow again] → full speed. The two
       // bracketed passes are optional; nothing is ever reordered.
       return [
         // The 1st pass is optional only in Google mode, where Off is one of the
         // four speed values; on device it is always rendered.
-        if (slow != null) ...[ClipSpec.file(slow), ClipSpec.silence(s.listenPauseAfterSlowSec)],
-        if (medium != null) ...[ClipSpec.file(medium), ClipSpec.silence(s.listenPauseAfterMediumSec)],
+        if (slow != null) ...[ClipSpec.file(slow), ClipSpec.silence(slowGap)],
+        if (medium != null) ...[ClipSpec.file(medium), ClipSpec.silence(mediumGap)],
         if (known != null) ...[ClipSpec.file(known), ClipSpec.silence(s.listenPauseAfterKnownSec)],
         // The 3rd pass: the target again, now that the meaning is known.
         if (third != null) ...[ClipSpec.file(third), ClipSpec.silence(s.listenPauseAfterThirdSec)],
-        if (full != null) ...[ClipSpec.file(full), ClipSpec.silence(s.listenPauseBeforeNextSec)],
+        // By here the meaning is known and the text has been heard three or
+        // four times, so this is consolidation (and room to say a line back)
+        // rather than retrieval — scaled by much less, but still not flat.
+        if (full != null) ...[
+          ClipSpec.file(full),
+          ClipSpec.silence(
+            retrievalGapSec(
+              story.l2,
+              floor: s.listenPauseBeforeNextSec,
+              cap: kGapCapConsolidate,
+              factor: kGapFactorConsolidate,
+            ),
+          ),
+        ],
       ];
     } catch (_) {
       return null;
@@ -1785,6 +1823,12 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
               ],
             ),
           ),
+          // A full-width row of its own rather than a third share of the one
+          // above: at a third of a phone width all three labels wrap to three
+          // lines each. The split also reads correctly — the two above spend AI
+          // calls and this one spends nothing.
+          const SizedBox(height: 8),
+          _bankSentencesButton(),
           const SizedBox(height: 16),
           _controls(),
         ],
@@ -2624,6 +2668,143 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     }
   }
 
+  /// Adds the selected subjects' own bank sentences to Listen's bank, paired
+  /// with the translations the Sentences tab has already cached — so **without
+  /// a single AI call**, which is why this is the one material button not gated
+  /// on the API key.
+  ///
+  /// Why it exists: both generators serve Nation's *input* strand, and they are
+  /// right to — every text they write deliberately carries a word or two the
+  /// learner does not know yet. That is exactly what makes them the wrong
+  /// material for the *fluency* strand, which wants the opposite: nothing new
+  /// at all, at speed, in quantity, until recognising what is already known
+  /// stops costing any effort. Bank sentences are the best material in the app
+  /// for that, for a reason no generated text can match — they have already
+  /// been drilled in Sentences, so "already known" is not an assumption here
+  /// but a fact about where they came from. Pair this with the known-language
+  /// pass switched off (⋮ → Settings) and the result is a fluency walk.
+  ///
+  /// One sentence becomes one text, the same rule **Load sentences** uses for a
+  /// `.txt`, so nothing downstream has to learn a new shape. A sentence with no
+  /// cached translation is **skipped, never translated**: not paying for an AI
+  /// call is the whole point of this path, and the dialog reports the count so
+  /// the gap is visible rather than silent.
+  Future<void> _useBankSentences() async {
+    final state = context.read<AppState>();
+    final s = state.settings;
+    if (_generating) return;
+    if (_bank == null) {
+      lpSnack(context, 'Load a sentence bank first.', 4000);
+      return;
+    }
+    if (_selectedSubjects.isEmpty) {
+      lpSnack(context, 'Pick at least one subject first.', 4000);
+      return;
+    }
+    // Sorted, so the stored `subjects` list is stable the way the generators'
+    // is — a selection is a set and its iteration order is not a fact.
+    final subjects = _selectedSubjects.toList()..sort();
+    final sources = {
+      for (final name in subjects)
+        for (final raw in _bank?.sentencesFor(name) ?? const []) SbSentence.spoken(raw),
+    }.toList();
+    if (sources.isEmpty) {
+      lpSnack(context, 'Those subjects have no sentences.', 4000);
+      return;
+    }
+    final cached = await _bankService.cachedTranslations(
+      sentences: sources,
+      // The bank's own declared language, never [AppSettings.knownLanguage] —
+      // same rule and same reason as [_seedPool], and getting it wrong here
+      // would fail quietly as "nothing is translated yet".
+      sourceLang: _bankLanguage,
+      targetLang: s.targetLanguage,
+    );
+    if (!mounted) return;
+    // Duplicate `l2` skipped, the rule the generators already follow. The set
+    // grows as we go, so a sentence that two selected subjects share cannot be
+    // added twice within one press either.
+    final have = {for (final st in _stories) st.l2.trim()};
+    final fresh = <ListenStory>[];
+    for (final src in sources) {
+      final tr = cached[src]?.trim();
+      if (tr == null || tr.isEmpty) continue;
+      if (!have.add(tr)) continue;
+      fresh.add(ListenStory(subjects: subjects, l2: tr, l1: src));
+    }
+    final ok = await _askUseBankSentences(
+      total: sources.length,
+      untranslated: sources.length - cached.length,
+      alreadyHave: cached.length - fresh.length,
+      adding: fresh.length,
+    );
+    if (ok != true || !mounted || fresh.isEmpty) return;
+
+    _pause();
+    final all = _shuffledGroups([..._stories, ...fresh]);
+    await _service.saveStories(s.targetLanguage, all);
+    if (!mounted) return;
+    setState(() {
+      _stories = all;
+      _cancelBuild();
+    });
+    final at = _playable.indexWhere((x) => x.key == fresh.first.key);
+    if (at >= 0) {
+      setState(() => _index = at);
+      unawaited(_service.savePosition(s.targetLanguage, fresh.first.key));
+    }
+    if (!mounted) return;
+    lpSnack(context, 'Added ${fresh.length} sentences from your bank.', 4000);
+  }
+
+  /// Says what the press will actually add before it adds it.
+  ///
+  /// The untranslated count is the one number the learner cannot work out for
+  /// themselves, and it is the actionable one: those sentences fill in by
+  /// themselves as the Sentences tab plays those subjects, so the right answer
+  /// to a big number here is usually "later", not "translate them now".
+  Future<bool?> _askUseBankSentences({
+    required int total,
+    required int untranslated,
+    required int alreadyHave,
+    required int adding,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Use bank sentences'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              adding > 0
+                  ? '$adding of your $total selected sentences will be added as texts, using the translations '
+                        'already stored — no AI call and no internet needed.'
+                  : 'Nothing new to add from your $total selected sentences.',
+            ),
+            if (alreadyHave > 0) ...[
+              const SizedBox(height: 10),
+              Text('$alreadyHave are already in Listen.', style: Theme.of(ctx).textTheme.bodySmall),
+            ],
+            if (untranslated > 0) ...[
+              const SizedBox(height: 10),
+              Text(
+                '$untranslated have no stored translation yet and are skipped. Those fill in on their own as the '
+                'Sentences tab plays those subjects.',
+                style: Theme.of(ctx).textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: adding > 0 ? () => Navigator.pop(ctx, true) : null, child: const Text('Add')),
+        ],
+      ),
+    );
+  }
+
   /// The ⋮ menu. Only what Listen actually has: voices, its playback settings,
   /// and clearing the generated bank. The Sentence Bank's URL / file loading /
   /// format items have no meaning here — the material is generated, not authored.
@@ -2840,7 +3021,10 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
             '${story.titleL2} — part ${story.part + 1} of ${story.partCount}',
             style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.primary),
           ),
-        if (!_knownSpeechOk)
+        // Suppressed when the pass is switched off: a missing voice for a clip
+        // that was never going to play is not a problem to report, and a
+        // warning that cannot be acted on is the kind that gets ignored.
+        if (!_knownSpeechOk && s.listenUseKnownPass)
           // Not a blocking notice like the target language — the exercise still
           // works without the translation — but it gets the same instructions,
           // one tap away, so it's fixable rather than merely reported.
@@ -3038,6 +3222,16 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     );
   }
 
+  /// The third way to get material, and the only one not gated on the API key,
+  /// because it makes no AI call at all. See [_useBankSentences].
+  Widget _bankSentencesButton() {
+    return _makeButton(
+      onPressed: _generating || _selectedSubjects.isEmpty ? null : _useBankSentences,
+      icon: const Icon(Icons.playlist_add),
+      label: 'Use bank sentences',
+    );
+  }
+
   /// Identical shape to the Sentence Bank's control bar: three equal-width
   /// 56px filled buttons with 36px icons, ordered **prev, next, play** (play on
   /// the right, not the middle) and turning error-red while running. Kept
@@ -3219,9 +3413,16 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
                     pause: s.listenPauseAfterMediumSec,
                     onPause: (v) => set(s.copyWith(listenPauseAfterMediumSec: v)),
                   ),
+                  // The only card with a checkbox and no speed: one line of the
+                  // language you already know needs no pace, but it does need
+                  // an Off — without the translation the exercise stops being
+                  // comprehension practice and becomes fluency practice, which
+                  // is a different and equally wanted thing.
                   _passCard(
                     ctx,
                     language: s.knownLanguage,
+                    on: s.listenUseKnownPass,
+                    onToggle: (v) => set(s.copyWith(listenUseKnownPass: v)),
                     pause: s.listenPauseAfterKnownSec,
                     onPause: (v) => set(s.copyWith(listenPauseAfterKnownSec: v)),
                   ),

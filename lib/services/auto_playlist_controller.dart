@@ -6,6 +6,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart';
 
 import 'katalaveno_audio_handler.dart';
+import 'retrieval_gap.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// One element of a hand-built playlist: either an audio file or a gap.
@@ -107,6 +108,11 @@ class AutoPlaylistController {
     // so the learner hears the sentence they're learning first and the known
     // language confirms it. Absent/short list = normal (source-first) order.
     List<bool>? targetFirst,
+    // Scales the between-languages gap to the sentence being learned (see
+    // [retrievalGapSec]). Null keeps the flat [sourcePauseSec] — which is what
+    // a caller that is reading aloud rather than drilling wants.
+    double? gapFactor,
+    int gapCapSec = 0,
   }) async {
     final ordinals = <List<ClipSpec>>[];
     for (var ord = 0; ord < translations.length; ord++) {
@@ -121,6 +127,7 @@ class AutoPlaylistController {
         _sentenceClips(
           sourcePath: (sourcePaths != null && ord < sourcePaths.length) ? sourcePaths[ord] : null,
           translationPath: path,
+          targetText: translations[ord],
           repeatCount: repeatCount,
           sourceRepeatCount: sourceRepeatCount,
           sourcePauseSec: sourcePauseSec,
@@ -129,6 +136,8 @@ class AutoPlaylistController {
           postDelaySec: postDelaySec,
           alternate: alternate,
           flip: targetFirst != null && ord < targetFirst.length && targetFirst[ord],
+          gapFactor: gapFactor,
+          gapCapSec: gapCapSec,
         ),
       );
     }
@@ -141,6 +150,7 @@ class AutoPlaylistController {
   List<ClipSpec> _sentenceClips({
     required String? sourcePath,
     required String translationPath,
+    required String targetText,
     required int repeatCount,
     required int sourceRepeatCount,
     required int sourcePauseSec,
@@ -149,10 +159,26 @@ class AutoPlaylistController {
     required int postDelaySec,
     required bool alternate,
     required bool flip,
+    double? gapFactor,
+    int gapCapSec = 0,
   }) {
     final clips = <ClipSpec>[];
     final reps = repeatCount < 1 ? 1 : repeatCount;
     final src = sourcePath;
+
+    // The gap between the two languages is where the learner does the work, so
+    // a caller that is running an *exercise* (Sentences) sizes it to the
+    // sentence; one that is only reading aloud (Books) passes no factor and
+    // keeps the flat setting it always had.
+    //
+    // It is measured against the target-language text in **both** directions,
+    // which is not the clip that always precedes it: target-first, the learner
+    // is recalling the meaning of what they just heard, and source-first they
+    // are trying to produce that same target sentence. Either way the L2 is the
+    // material being retrieved, so it is the L2 that sets how long that takes.
+    final pause = gapFactor == null
+        ? sourcePauseSec
+        : retrievalGapSec(targetText, floor: sourcePauseSec, cap: gapCapSec, factor: gapFactor);
 
     void addSource() => clips.add(ClipSpec.file(src!));
     void addTarget() => clips.add(ClipSpec.file(translationPath));
@@ -164,7 +190,7 @@ class AutoPlaylistController {
         // The first pair keeps the "pause after source" the user set; the
         // repeats get their own (usually shorter) gap, since by then they've
         // already heard the sentence and need less thinking time.
-        final gap = r == 0 ? sourcePauseSec : (nextSourcePauseSec ?? sourcePauseSec);
+        final gap = r == 0 ? pause : (nextSourcePauseSec ?? pause);
         if (src != null && !flip) {
           addSource();
           clips.add(ClipSpec.silence(gap));
@@ -196,11 +222,11 @@ class AutoPlaylistController {
       if (flip) {
         // Target first: hear the language being learned, then the known one.
         targetBlock();
-        if (src != null) clips.add(ClipSpec.silence(sourcePauseSec));
+        if (src != null) clips.add(ClipSpec.silence(pause));
         sourceBlock();
       } else {
         sourceBlock();
-        if (src != null) clips.add(ClipSpec.silence(sourcePauseSec));
+        if (src != null) clips.add(ClipSpec.silence(pause));
         targetBlock();
       }
     }
@@ -278,6 +304,8 @@ class AutoPlaylistController {
   int _dynRepeatDelaySec = 0;
   int _dynPostDelaySec = 0;
   bool _dynAlternate = false;
+  double? _dynGapFactor;
+  int _dynGapCapSec = 0;
 
   /// Prepares the player for dynamic-playlist mode. Call [appendChunk] as
   /// chunks become ready; the first call actually sends them to the player,
@@ -292,6 +320,9 @@ class AutoPlaylistController {
     required int postDelaySec,
     bool alternate = false,
     bool loop = false,
+    // See [start].
+    double? gapFactor,
+    int gapCapSec = 0,
   }) async {
     _dynRepeatCount = repeatCount < 1 ? 1 : repeatCount;
     _dynSourcePauseSec = sourcePauseSec;
@@ -300,6 +331,8 @@ class AutoPlaylistController {
     _dynRepeatDelaySec = repeatDelaySec;
     _dynPostDelaySec = postDelaySec;
     _dynAlternate = alternate;
+    _dynGapFactor = gapFactor;
+    _dynGapCapSec = gapCapSec;
     await _resetForDynamic(ordinalCount, loop);
   }
 
@@ -374,6 +407,7 @@ class AutoPlaylistController {
       clips: _sentenceClips(
         sourcePath: sourcePath,
         translationPath: translationPath,
+        targetText: text,
         repeatCount: _dynRepeatCount,
         sourceRepeatCount: _dynSourceRepeatCount,
         sourcePauseSec: _dynSourcePauseSec,
@@ -382,6 +416,8 @@ class AutoPlaylistController {
         postDelaySec: _dynPostDelaySec,
         alternate: _dynAlternate,
         flip: flip,
+        gapFactor: _dynGapFactor,
+        gapCapSec: _dynGapCapSec,
       ),
     );
   }

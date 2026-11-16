@@ -126,9 +126,22 @@ class AppSettings {
   // no prompt could fix: given an English list, "a word the learner knows" is
   // a judgement about what the English would translate to, and the model has
   // to make it hundreds of times. Given the bank's cached translations it is a
-  // lookup instead. Off by default, and not only for an upgrade's sake: a
-  // fresh install has no translation cache, so there is nothing to seed from
-  // until the Sentences tab has played those subjects.
+  // lookup instead.
+  //
+  // **On by default since 2026-11-16.** It used to be off partly because a
+  // fresh install has no translation cache to seed from — but that stopped
+  // being a reason once `_fillTargetPool` began translating the gap before a
+  // generation, so the switch now works on any install. What is left is the
+  // real trade, and it is one-sided for learning: with it off, the vocabulary
+  // ceiling is measured against a *known-language* list, which means the model
+  // is not looking a word up but guessing what the English would translate to,
+  // hundreds of times per text, with every incentive to rule that a word it
+  // already wants is probably covered. The budget is then overspent whatever
+  // number the learner picked, which makes the one control over difficulty
+  // decorative. The cost is a slow first generation per subject (one request
+  // per 30 uncached sentences), which the dialog states up front with the
+  // missing count, and the fill is shared with the Sentences tab's own cache,
+  // so nothing is paid for twice.
   bool listenSeedInTarget;
   // The Delete dialog's last-used boxes. Titles default off: they are what
   // keeps new stories from repeating old ones, rarely part of starting over.
@@ -157,6 +170,19 @@ class AppSettings {
   bool get sentenceBankUsesGoogleVoice => sentenceBankTargetVoice == kVoiceGoogle;
   bool listenUseMediumPass; // play the 2nd (faster) target pass
   bool listenUseSlowAfterKnown; // the 3rd pass: target again after the translation, before the full-speed one
+  // Play the known-language pass at all. On by default, since without it a
+  // text you cannot yet decode has nothing to tell you what it meant.
+  //
+  // Off is **fluency practice** (Nation's fourth strand): material already
+  // understood, at speed, in quantity, with the aim of making access
+  // automatic rather than learning anything new. The translation is exactly
+  // what has to go for that, because it is what saves the listener from
+  // decoding — and decoding connected speech fast is the skill that
+  // understanding a language in real time actually rests on. Worth knowing
+  // which way round this is: *with* the pass is comprehension practice, and
+  // without it is fluency practice. They are different exercises, not a
+  // better and worse version of one.
+  bool listenUseKnownPass;
   int listenThirdPassRatePct; // its own speed — not tied to the 1st pass
   int listenPauseAfterThirdSec; // and its own gap
   int listenPauseAfterKnownSec; // gap after the translation
@@ -253,7 +279,7 @@ class AppSettings {
     this.listenImportSentencesInTarget = false,
     this.listenNewWordsPerText = 2,
     this.listenNewWordsPerPart = 2,
-    this.listenSeedInTarget = false,
+    this.listenSeedInTarget = true,
     this.listenDeleteTexts = true,
     this.listenDeleteStories = true,
     this.listenDeleteTitles = false,
@@ -265,13 +291,14 @@ class AppSettings {
     this.listenKnownVoice = '',
     this.listenUseMediumPass = true,
     this.listenUseSlowAfterKnown = true,
+    this.listenUseKnownPass = true,
     this.listenThirdPassRatePct = kListenThirdPassRatePctDefault,
     this.listenPauseAfterThirdSec = kListenPauseAfterThirdSecDefault,
     this.listenPauseAfterKnownSec = kListenPauseAfterKnownSecDefault,
     this.listenMaxPlaysPerText = 0,
     this.listenMaxPlaysPerStory = 0,
     this.hiddenTabIds = kHiddenTabIdsDefault,
-    this.sentenceBankTargetFirst = false,
+    this.sentenceBankTargetFirst = true,
     this.sentenceBankPrepareAudio = true,
     this.booksChunkUnit = 'sentence',
     this.booksRepeatCount = kBooksRepeatCountDefault,
@@ -339,6 +366,7 @@ class AppSettings {
     String? listenKnownVoice,
     bool? listenUseMediumPass,
     bool? listenUseSlowAfterKnown,
+    bool? listenUseKnownPass,
     int? listenThirdPassRatePct,
     int? listenPauseAfterThirdSec,
     int? listenPauseAfterKnownSec,
@@ -418,6 +446,7 @@ class AppSettings {
       listenKnownVoice: listenKnownVoice ?? this.listenKnownVoice,
       listenUseMediumPass: listenUseMediumPass ?? this.listenUseMediumPass,
       listenUseSlowAfterKnown: listenUseSlowAfterKnown ?? this.listenUseSlowAfterKnown,
+      listenUseKnownPass: listenUseKnownPass ?? this.listenUseKnownPass,
       listenThirdPassRatePct: listenThirdPassRatePct ?? this.listenThirdPassRatePct,
       listenPauseAfterThirdSec: listenPauseAfterThirdSec ?? this.listenPauseAfterThirdSec,
       listenPauseAfterKnownSec: listenPauseAfterKnownSec ?? this.listenPauseAfterKnownSec,
@@ -483,7 +512,7 @@ class AppSettings {
     'listenImportSentencesInTarget': listenImportSentencesInTarget,
     'listenNewWordsPerText': listenNewWordsPerText,
     'listenNewWordsPerPart': listenNewWordsPerPart,
-    'listenSeedInTarget': listenSeedInTarget,
+    'listenSeedInTargetV2': listenSeedInTarget,
     'listenDeleteTexts': listenDeleteTexts,
     'listenDeleteStories': listenDeleteStories,
     'listenDeleteTitles': listenDeleteTitles,
@@ -495,13 +524,14 @@ class AppSettings {
     'listenKnownVoice': listenKnownVoice,
     'listenUseMediumPass': listenUseMediumPass,
     'listenUseSlowAfterKnown': listenUseSlowAfterKnown,
+    'listenUseKnownPass': listenUseKnownPass,
     'listenThirdPassRatePct': listenThirdPassRatePct,
     'listenPauseAfterThirdSec': listenPauseAfterThirdSec,
     'listenPauseAfterKnownSec': listenPauseAfterKnownSec,
     'listenMaxPlaysPerText': listenMaxPlaysPerText,
     'listenMaxPlaysPerStory': listenMaxPlaysPerStory,
     'hiddenTabIds': hiddenTabIds,
-    'sentenceBankTargetFirst': sentenceBankTargetFirst,
+    'sentenceBankTargetFirstV2': sentenceBankTargetFirst,
     'sentenceBankPrepareAudio': sentenceBankPrepareAudio,
     'booksChunkUnit': booksChunkUnit,
     'booksRepeatCount': booksRepeatCount,
@@ -608,7 +638,14 @@ class AppSettings {
       listenImportSentencesInTarget: json['listenImportSentencesInTarget'] as bool? ?? false,
       listenNewWordsPerText: json['listenNewWordsPerText'] as int? ?? 2,
       listenNewWordsPerPart: json['listenNewWordsPerPart'] as int? ?? 2,
-      listenSeedInTarget: json['listenSeedInTarget'] as bool? ?? false,
+      // New key, so an install that stored the old default takes the new one
+      // once (same one-time migration as `sentenceBankTargetFirstV2`). One
+      // consequence to expect rather than debug: `_reserveSigFor` records the
+      // seed language, so any banked reserve written from the known-language
+      // pool is now *ignored* — correctly, since those texts are exactly the
+      // ones that overspent the budget. They are not deleted, and unticking
+      // the box brings them back.
+      listenSeedInTarget: json['listenSeedInTargetV2'] as bool? ?? true,
       listenDeleteTexts: json['listenDeleteTexts'] as bool? ?? true,
       listenDeleteStories: json['listenDeleteStories'] as bool? ?? true,
       listenDeleteTitles: json['listenDeleteTitles'] as bool? ?? false,
@@ -635,13 +672,25 @@ class AppSettings {
       listenKnownVoice: json['listenKnownVoice'] as String? ?? '',
       listenUseMediumPass: json['listenUseMediumPass'] as bool? ?? true,
       listenUseSlowAfterKnown: json['listenUseSlowAfterKnown'] as bool? ?? true,
+      listenUseKnownPass: json['listenUseKnownPass'] as bool? ?? true,
       listenThirdPassRatePct: json['listenThirdPassRatePct'] as int? ?? kListenThirdPassRatePctDefault,
       listenPauseAfterThirdSec: json['listenPauseAfterThirdSec'] as int? ?? kListenPauseAfterThirdSecDefault,
       listenPauseAfterKnownSec: json['listenPauseAfterKnownSec'] as int? ?? kListenPauseAfterKnownSecDefault,
       listenMaxPlaysPerText: json['listenMaxPlaysPerText'] as int? ?? 0,
       listenMaxPlaysPerStory: json['listenMaxPlaysPerStory'] as int? ?? 0,
       hiddenTabIds: (json['hiddenTabIds'] as List?)?.cast<String>() ?? kHiddenTabIdsDefault,
-      sentenceBankTargetFirst: json['sentenceBankTargetFirst'] as bool? ?? false,
+      // Read under a **new key**, so that an install which stored the old
+      // default takes the new one once and only once. Hearing the known
+      // language first and the target second is a presentation, not an
+      // exercise: the meaning arrives before the learner can attempt it, which
+      // is the weakest use of a repetition. Target-first makes the same clip
+      // pair a test — and this being a ~50/50 per-sentence split (see
+      // `_isTargetFirst`), the other half stays source-first and tests
+      // *production* of the same sentence instead, which is the harder
+      // direction and worth having. There is no migration flag and nothing is
+      // written back: the absence of the key *is* the signal, and the moment
+      // the switch is touched the new key is stored and respected for good.
+      sentenceBankTargetFirst: json['sentenceBankTargetFirstV2'] as bool? ?? true,
       sentenceBankPrepareAudio: json['sentenceBankPrepareAudio'] as bool? ?? true,
       booksChunkUnit: json['booksChunkUnit'] as String? ?? 'sentence',
       booksRepeatCount: (json['booksRepeatCount'] as int?) ?? kBooksRepeatCountDefault,
@@ -686,7 +735,7 @@ class AppSettings {
       sentenceBankTargetVoice: kVoiceGoogle,
       sentenceBankSpeakSource: true,
       sentenceBankShuffle: true,
-      sentenceBankTargetFirst: false,
+      sentenceBankTargetFirst: true,
       sentenceBankPrepareAudio: true,
     );
   }

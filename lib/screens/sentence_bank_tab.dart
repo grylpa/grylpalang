@@ -21,6 +21,7 @@ import 'markdown_doc_screen.dart';
 import '../services/auto_playlist_controller.dart';
 import '../services/katalaveno_audio_handler.dart';
 import '../services/google_translate_tts.dart';
+import '../services/retrieval_gap.dart';
 import '../services/sentence_bank_service.dart';
 import '../services/tts_synth_service.dart';
 import '../widgets/voice_picker.dart';
@@ -479,11 +480,32 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   /// The de-duplicated union of every selected subject's sentences, in stable
   /// bank order (so positions/shuffle stay consistent regardless of selection
   /// order). A sentence shared by a leaf and a meta that includes it appears once.
-  List<String> _currentSentences() {
+  List<String> _currentSentences() => _expandSentences().sentences;
+
+  /// [_currentSentences] plus the round boundaries behind it.
+  ///
+  /// A sentence can earn several copies of itself in one pass (its own `N,`
+  /// prefix, or its subject's importance). Those copies are emitted in
+  /// **rounds** — every sentence once, then every sentence that earns a second
+  /// copy, and so on — rather than stacked next to each other as they used to
+  /// be. Same sentences and the same total length, but a favored sentence's
+  /// three copies land a whole pass apart instead of back to back, and
+  /// spreading a fixed number of repetitions out is about the most consistently
+  /// replicated result in the memory literature. Three in a row is the
+  /// arrangement worth least of all: the 2nd and 3rd are heard while the 1st is
+  /// still in mind, so neither is a retrieval — it is one exposure billed three
+  /// times. Round 0 is still plain bank order, so with shuffle off the first
+  /// pass through a subject reads exactly as it is written.
+  ///
+  /// `roundStarts` holds the index each round begins at, which is what lets
+  /// [_generateShuffledOrder] randomize *within* a round and so keep this
+  /// spacing instead of undoing it.
+  ({List<String> sentences, List<int> roundStarts}) _expandSentences() {
     final bank = _bank;
-    if (bank == null || _selectedSubjects.isEmpty) return [];
+    if (bank == null || _selectedSubjects.isEmpty) return (sentences: <String>[], roundStarts: <int>[]);
     final seen = <String>{};
-    final out = <String>[];
+    // Each kept sentence paired with the number of copies it earns.
+    final picked = <(String, int)>[];
     // A meta is a pure group and is never itself selected, so its own importance
     // would otherwise be dead. Instead it acts as a *floor* for each of its
     // children — consistent with the rest of the chain, importance never
@@ -517,11 +539,24 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           // the larger of the two wins.
           final base = _sentenceImportance[key] ?? SbSentence.repeatCount(s);
           final reps = importance > base ? importance : base;
-          for (var i = 0; i < reps; i++) out.add(s);
+          picked.add((s, reps < 1 ? 1 : reps));
         }
       }
     }
-    return out;
+    // Round r holds every sentence earning more than r copies. The loop stops
+    // on the first round that adds nothing, so its length follows the largest
+    // repeat count without having to be told it.
+    final out = <String>[];
+    final starts = <int>[];
+    for (var round = 0; ; round++) {
+      final before = out.length;
+      for (final (s, reps) in picked) {
+        if (reps > round) out.add(s);
+      }
+      if (out.length == before) break;
+      starts.add(before);
+    }
+    return (sentences: out, roundStarts: starts);
   }
 
   /// Order-independent signature of the current selection — used as the key for
@@ -590,12 +625,39 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   }
 
   void _generateShuffledOrder() {
-    final sents = _currentSentences();
+    final expanded = _expandSentences();
+    final sents = expanded.sentences;
+    final starts = expanded.roundStarts;
     if (sents.isEmpty) {
       _shuffledOrder = null;
       return;
     }
-    final indices = List.generate(sents.length, (i) => i)..shuffle();
+    // Shuffled **within each round**, never across them. A plain shuffle of the
+    // whole expanded list would throw away the spacing [_expandSentences] just
+    // built, and could deal a favored sentence's copies next to each other by
+    // chance — which is the one arrangement there is no reason to ever want.
+    // Within a round the order is still fully random, and every sentence is
+    // still heard once before any sentence is heard twice.
+    final indices = <int>[];
+    for (var r = 0; r < starts.length; r++) {
+      final from = starts[r];
+      final to = r + 1 < starts.length ? starts[r + 1] : sents.length;
+      final round = List.generate(to - from, (i) => from + i)..shuffle();
+      // A round *boundary* is the one place two copies of one sentence can
+      // still land next to each other, and the rounds that can do it are the
+      // thin late ones, which hold only the most-favored sentences — so one of
+      // them can close a round and open the next. Moving that first pick to the
+      // back of its own round costs nothing and is the only adjacency the round
+      // structure doesn't already rule out. It cannot cascade: if the moved
+      // sentence now ends this round, the next round's own check sees it and
+      // rotates away from it in turn. A round of one is the single case left
+      // with nowhere to move to, which needs a sentence repeated strictly more
+      // often than every other in the selection.
+      if (indices.isNotEmpty && round.length > 1 && sents[round.first] == sents[indices.last]) {
+        round.add(round.removeAt(0));
+      }
+      indices.addAll(round);
+    }
     _shuffledOrder = indices;
   }
 
@@ -1690,6 +1752,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         // targets) instead of speaking the source once up front.
         alternate: settings.sentenceBankSpeakSource && settings.sentenceBankRepeatSourceBetween,
         loop: true,
+        // The gap between the two languages is the exercise, so it is sized to
+        // the sentence rather than left at the one second the bank format
+        // defaults to — long enough to attempt the meaning, and to say the
+        // sentence back, which is what a walk has spare capacity for. The
+        // user's own setting stays the floor.
+        gapFactor: kGapFactorSentence,
+        gapCapSec: kGapCapSentence,
       );
 
       final flips = settings.sentenceBankTargetFirst ? [for (final t in orderedSpoken) _isTargetFirst(t)] : null;
