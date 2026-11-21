@@ -32,6 +32,31 @@ enum GoogleTtsSpeed {
 
   const GoogleTtsSpeed(this.param, this.keySuffix);
 
+  /// The pace a stored speed *step* means (0 = off where a caller allows one,
+  /// 1 = slow, 2 = medium, 3 or anything else = normal).
+  ///
+  /// Steps exist because this endpoint has only these three paces, so a UI that
+  /// offered a percentage would be lying about what it can deliver. Both modes
+  /// store the step beside a percentage for the on-device voice rather than
+  /// instead of it, so switching voices back restores the percentage exactly —
+  /// which is why the mapping lives here, shared, instead of once per screen.
+  static GoogleTtsSpeed forStep(int step) => switch (step) {
+    1 => slow,
+    2 => medium,
+    _ => fast,
+  };
+
+  /// The on-device percentage that approximates [forStep], for when a fetch
+  /// fails and the clip falls back to local synthesis — so a transient endpoint
+  /// failure doesn't silently change the pace as well. Measured against one
+  /// Greek sentence whose normal rendering is 4.776s: 0.1 → 6.648s (72%),
+  /// 0.25 → 5.760s (83%), omitted → 4.776s (100%).
+  static int fallbackPctForStep(int step) => switch (step) {
+    1 => 72,
+    2 => 83,
+    _ => 100,
+  };
+
   /// Value for the endpoint's `ttsspeed`; empty means omit the parameter.
   final String param;
 
