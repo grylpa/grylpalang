@@ -221,6 +221,26 @@ class AppSettings {
   bool sentenceBankRepeatSourceBetween; // also replay the source before every target repeat (off by default)
   int sentenceBankNextSourcePauseSec; // pause after the 2nd+ source repeat (only with the above on)
   bool sentenceBankTargetFirst; // for ~half the sentences, play the target language before the source
+  // Sentences mode's target-language pace, as a percentage of
+  // [kSourceSpeechRate] — so 100 is the pace every other mode speaks at, and
+  // the default changes nothing.
+  //
+  // It exists for **fluency practice**, which wants the target language at or
+  // above normal speed: understanding speech in real time is mostly a matter of
+  // decoding it fast enough, and that is trained by processing easy material
+  // quickly rather than hard material slowly. Nothing in the app could ask for
+  // that before — the Sentence Bank spoke at one fixed rate — and Listen's
+  // per-pass percentages could only be reached by configuring four of its five
+  // passes off, which is a long way round to a speed dial. The **known**
+  // language keeps the fixed rate: it is the language you already have, where
+  // pace buys nothing.
+  int sentenceBankTargetRatePct;
+  // The same choice for the natural voice, which quantizes its own `ttsspeed`
+  // into three buckets and so is set by name (1 slow / 2 medium / 3 normal)
+  // rather than by percentage. Stored *beside* the percentage rather than
+  // instead of it, exactly as Listen does, so switching voices back restores
+  // the percentage untouched. There is no Off: something has to be spoken.
+  int sentenceBankTargetGoogleStep;
   bool sentenceBankPrepareAudio; // pre-build audio clips after loading, so Play is instant (on by default)
 
   // Books mode (Phase 3 audio playback). All times in seconds.
@@ -299,6 +319,8 @@ class AppSettings {
     this.listenMaxPlaysPerStory = 0,
     this.hiddenTabIds = kHiddenTabIdsDefault,
     this.sentenceBankTargetFirst = true,
+    this.sentenceBankTargetRatePct = 100,
+    this.sentenceBankTargetGoogleStep = kListenGoogleStepMax,
     this.sentenceBankPrepareAudio = true,
     this.booksChunkUnit = 'sentence',
     this.booksRepeatCount = kBooksRepeatCountDefault,
@@ -374,6 +396,8 @@ class AppSettings {
     int? listenMaxPlaysPerStory,
     List<String>? hiddenTabIds,
     bool? sentenceBankTargetFirst,
+    int? sentenceBankTargetRatePct,
+    int? sentenceBankTargetGoogleStep,
     bool? sentenceBankPrepareAudio,
     String? booksChunkUnit,
     int? booksRepeatCount,
@@ -454,6 +478,8 @@ class AppSettings {
       listenMaxPlaysPerStory: listenMaxPlaysPerStory ?? this.listenMaxPlaysPerStory,
       hiddenTabIds: hiddenTabIds ?? this.hiddenTabIds,
       sentenceBankTargetFirst: sentenceBankTargetFirst ?? this.sentenceBankTargetFirst,
+      sentenceBankTargetRatePct: sentenceBankTargetRatePct ?? this.sentenceBankTargetRatePct,
+      sentenceBankTargetGoogleStep: sentenceBankTargetGoogleStep ?? this.sentenceBankTargetGoogleStep,
       sentenceBankPrepareAudio: sentenceBankPrepareAudio ?? this.sentenceBankPrepareAudio,
       booksChunkUnit: booksChunkUnit ?? this.booksChunkUnit,
       booksRepeatCount: booksRepeatCount ?? this.booksRepeatCount,
@@ -532,6 +558,8 @@ class AppSettings {
     'listenMaxPlaysPerStory': listenMaxPlaysPerStory,
     'hiddenTabIds': hiddenTabIds,
     'sentenceBankTargetFirstV2': sentenceBankTargetFirst,
+    'sentenceBankTargetRatePct': sentenceBankTargetRatePct,
+    'sentenceBankTargetGoogleStep': sentenceBankTargetGoogleStep,
     'sentenceBankPrepareAudio': sentenceBankPrepareAudio,
     'booksChunkUnit': booksChunkUnit,
     'booksRepeatCount': booksRepeatCount,
@@ -691,6 +719,12 @@ class AppSettings {
       // written back: the absence of the key *is* the signal, and the moment
       // the switch is touched the new key is stored and respected for good.
       sentenceBankTargetFirst: json['sentenceBankTargetFirstV2'] as bool? ?? true,
+      // No key rename and no migration: both defaults are what the Sentence
+      // Bank already did, so an upgrade keeps its exact pace until asked.
+      sentenceBankTargetRatePct: (json['sentenceBankTargetRatePct'] as int?)?.clamp(30, 150) ?? 100,
+      sentenceBankTargetGoogleStep:
+          (json['sentenceBankTargetGoogleStep'] as int?)?.clamp(kListenGoogleStepOff + 1, kListenGoogleStepMax) ??
+          kListenGoogleStepMax,
       sentenceBankPrepareAudio: json['sentenceBankPrepareAudio'] as bool? ?? true,
       booksChunkUnit: json['booksChunkUnit'] as String? ?? 'sentence',
       booksRepeatCount: (json['booksRepeatCount'] as int?) ?? kBooksRepeatCountDefault,

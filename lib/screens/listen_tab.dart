@@ -1418,21 +1418,14 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     return installed.contains(chosen) ? chosen : '';
   }
 
-  /// Maps a stored Google speed step (1-3) to the endpoint's pace.
-  static GoogleTtsSpeed _gSpeed(int step) => switch (step) {
-    1 => GoogleTtsSpeed.slow,
-    2 => GoogleTtsSpeed.medium,
-    _ => GoogleTtsSpeed.fast,
-  };
+  /// Maps a stored Google speed step (1-3) to the endpoint's pace. Shared with
+  /// the Sentence Bank, which now has the same control.
+  static GoogleTtsSpeed _gSpeed(int step) => GoogleTtsSpeed.forStep(step);
 
   /// The percentage the on-device engine needs to approximate a Google step —
   /// used only when a Google fetch fails and the clip falls back to local
   /// synthesis, so the pace stays roughly where the user set it.
-  static int _gFallbackPct(int step) => switch (step) {
-    1 => 72,
-    2 => 83,
-    _ => 100,
-  };
+  static int _gFallbackPct(int step) => GoogleTtsSpeed.fallbackPctForStep(step);
 
   /// Builds the clips for one story, or null if it can't be voiced.
   Future<List<ClipSpec>?> _clipsFor(ListenStory story, String voice, AppSettings s) async {
@@ -1823,12 +1816,6 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
               ],
             ),
           ),
-          // A full-width row of its own rather than a third share of the one
-          // above: at a third of a phone width all three labels wrap to three
-          // lines each. The split also reads correctly — the two above spend AI
-          // calls and this one spends nothing.
-          const SizedBox(height: 8),
-          _bankSentencesButton(),
           const SizedBox(height: 16),
           _controls(),
         ],
@@ -2668,143 +2655,6 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
     }
   }
 
-  /// Adds the selected subjects' own bank sentences to Listen's bank, paired
-  /// with the translations the Sentences tab has already cached — so **without
-  /// a single AI call**, which is why this is the one material button not gated
-  /// on the API key.
-  ///
-  /// Why it exists: both generators serve Nation's *input* strand, and they are
-  /// right to — every text they write deliberately carries a word or two the
-  /// learner does not know yet. That is exactly what makes them the wrong
-  /// material for the *fluency* strand, which wants the opposite: nothing new
-  /// at all, at speed, in quantity, until recognising what is already known
-  /// stops costing any effort. Bank sentences are the best material in the app
-  /// for that, for a reason no generated text can match — they have already
-  /// been drilled in Sentences, so "already known" is not an assumption here
-  /// but a fact about where they came from. Pair this with the known-language
-  /// pass switched off (⋮ → Settings) and the result is a fluency walk.
-  ///
-  /// One sentence becomes one text, the same rule **Load sentences** uses for a
-  /// `.txt`, so nothing downstream has to learn a new shape. A sentence with no
-  /// cached translation is **skipped, never translated**: not paying for an AI
-  /// call is the whole point of this path, and the dialog reports the count so
-  /// the gap is visible rather than silent.
-  Future<void> _useBankSentences() async {
-    final state = context.read<AppState>();
-    final s = state.settings;
-    if (_generating) return;
-    if (_bank == null) {
-      lpSnack(context, 'Load a sentence bank first.', 4000);
-      return;
-    }
-    if (_selectedSubjects.isEmpty) {
-      lpSnack(context, 'Pick at least one subject first.', 4000);
-      return;
-    }
-    // Sorted, so the stored `subjects` list is stable the way the generators'
-    // is — a selection is a set and its iteration order is not a fact.
-    final subjects = _selectedSubjects.toList()..sort();
-    final sources = {
-      for (final name in subjects)
-        for (final raw in _bank?.sentencesFor(name) ?? const []) SbSentence.spoken(raw),
-    }.toList();
-    if (sources.isEmpty) {
-      lpSnack(context, 'Those subjects have no sentences.', 4000);
-      return;
-    }
-    final cached = await _bankService.cachedTranslations(
-      sentences: sources,
-      // The bank's own declared language, never [AppSettings.knownLanguage] —
-      // same rule and same reason as [_seedPool], and getting it wrong here
-      // would fail quietly as "nothing is translated yet".
-      sourceLang: _bankLanguage,
-      targetLang: s.targetLanguage,
-    );
-    if (!mounted) return;
-    // Duplicate `l2` skipped, the rule the generators already follow. The set
-    // grows as we go, so a sentence that two selected subjects share cannot be
-    // added twice within one press either.
-    final have = {for (final st in _stories) st.l2.trim()};
-    final fresh = <ListenStory>[];
-    for (final src in sources) {
-      final tr = cached[src]?.trim();
-      if (tr == null || tr.isEmpty) continue;
-      if (!have.add(tr)) continue;
-      fresh.add(ListenStory(subjects: subjects, l2: tr, l1: src));
-    }
-    final ok = await _askUseBankSentences(
-      total: sources.length,
-      untranslated: sources.length - cached.length,
-      alreadyHave: cached.length - fresh.length,
-      adding: fresh.length,
-    );
-    if (ok != true || !mounted || fresh.isEmpty) return;
-
-    _pause();
-    final all = _shuffledGroups([..._stories, ...fresh]);
-    await _service.saveStories(s.targetLanguage, all);
-    if (!mounted) return;
-    setState(() {
-      _stories = all;
-      _cancelBuild();
-    });
-    final at = _playable.indexWhere((x) => x.key == fresh.first.key);
-    if (at >= 0) {
-      setState(() => _index = at);
-      unawaited(_service.savePosition(s.targetLanguage, fresh.first.key));
-    }
-    if (!mounted) return;
-    lpSnack(context, 'Added ${fresh.length} sentences from your bank.', 4000);
-  }
-
-  /// Says what the press will actually add before it adds it.
-  ///
-  /// The untranslated count is the one number the learner cannot work out for
-  /// themselves, and it is the actionable one: those sentences fill in by
-  /// themselves as the Sentences tab plays those subjects, so the right answer
-  /// to a big number here is usually "later", not "translate them now".
-  Future<bool?> _askUseBankSentences({
-    required int total,
-    required int untranslated,
-    required int alreadyHave,
-    required int adding,
-  }) {
-    return showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Use bank sentences'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              adding > 0
-                  ? '$adding of your $total selected sentences will be added as texts, using the translations '
-                        'already stored — no AI call and no internet needed.'
-                  : 'Nothing new to add from your $total selected sentences.',
-            ),
-            if (alreadyHave > 0) ...[
-              const SizedBox(height: 10),
-              Text('$alreadyHave are already in Listen.', style: Theme.of(ctx).textTheme.bodySmall),
-            ],
-            if (untranslated > 0) ...[
-              const SizedBox(height: 10),
-              Text(
-                '$untranslated have no stored translation yet and are skipped. Those fill in on their own as the '
-                'Sentences tab plays those subjects.',
-                style: Theme.of(ctx).textTheme.bodySmall,
-              ),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(onPressed: adding > 0 ? () => Navigator.pop(ctx, true) : null, child: const Text('Add')),
-        ],
-      ),
-    );
-  }
-
   /// The ⋮ menu. Only what Listen actually has: voices, its playback settings,
   /// and clearing the generated bank. The Sentence Bank's URL / file loading /
   /// format items have no meaning here — the material is generated, not authored.
@@ -3219,16 +3069,6 @@ class _ListenTabState extends State<ListenTab> with AutomaticKeepAliveClientMixi
           ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
           : const Icon(Icons.auto_stories_outlined),
       label: _generatingStory ? (_seedFillLabel ?? 'Creating…') : 'Create a story',
-    );
-  }
-
-  /// The third way to get material, and the only one not gated on the API key,
-  /// because it makes no AI call at all. See [_useBankSentences].
-  Widget _bankSentencesButton() {
-    return _makeButton(
-      onPressed: _generating || _selectedSubjects.isEmpty ? null : _useBankSentences,
-      icon: const Icon(Icons.playlist_add),
-      label: 'Use bank sentences',
     );
   }
 

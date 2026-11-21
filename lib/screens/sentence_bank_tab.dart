@@ -1537,6 +1537,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         settings.sentenceBankVoiceGender,
         preferVoice: settings.sentenceBankUsesGoogleVoice ? '' : settings.sentenceBankTargetVoice,
         natural: settings.sentenceBankUsesGoogleVoice,
+        // The pace too, or the manual speaker would stop matching the playlist
+        // the moment the speed was changed — and would synthesize a second clip
+        // of the same sentence to do it, since the cache is keyed by rate.
+        ratePct: settings.sentenceBankTargetRatePct,
+        googleStep: settings.sentenceBankTargetGoogleStep,
       );
       await _autoPlaylist.playSingle(path);
       _preparedSig = null; // single playback clears the loaded playlist
@@ -1631,6 +1636,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       settings.sentenceBankRepeatSourceBetween,
       settings.sentenceBankNextSourcePauseSec,
       settings.sentenceBankTargetFirst,
+      // Both change what every clip sounds like, so the playlist cannot be
+      // resumed across a change to either.
+      settings.sentenceBankTargetRatePct,
+      settings.sentenceBankTargetGoogleStep,
     ].join('¦');
 
     // `isLoaded` only says *this* controller built a playlist — the player is
@@ -1782,6 +1791,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
               gender,
               preferVoice: failed ? sourceVoice : targetVoice,
               natural: naturalTarget && !failed,
+              // Not applied to a sentence whose translation failed: that clip is
+              // the *source* language standing in for a missing translation, and
+              // the target's pace has no business setting its pace.
+              ratePct: failed ? 100 : settings.sentenceBankTargetRatePct,
+              googleStep: settings.sentenceBankTargetGoogleStep,
             );
           } catch (_) {
             // Even after Google→local fallback this one couldn't be produced —
@@ -1903,19 +1917,28 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
   /// the result isn't cached) it falls back to local synthesis — worse
   /// intonation but still audible, far better than skipping the sentence.
   /// Throws only if every backend fails.
+  /// [ratePct] and [googleStep] set the pace, and both default to what this
+  /// method always did — so the known-language clip, which passes neither,
+  /// keeps the one fixed rate the whole app speaks at.
   Future<String> _ensureClipFile(
     String text,
     String languageName,
     String gender, {
     String preferVoice = '',
     bool natural = false,
+    int ratePct = 100,
+    int googleStep = AppSettings.kListenGoogleStepMax,
   }) async {
     final code = _ttsLangCode(languageName);
+    var pct = ratePct;
     if (natural) {
       try {
-        return await _googleTts.ensureFile(text, code);
+        return await _googleTts.ensureFile(text, code, speed: GoogleTtsSpeed.forStep(googleStep));
       } catch (_) {
-        // Fall through to local synthesis below.
+        // Fall through to local synthesis below — at the percentage closest to
+        // the bucket that was asked for, so a transient endpoint failure
+        // doesn't quietly change the pace on top of changing the voice.
+        pct = GoogleTtsSpeed.fallbackPctForStep(googleStep);
       }
     }
     return TtsSynthService.instance.synthToFile(
@@ -1924,6 +1947,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       locale: localeForLanguage(languageName),
       voiceId: preferVoice,
       gender: gender,
+      // The synth cache is keyed by rate, so 100 is byte-identical to the key
+      // every clip already cached under and costs no re-synthesis.
+      rate: (kSourceSpeechRate * pct / 100).clamp(0.05, 2.0),
     );
   }
 
@@ -2337,6 +2363,46 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                 children: [
                   Text('Sentence Bank settings', style: Theme.of(ctx).textTheme.titleMedium),
                   const SizedBox(height: 4),
+                  // Target-language pace. Two different controls behind one row,
+                  // because the natural voice has only three paces of its own
+                  // while an installed voice takes any percentage — the same
+                  // split Listen's pass cards make, and for the same reason.
+                  if (s.sentenceBankUsesGoogleVoice)
+                    _sbStepper(
+                      ctx,
+                      label: '${s.targetLanguage} speed',
+                      suffix: '',
+                      min: AppSettings.kListenGoogleStepOff + 1,
+                      max: AppSettings.kListenGoogleStepMax,
+                      current: s.sentenceBankTargetGoogleStep,
+                      yamlValue: AppSettings.kListenGoogleStepMax,
+                      resetLabel: 'normal',
+                      valueWidth: 72,
+                      display: (v) => switch (v) {
+                        1 => 'Slow',
+                        2 => 'Medium',
+                        _ => 'Normal',
+                      },
+                      onSet: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankTargetGoogleStep: v)),
+                      onReset: () => state.saveSettingsOnly(
+                        s.copyWith(sentenceBankTargetGoogleStep: AppSettings.kListenGoogleStepMax),
+                      ),
+                    )
+                  else
+                    _sbStepper(
+                      ctx,
+                      label: '${s.targetLanguage} speed',
+                      suffix: '%',
+                      min: 30,
+                      max: 150,
+                      step: 5,
+                      current: s.sentenceBankTargetRatePct,
+                      yamlValue: 100,
+                      resetLabel: 'normal',
+                      valueWidth: 56,
+                      onSet: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankTargetRatePct: v)),
+                      onReset: () => state.saveSettingsOnly(s.copyWith(sentenceBankTargetRatePct: 100)),
+                    ),
                   _sbStepper(
                     ctx,
                     label: 'Pause after source',
@@ -2488,6 +2554,12 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     required int yamlValue,
     required int min,
     int? max,
+    int step = 1,
+    // Replaces the '$current$suffix' readout, for a value whose meaning is a
+    // name rather than a number ("Medium" for a speed bucket).
+    String Function(int)? display,
+    // Widened for those names, which don't fit the numeric box.
+    double valueWidth = 40,
     // What the reset button restores — a YAML bank value for most rows, a
     // built-in default for the settings that have no YAML key.
     String resetLabel = 'YAML value',
@@ -2499,18 +2571,22 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       child: Row(
         children: [
           Expanded(child: Text(label, style: Theme.of(ctx).textTheme.bodyMedium)),
-          IconButton(icon: const Icon(Icons.remove), onPressed: current <= min ? null : () => onSet(current - 1)),
+          IconButton(icon: const Icon(Icons.remove), onPressed: current <= min ? null : () => onSet(current - step)),
           SizedBox(
-            width: 40,
-            child: Text('$current$suffix', textAlign: TextAlign.center, style: Theme.of(ctx).textTheme.titleMedium),
+            width: valueWidth,
+            child: Text(
+              display?.call(current) ?? '$current$suffix',
+              textAlign: TextAlign.center,
+              style: Theme.of(ctx).textTheme.titleMedium,
+            ),
           ),
           IconButton(
             icon: const Icon(Icons.add),
-            onPressed: (max != null && current >= max) ? null : () => onSet(current + 1),
+            onPressed: (max != null && current >= max) ? null : () => onSet(current + step),
           ),
           IconButton(
             icon: const Icon(Icons.restart_alt),
-            tooltip: 'Reset to $resetLabel ($yamlValue$suffix)',
+            tooltip: 'Reset to $resetLabel (${display?.call(yamlValue) ?? '$yamlValue$suffix'})',
             onPressed: current == yamlValue ? null : onReset,
           ),
         ],

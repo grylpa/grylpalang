@@ -313,7 +313,56 @@ class AiService {
   // Everything a single call may spend, across every model and retry — request
   // time included, which is the part that actually runs away. Checked before
   // every request and every backoff, not only between passes.
+  //
+  // The default is sized for an *interactive* call, where someone is watching a
+  // spinner. [_kBulkTotalWait] is the other case.
   static const Duration _maxTotalWait = Duration(seconds: 150);
+
+  /// The budget for a generation nobody is waiting on: the Listen batch and the
+  /// story.
+  ///
+  /// 150s cannot ride out the thing that actually stops these calls. A free-tier
+  /// 503 ("this model is currently experiencing high demand") is not a blip —
+  /// Google acknowledges it as recurring overload, and it has lasted hours at a
+  /// stretch, clustered by time of day. Against that, giving up after two and a
+  /// half minutes only moves the retry to the learner, who presses the button
+  /// again and pays the same time for the same answer. These two calls are the
+  /// ones that can afford to wait instead: they run in the background, produce a
+  /// whole batch at once, and `AiActivityBanner` already says what they are
+  /// doing and why, so a long wait reads as progress rather than as a hang.
+  static const Duration _kBulkTotalWait = Duration(minutes: 8);
+
+  /// How long a model that answered 5xx is left out of the chain.
+  ///
+  /// "The model is overloaded" is usually momentary, which is why one earns
+  /// [_kOverloadRetries] immediate retries on itself — but *usually* is not
+  /// always, and the failure mode when it isn't is expensive. In November 2026
+  /// `gemini-3.8-flash` returned 503 to this project for days while 3.6 and
+  /// 3.5-flash-lite answered normally. In that state asking 3.8 first on every
+  /// pass is pure cost: three refusals and two backoffs, paid before the chain
+  /// reaches a model that can answer, and all of it out of the one budget the
+  /// call shares — which is most of why generation stopped working at all rather
+  /// than merely getting slower.
+  ///
+  /// Ten minutes is long enough that it isn't re-paid on every press, and short
+  /// enough that recovery needs no action from anyone: the first call after it
+  /// lapses tries the model again, and one success is all it takes.
+  static const Duration _kOverloadCooldown = Duration(minutes: 10);
+
+  // Model id → the time it may be asked again. Deliberately **not** persisted:
+  // a restart should re-probe rather than inherit a verdict that may be an hour
+  // stale, and the state is worth nothing across sessions anyway.
+  static final Map<String, DateTime> _coolUntil = {};
+
+  /// Whether [model] is still inside its overload cooldown, clearing the entry
+  /// once it isn't so the map cannot grow without bound.
+  static bool _isCooling(String model) {
+    final until = _coolUntil[model];
+    if (until == null) return false;
+    if (DateTime.now().isBefore(until)) return true;
+    _coolUntil.remove(model);
+    return false;
+  }
 
   // One HTTP request.
   //
@@ -416,6 +465,9 @@ class AiService {
     int maxRetries = 3,
     bool allowFallback = true,
     String? thinking,
+    // Everything this call may spend. Defaults to the interactive budget; the
+    // background generators pass [_kBulkTotalWait].
+    Duration? totalWait,
   }) async {
     try {
       body = _adaptBody(body, thinking: thinking);
@@ -424,10 +476,31 @@ class AiService {
       // the failure back and can say "try again later" instead of caching worse
       // output.
       final chain = allowFallback ? engine.models : [engine.primaryModel];
+      // A model inside its overload cooldown is skipped — but **never all of
+      // them**. The cooldown is an optimisation about where to start, not a
+      // verdict on whether the chain is usable, and an empty walk would turn a
+      // passing outage into a hard failure for ten minutes. Falling back to the
+      // full chain also means `allowFallback: false` still reaches its primary:
+      // a manual re-translate has to ask the good model or fail, never quietly
+      // produce something weaker.
+      //
+      // Recomputed per pass rather than once, which is the half that matters
+      // inside a single call: a model cooled by *this* call's first pass is then
+      // skipped by its later ones, instead of being asked four times over with
+      // three attempts and two backoffs each. Hoisting it would have left that
+      // waste exactly where it was and only helped the following call.
+      List<String> walkFor() {
+        final live = [
+          for (final m in chain)
+            if (!_isCooling(m)) m,
+        ];
+        return live.isEmpty ? chain : live;
+      }
+
       // A hard wall-clock stop. Without it a chain of five models, each with its
       // own RetryInfo backoff, can spin for minutes behind a spinner while the
       // user waits on what is meant to be an interactive action.
-      final deadline = DateTime.now().add(_maxTotalWait);
+      final deadline = DateTime.now().add(totalWait ?? _maxTotalWait);
       _lastReason = null;
 
       // Nullable: every model in the chain can time out without ever producing
@@ -436,7 +509,8 @@ class AiService {
       // One pass down the chain, then up to [maxRetries] more after a backoff.
       for (var attempt = 0; attempt <= maxRetries; attempt++) {
         var dailyCapped = false;
-        for (final model in chain) {
+        final walk = walkFor();
+        for (final model in walk) {
           // An early exit, and only once a pass has already been made: the
           // chain is walked once whatever the clock says, because a model that
           // refuses does it in milliseconds and that refusal is how the chain
@@ -467,7 +541,7 @@ class AiService {
                 // A fallback is announced at once — something already went wrong.
                 // The very first attempt only announces itself if it turns out to
                 // be slow, so a normal quick call stays silent.
-                immediate: !(model == chain.first && attempt == 0 && overloadTries + unusableTries == 0),
+                immediate: !(model == walk.first && attempt == 0 && overloadTries + unusableTries == 0),
                 timeout: budget,
               );
             } on TimeoutException {
@@ -526,6 +600,14 @@ class AiService {
           }
           _recordError(model, resp);
           last = resp;
+          // Reached only after the in-call retries above are spent, so this is
+          // a model that refused, waited, and refused again — sustained
+          // overload rather than a spike. Leave it out of the chain for a while
+          // so the *next* call starts somewhere that answers. Only 5xx: a 429
+          // is a quota refusal whose window is its own, and cooling the primary
+          // on one would quietly move every generation onto the Lite at the end
+          // of the chain.
+          if (resp.statusCode >= 500) _coolUntil[model] = DateTime.now().add(_kOverloadCooldown);
           // Worth asking the next model: it is rate-limited (429), overloaded or
           // erroring server-side (5xx), or simply not available to this key
           // (404 — which is exactly what a model the account can't use returns,
@@ -1789,7 +1871,9 @@ budget — rewrite it before returning it rather than listing them all.
       },
     };
 
-    final resp = await queryModel(apiKey, body, thinking: _kListenThinking);
+    // Background work, so it gets the long budget: the thing that stops this
+    // call is a sustained 503, which two and a half minutes cannot outlast.
+    final resp = await queryModel(apiKey, body, thinking: _kListenThinking, totalWait: _kBulkTotalWait);
     final text = requireReplyText(resp, 'generateListeningTexts');
 
     late List<dynamic> list;
@@ -2001,7 +2085,9 @@ Return JSON only.
       },
     };
 
-    final resp = await queryModel(apiKey, body, thinking: _kListenThinking);
+    // Background work, so it gets the long budget: the thing that stops this
+    // call is a sustained 503, which two and a half minutes cannot outlast.
+    final resp = await queryModel(apiKey, body, thinking: _kListenThinking, totalWait: _kBulkTotalWait);
     final text = requireReplyText(resp, 'generateStory');
 
     late Map<String, dynamic> map;
