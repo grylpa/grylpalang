@@ -30,6 +30,27 @@ subjects:
   **meta** (has `includes:` — see below).
 - Indentation matters (two spaces per level). Everything after `#` is a comment.
 
+A single subject may **override** the language for its own sentences, which is
+how one file can hold more than one:
+
+```yaml
+language: English
+
+subjects:
+  Greetings:
+    sentences:
+      - Good morning!
+  Saludos:
+    language: Spanish    # just these sentences
+    sentences:
+      - ¡Buenos días!
+```
+
+It sets which voice reads those sentences and which language they are
+translated *from*. Leave it out and the subject takes the bank's `language`.
+A plain `.txt` file has nowhere to put this, so the app asks for the language
+when you load one — and asks for a `.yml` too when the file declares none.
+
 ---
 
 ## Meta subjects (groups)

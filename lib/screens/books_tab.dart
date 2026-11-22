@@ -679,7 +679,7 @@ class _BooksTabState extends State<BooksTab> with AutomaticKeepAliveClientMixin 
                   ),
                   _booksStepper(
                     ctx,
-                    label: 'Pause between source and target',
+                    label: 'Pause before ${s.targetLanguage}',
                     suffix: 's',
                     current: s.booksSourcePauseSec,
                     defaultValue: AppSettings.kBooksSourcePauseSecDefault,
