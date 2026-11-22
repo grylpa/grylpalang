@@ -108,6 +108,9 @@ class AutoPlaylistController {
     // so the learner hears the sentence they're learning first and the known
     // language confirms it. Absent/short list = normal (source-first) order.
     List<bool>? targetFirst,
+    // For the sentences [targetFirst] flipped, play the target clip once more
+    // after the source one — see [_sentenceClips].
+    bool targetAfterSource = false,
     // Scales the between-languages gap to the sentence being learned (see
     // [retrievalGapSec]). Null keeps the flat [sourcePauseSec] — which is what
     // a caller that is reading aloud rather than drilling wants.
@@ -136,6 +139,7 @@ class AutoPlaylistController {
           postDelaySec: postDelaySec,
           alternate: alternate,
           flip: targetFirst != null && ord < targetFirst.length && targetFirst[ord],
+          targetAfterSource: targetAfterSource,
           gapFactor: gapFactor,
           gapCapSec: gapCapSec,
         ),
@@ -159,6 +163,7 @@ class AutoPlaylistController {
     required int postDelaySec,
     required bool alternate,
     required bool flip,
+    bool targetAfterSource = false,
     double? gapFactor,
     int gapCapSec = 0,
   }) {
@@ -229,6 +234,17 @@ class AutoPlaylistController {
         if (src != null) clips.add(ClipSpec.silence(pause));
         targetBlock();
       }
+    }
+    // Played target-first, a sentence ends on the known language: the meaning
+    // has just been given and there is nothing left to hear it against. One
+    // more target clip closes that — the same audio, now understood, which is
+    // where the words that went past the first time become audible. It is
+    // offered only on the flipped sentences, since source-first already ends on
+    // the target, and the gap before it is the short repeat delay rather than a
+    // retrieval gap: nothing is being recalled any more.
+    if (flip && src != null && targetAfterSource) {
+      clips.add(ClipSpec.silence(repeatDelaySec));
+      addTarget();
     }
     clips.add(ClipSpec.silence(postDelaySec));
     return clips;
@@ -304,6 +320,7 @@ class AutoPlaylistController {
   int _dynRepeatDelaySec = 0;
   int _dynPostDelaySec = 0;
   bool _dynAlternate = false;
+  bool _dynTargetAfterSource = false;
   double? _dynGapFactor;
   int _dynGapCapSec = 0;
 
@@ -321,6 +338,7 @@ class AutoPlaylistController {
     bool alternate = false,
     bool loop = false,
     // See [start].
+    bool targetAfterSource = false,
     double? gapFactor,
     int gapCapSec = 0,
   }) async {
@@ -331,6 +349,7 @@ class AutoPlaylistController {
     _dynRepeatDelaySec = repeatDelaySec;
     _dynPostDelaySec = postDelaySec;
     _dynAlternate = alternate;
+    _dynTargetAfterSource = targetAfterSource;
     _dynGapFactor = gapFactor;
     _dynGapCapSec = gapCapSec;
     await _resetForDynamic(ordinalCount, loop);
@@ -416,6 +435,7 @@ class AutoPlaylistController {
         postDelaySec: _dynPostDelaySec,
         alternate: _dynAlternate,
         flip: flip,
+        targetAfterSource: _dynTargetAfterSource,
         gapFactor: _dynGapFactor,
         gapCapSec: _dynGapCapSec,
       ),

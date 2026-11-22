@@ -1636,6 +1636,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       settings.sentenceBankRepeatSourceBetween,
       settings.sentenceBankNextSourcePauseSec,
       settings.sentenceBankTargetFirst,
+      settings.sentenceBankTargetAfterSource,
       // Both change what every clip sounds like, so the playlist cannot be
       // resumed across a change to either.
       settings.sentenceBankTargetRatePct,
@@ -1760,6 +1761,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         // When on, replay the source before every target repeat (source between
         // targets) instead of speaking the source once up front.
         alternate: settings.sentenceBankSpeakSource && settings.sentenceBankRepeatSourceBetween,
+        // Only reaches the flipped sentences, so it is passed whenever both
+        // switches are on and the controller decides per sentence.
+        targetAfterSource: settings.sentenceBankTargetFirst && settings.sentenceBankTargetAfterSource,
         loop: true,
         // The gap between the two languages is the exercise, so it is sized to
         // the sentence rather than left at the one second the bank format
@@ -2074,6 +2078,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         s.settings.sentenceBankRepeatSourceBetween,
         s.settings.sentenceBankNextSourcePauseSec,
         s.settings.sentenceBankTargetFirst,
+        s.settings.sentenceBankTargetAfterSource,
       ].join('¦'),
     );
     if (autoCfg != _lastAutoCfg) {
@@ -2475,6 +2480,19 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     value: s.sentenceBankTargetFirst,
                     onChanged: s.sentenceBankSpeakSource
                         ? (v) => state.saveSettingsOnly(s.copyWith(sentenceBankTargetFirst: v))
+                        : null,
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Then ${s.targetLanguage} again', style: textStyle),
+                    subtitle: Text(
+                      'On those sentences only, play the ${s.targetLanguage} once more after the '
+                      'source — so you can listen again knowing what it meant.',
+                      style: Theme.of(ctx).textTheme.bodySmall,
+                    ),
+                    value: s.sentenceBankTargetAfterSource,
+                    onChanged: s.sentenceBankSpeakSource && s.sentenceBankTargetFirst
+                        ? (v) => state.saveSettingsOnly(s.copyWith(sentenceBankTargetAfterSource: v))
                         : null,
                   ),
                   SwitchListTile(
