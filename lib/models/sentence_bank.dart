@@ -47,6 +47,40 @@ class SentenceBank {
   /// Ordered list of subject names for display.
   List<String> get subjectNames => subjects.keys.toList();
 
+  /// The language [subjectName]'s sentences are written in: its own declared
+  /// `language:` where it has one, else the bank's. A meta subject has none of
+  /// its own — its children may disagree — so it reports the bank's and callers
+  /// that care about a single sentence use [sentencesWithLangFor] instead.
+  String languageOf(String subjectName) {
+    final sub = subjects[subjectName];
+    if (sub is LeafSubject && (sub.language ?? '').trim().isNotEmpty) return sub.language!.trim();
+    return language;
+  }
+
+  /// Every sentence of [subjectName] paired with the language it is written in.
+  /// The same flattening as [sentencesFor], but a meta subject's children keep
+  /// their own languages instead of being collapsed onto one.
+  List<(String, String)> sentencesWithLangFor(String subjectName) {
+    final subject = subjects[subjectName];
+    if (subject == null) return const [];
+    if (subject is LeafSubject) {
+      final lang = languageOf(subjectName);
+      return [for (final s in subject.sentences) (s, lang)];
+    }
+    if (subject is MetaSubject) {
+      final result = <(String, String)>[];
+      for (final ref in subject.subjectRefs) {
+        final leaf = subjects[ref];
+        if (leaf is LeafSubject) {
+          final lang = languageOf(ref);
+          for (final s in leaf.sentences) result.add((s, lang));
+        }
+      }
+      return result;
+    }
+    return const [];
+  }
+
   /// Resolve a subject name to its flat list of sentences, handling meta subjects.
   List<String> sentencesFor(String subjectName) {
     final subject = subjects[subjectName];
@@ -93,7 +127,7 @@ class SentenceBank {
             for (final e in (val['sentences'] as List? ?? const []))
               if (e != null && e.toString().trim().isNotEmpty) e.toString(),
           ];
-          subjects[name] = LeafSubject(name: name, sentences: sents);
+          subjects[name] = LeafSubject(name: name, sentences: sents, language: val['language'] as String?);
         }
       }
     }
@@ -197,7 +231,19 @@ class LeafSubject extends BankSubject {
   final String name;
   final List<String> sentences;
 
-  LeafSubject({required this.name, required this.sentences});
+  /// The language *these* sentences are written in, when the subject declares
+  /// its own `language:`. Null means the bank's own [SentenceBank.language].
+  ///
+  /// It exists because a loaded file need not be in the bank's language: a
+  /// plain `.txt` declares nothing at all, and a device YAML's own `language:`
+  /// used to be dropped on import — so both inherited the bundled asset's
+  /// English and were spoken, translated and labelled as if they were English.
+  /// Per *subject* rather than per file because that is the unit the bank
+  /// merge already carries (`_mergeBankMaps` merges subject maps), so the
+  /// import stamps each imported subject and nothing else has to change.
+  final String? language;
+
+  LeafSubject({required this.name, required this.sentences, this.language});
 }
 
 class MetaSubject extends BankSubject {

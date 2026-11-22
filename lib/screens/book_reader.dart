@@ -839,7 +839,9 @@ class _BookReaderState extends State<BookReader> {
           if (_chapters != null && _chapters!.isNotEmpty) ...[
             IconButton(
               iconSize: 30,
-              tooltip: 'Pick TTS voice (source / target)',
+              tooltip:
+                  'Pick voice (${widget.book.language.isEmpty ? 'English' : widget.book.language} / '
+                  '${context.read<AppState>().settings.targetLanguage})',
               icon: const Icon(Icons.record_voice_over_outlined),
               onPressed: _showVoicePicker,
             ),

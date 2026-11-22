@@ -312,6 +312,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
       setState(() {
         _bank = bank;
+        _rebuildSentLang(bank);
         _sortedSubjectNames = sorted;
         _loading = false;
         _selectedSubjects
@@ -388,15 +389,28 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       bank.subjects.remove(kActiveWordsSubject);
       return;
     }
+    // These sentences are each word's `l1`, which is written in the *known*
+    // language — not necessarily the bank's. Stamping it is what stops them
+    // being spoken by the bank language's voice and cached under its key; the
+    // seeding below has to agree, or the entries it writes are never found.
+    final activeLang = _activeWordsLanguage(appState);
     bank.subjects[kActiveWordsSubject] = LeafSubject(
       name: kActiveWordsSubject,
       sentences: [for (final e in stored) e.src],
+      language: activeLang,
     );
     await _service.seedTranslations(
       pairs: {for (final e in stored) e.src: e.tgt},
-      sourceLang: sourceLang,
+      sourceLang: activeLang,
       targetLang: targetLang,
     );
+  }
+
+  /// The language the Active Words sentences are in: the known language, or the
+  /// bank's where that is unset.
+  String _activeWordsLanguage(AppState appState) {
+    final known = appState.settings.knownLanguage.trim();
+    return known.isEmpty ? (_bank?.language ?? 'English') : known;
   }
 
   /// On a history change, adds the new history sentences to the persistent
@@ -428,7 +442,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         if (!oldSet.contains(e.src)) e.src: e.tgt,
     };
     if (newPairs.isNotEmpty) {
-      await _service.seedTranslations(pairs: newPairs, sourceLang: sourceLang, targetLang: targetLang);
+      await _service.seedTranslations(
+        pairs: newPairs,
+        sourceLang: _activeWordsLanguage(appState),
+        targetLang: targetLang,
+      );
     }
     if (!mounted) return;
 
@@ -448,7 +466,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           _shuffledOrder = null;
         }
       } else {
-        bank.subjects[kActiveWordsSubject] = LeafSubject(name: kActiveWordsSubject, sentences: newSentences);
+        bank.subjects[kActiveWordsSubject] = LeafSubject(
+          name: kActiveWordsSubject,
+          sentences: newSentences,
+          language: _activeWordsLanguage(appState),
+        );
         if (wasSelected) {
           // Rebuild any shuffle order for the new length, then land back on the
           // sentence the user was viewing (by text), or the first if it's gone.
@@ -462,6 +484,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           }
         }
       }
+      // The subject was just replaced, so its sentences' languages have to be
+      // re-registered — a stale map would read the new entries as the bank's.
+      _rebuildSentLang(bank);
       _sourceSentence = _currentSource();
     });
 
@@ -475,6 +500,67 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       _preparedSig = null;
       _translationsSig = null;
     }
+  }
+
+  /// The source language of the sentences whose subject declares one of its
+  /// own, keyed by [SbSentence.spoken]. **Only the exceptions are stored**, so a
+  /// bank written in one language — which is nearly every bank — keeps this
+  /// empty and every lookup falls straight through to the bank's own language.
+  final Map<String, String> _sentLang = {};
+
+  /// The language a sentence is written in. Two forms because half the call
+  /// sites hold the raw bank entry and half hold the spoken form already.
+  String _langOfSpoken(String spoken) => _sentLang[spoken] ?? _bank?.language ?? 'English';
+
+  String _langOf(String raw) => _langOfSpoken(SbSentence.spoken(raw));
+
+  /// Rebuilds [_sentLang] from [bank]. A meta subject re-walks its children, so
+  /// a sentence can be visited twice — first owner wins, which is the same
+  /// dedup policy [_expandSentences] uses.
+  void _rebuildSentLang(SentenceBank bank) {
+    _sentLang.clear();
+    for (final name in bank.subjectNames) {
+      for (final (sent, lang) in bank.sentencesWithLangFor(name)) {
+        if (lang == bank.language) continue;
+        _sentLang.putIfAbsent(SbSentence.spoken(sent), () => lang);
+      }
+    }
+  }
+
+  /// The chosen source voice, but only for the bank's **own** language.
+  ///
+  /// `sentenceBankSourceVoice` is one voice id, picked from the voices of one
+  /// language, so handing it to a sentence in another language would ask the
+  /// engine for a Spanish line in a voice that only speaks English. A subject
+  /// that declares its own language therefore falls back to '' — automatic,
+  /// which [TtsSynthService] resolves per locale and so always matches.
+  String _srcVoiceFor(String sentenceLang, String chosen) => sentenceLang == (_bank?.language ?? '') ? chosen : '';
+
+  /// [spoken] grouped by source language: language → the indices written in it.
+  /// Every translator entry point takes **one** `sourceLang` for a whole list,
+  /// so a mixed selection is one call per language, stitched back by index.
+  Map<String, List<int>> _spokenByLanguage(List<String> spoken) {
+    final out = <String, List<int>>{};
+    for (var i = 0; i < spoken.length; i++) {
+      (out[_langOfSpoken(spoken[i])] ??= <int>[]).add(i);
+    }
+    return out;
+  }
+
+  /// The distinct source languages in the current selection, in bank order.
+  /// Used by the settings sheet, which can name a language in its labels only
+  /// while the selection has exactly one.
+  List<String> _selectionLanguages() {
+    final bank = _bank;
+    if (bank == null) return const [];
+    final out = <String>[];
+    for (final name in bank.subjectNames) {
+      if (!_selectedSubjects.contains(name)) continue;
+      for (final (_, lang) in bank.sentencesWithLangFor(name)) {
+        if (!out.contains(lang)) out.add(lang);
+      }
+    }
+    return out;
   }
 
   /// The de-duplicated union of every selected subject's sentences, in stable
@@ -1150,7 +1236,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     final state = context.read<AppState>();
     final cached = await _service.getCached(
       sentence: SbSentence.spoken(src),
-      sourceLang: _bank!.language,
+      sourceLang: _langOf(src),
       targetLang: state.settings.targetLanguage,
     );
     if (!mounted) return;
@@ -1193,7 +1279,6 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (sentences.isEmpty) return;
 
     final state = context.read<AppState>();
-    final sourceLang = _bank!.language;
     final targetLang = state.settings.targetLanguage;
     final apiKey = state.settings.aiApiKey;
     if (apiKey.trim().isEmpty) return;
@@ -1212,21 +1297,36 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       // If the playlist build is already translating this subject, this awaits
       // it and skips — no second concurrent pass.
       await _withTranslationPass(_subjectTransSig(targetLang), () async {
-        final failed = await _service.translateAllUncached(
-          sentences: [for (final s in sentences) SbSentence.spoken(s)],
-          sourceLang: sourceLang,
-          targetLang: targetLang,
-          apiKey: apiKey,
-          onProgress: (done, total, attempt) {
-            if (!mounted) return;
-            setState(() {
-              _batchDone = done;
-              _batchTotal = total;
-              _batchAttempt = attempt;
-            });
-            _loadCachedTranslationForCurrent();
-          },
-        );
+        // One pass per source language: the translator takes a single
+        // `sourceLang` per call, and the selection may mix languages now that a
+        // loaded file can declare its own. Progress is offset by the groups
+        // already finished, so the counter stays monotonic — the *total* grows
+        // as each group reveals how much of it was uncached, which cannot be
+        // known up front. With one language (nearly always) this is one call
+        // and one counter, exactly as before.
+        final spoken = [for (final s in sentences) SbSentence.spoken(s)];
+        var failed = 0;
+        var doneBase = 0;
+        var totalBase = 0;
+        for (final group in _spokenByLanguage(spoken).entries) {
+          failed += await _service.translateAllUncached(
+            sentences: [for (final i in group.value) spoken[i]],
+            sourceLang: group.key,
+            targetLang: targetLang,
+            apiKey: apiKey,
+            onProgress: (done, total, attempt) {
+              if (!mounted) return;
+              setState(() {
+                _batchDone = doneBase + done;
+                _batchTotal = totalBase + total;
+                _batchAttempt = attempt;
+              });
+              _loadCachedTranslationForCurrent();
+            },
+          );
+          doneBase = _batchDone;
+          totalBase = _batchTotal;
+        }
         allTranslated = failed == 0;
         if (failed > 0 && mounted) {
           lpSnack(
@@ -1279,9 +1379,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (_upgradeRunning || _bank == null || !mounted) return;
     final state = context.read<AppState>();
     final apiKey = state.settings.aiApiKey;
-    final sourceLang = _bank!.language;
     final targetLang = state.settings.targetLanguage;
-    if (apiKey.trim().isEmpty || sourceLang.toLowerCase() == targetLang.toLowerCase()) return;
+    if (apiKey.trim().isEmpty) return;
 
     final sents = _currentSentences();
     if (sents.isEmpty) return;
@@ -1301,17 +1400,26 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
 
     _upgradeRunning = true;
     try {
-      final needing = await _service.sentencesNeedingUpgrade(
-        sentences: window,
-        sourceLang: sourceLang,
-        targetLang: targetLang,
-      );
+      // Asked per source language, and a group already in the target language
+      // is skipped rather than translated into itself — which is what the
+      // single up-front `sourceLang == targetLang` return used to cover.
+      final needing = <String>[];
+      for (final group in _spokenByLanguage(window).entries) {
+        if (group.key.toLowerCase() == targetLang.toLowerCase()) continue;
+        needing.addAll(
+          await _service.sentencesNeedingUpgrade(
+            sentences: [for (final i in group.value) window[i]],
+            sourceLang: group.key,
+            targetLang: targetLang,
+          ),
+        );
+      }
       for (final s in needing) {
         if (!mounted) return;
         try {
           final t = await _service.translate(
             sentence: s,
-            sourceLang: sourceLang,
+            sourceLang: _langOfSpoken(s),
             targetLang: targetLang,
             apiKey: apiKey,
             force: true,
@@ -1411,7 +1519,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     if (_translatedSentence != null) return _translatedSentence;
 
     final state = context.read<AppState>();
-    final sourceLang = _bank!.language;
+    final sourceLang = _langOf(src);
     final targetLang = state.settings.targetLanguage;
     final apiKey = state.settings.aiApiKey;
 
@@ -1467,7 +1575,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     try {
       final t = await _service.translate(
         sentence: spokenSrc,
-        sourceLang: _bank!.language,
+        sourceLang: _langOfSpoken(spokenSrc),
         targetLang: state.settings.targetLanguage,
         apiKey: apiKey,
         force: true,
@@ -1672,12 +1780,32 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
       if (translationsSig == _translationsSig && _autoTranslations.length == ordered.length) {
         translations = _autoTranslations;
       } else {
-        Future<List<String>> doBatch() => _service.translateBatch(
-          sentences: orderedSpoken,
-          sourceLang: _bank!.language,
-          targetLang: settings.targetLanguage,
-          apiKey: settings.aiApiKey,
-        );
+        // One call per source language, stitched back by index so the result
+        // stays aligned with `orderedSpoken` whatever order the groups ran in.
+        Future<List<String>> doBatch() async {
+          final groups = _spokenByLanguage(orderedSpoken);
+          if (groups.length <= 1) {
+            return _service.translateBatch(
+              sentences: orderedSpoken,
+              sourceLang: groups.isEmpty ? _bank!.language : groups.keys.first,
+              targetLang: settings.targetLanguage,
+              apiKey: settings.aiApiKey,
+            );
+          }
+          final out = List<String>.filled(orderedSpoken.length, '');
+          for (final group in groups.entries) {
+            final idx = group.value;
+            final res = await _service.translateBatch(
+              sentences: [for (final i in idx) orderedSpoken[i]],
+              sourceLang: group.key,
+              targetLang: settings.targetLanguage,
+              apiKey: settings.aiApiKey,
+            );
+            for (var k = 0; k < idx.length; k++) out[idx[k]] = res[k];
+          }
+          return out;
+        }
+
         // Coalesce with any in-flight background prefetch for this subject so we
         // don't run two translation passes at once. If a prefetch pass was
         // already running, it has now finished and cached everything, so the
@@ -1714,12 +1842,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         for (var o = 0; o < translations.length; o++)
           () async {
             final failed = translations[o].trim() == orderedSpoken[o].trim();
-            final clipLang = failed ? _bank!.language : settings.targetLanguage;
+            final srcLang = _langOfSpoken(orderedSpoken[o]);
+            final clipLang = failed ? srcLang : settings.targetLanguage;
             final cached = await _cachedClipFile(
               translations[o],
               clipLang,
               gender,
-              preferVoice: failed ? sourceVoice : targetVoice,
+              preferVoice: failed ? _srcVoiceFor(srcLang, sourceVoice) : targetVoice,
               natural: naturalTarget && !failed,
             );
             if (cached != null) translationPaths[o] = cached;
@@ -1727,9 +1856,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
               // Never natural: the source is the language already known.
               sourcePaths[o] = await _cachedClipFile(
                 orderedSpoken[o],
-                _bank!.language,
+                srcLang,
                 gender,
-                preferVoice: sourceVoice,
+                preferVoice: _srcVoiceFor(srcLang, sourceVoice),
               );
             }
           }(),
@@ -1785,7 +1914,8 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         // that the queue was assembled out of order.
         final o = (from + k) % translations.length;
         final failed = translations[o].trim() == orderedSpoken[o].trim();
-        final clipLang = failed ? _bank!.language : settings.targetLanguage;
+        final srcLang = _langOfSpoken(orderedSpoken[o]);
+        final clipLang = failed ? srcLang : settings.targetLanguage;
 
         if (translationPaths[o].isEmpty) {
           try {
@@ -1793,7 +1923,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
               translations[o],
               clipLang,
               gender,
-              preferVoice: failed ? sourceVoice : targetVoice,
+              preferVoice: failed ? _srcVoiceFor(srcLang, sourceVoice) : targetVoice,
               natural: naturalTarget && !failed,
               // Not applied to a sentence whose translation failed: that clip is
               // the *source* language standing in for a missing translation, and
@@ -1811,9 +1941,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         if (speakSource && sourcePaths[o] == null) {
           sourcePaths[o] = await _ensureClipFileOrNull(
             orderedSpoken[o],
-            _bank!.language,
+            srcLang,
             gender,
-            preferVoice: sourceVoice,
+            preferVoice: _srcVoiceFor(srcLang, sourceVoice),
           );
         }
         if (!mounted || token != _buildToken) return;
@@ -2313,6 +2443,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         ];
         if (kept.isEmpty) continue;
         buf.writeln('  ${_yamlScalar(name)}:');
+        // Carried only where the subject declares one of its own: the export
+        // holds no bank-level `language:`, so a subject that inherited it would
+        // come back as whatever bank it is loaded into — while one that
+        // declared its own would silently lose it.
+        if (subject.language != null) buf.writeln('    language: ${_yamlScalar(subject.language!)}');
         buf.writeln('    sentences:');
         for (final s in kept) {
           buf.writeln('      - ${_yamlScalar(s)}');
@@ -2359,6 +2494,21 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         child: Consumer<AppState>(
           builder: (ctx, state, _) {
             final s = state.settings;
+            // Every label names its language rather than its role: "source"
+            // beside the target's own name reads as two unrelated things. The
+            // name is the *selection's* language — a bank's declared
+            // `language:` is free to differ from [AppSettings.knownLanguage],
+            // and a loaded file may declare its own on top of that.
+            //
+            // A selection spanning several languages has no single name, so
+            // the labels fall back to the role word **source** — the one case
+            // where it is the more correct of the two, since what the label
+            // then means really is "whichever language that sentence is in"
+            // rather than any one language. The note below names the languages
+            // actually in play, so nothing is left to be guessed.
+            final langs = _selectionLanguages();
+            final mixed = langs.length > 1;
+            final sourceLang = mixed ? 'the source' : (langs.isEmpty ? (_bank?.language ?? 'English') : langs.first);
             final textStyle = Theme.of(ctx).textTheme.bodyMedium;
             return SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -2367,6 +2517,15 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Sentence Bank settings', style: Theme.of(ctx).textTheme.titleMedium),
+                  if (mixed)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        'Your selection mixes ${langs.join(', ')}, so the settings below '
+                        'say "the source" where they would otherwise name its language.',
+                        style: Theme.of(ctx).textTheme.bodySmall,
+                      ),
+                    ),
                   const SizedBox(height: 4),
                   // Target-language pace. Two different controls behind one row,
                   // because the natural voice has only three paces of its own
@@ -2410,7 +2569,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     ),
                   _sbStepper(
                     ctx,
-                    label: 'Pause after source',
+                    label: 'Pause after $sourceLang',
                     suffix: 's',
                     min: 0,
                     current: s.sentenceBankSourcePauseOverride ?? state.sentenceBankYamlSourcePause,
@@ -2420,7 +2579,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                   ),
                   _sbStepper(
                     ctx,
-                    label: 'Repeat translation TTS',
+                    label: 'Repeat ${s.targetLanguage}',
                     suffix: '×',
                     min: 1,
                     max: 10,
@@ -2441,13 +2600,13 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: Text('Speak source', style: textStyle),
+                    title: Text('Speak $sourceLang', style: textStyle),
                     value: s.sentenceBankSpeakSource,
                     onChanged: (v) => state.saveSettingsOnly(s.copyWith(sentenceBankSpeakSource: v)),
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: Text('Repeat source between translations', style: textStyle),
+                    title: Text('Repeat $sourceLang before each ${s.targetLanguage}', style: textStyle),
                     value: s.sentenceBankRepeatSourceBetween,
                     onChanged: s.sentenceBankSpeakSource
                         ? (v) => state.saveSettingsOnly(s.copyWith(sentenceBankRepeatSourceBetween: v))
@@ -2458,7 +2617,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                   if (s.sentenceBankSpeakSource && s.sentenceBankRepeatSourceBetween)
                     _sbStepper(
                       ctx,
-                      label: 'Pause after next sources',
+                      label: 'Pause after repeats of $sourceLang',
                       suffix: 's',
                       min: 0,
                       current: s.sentenceBankNextSourcePauseSec,
@@ -2474,7 +2633,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     title: Text('Sometimes ${s.targetLanguage} first', style: textStyle),
                     subtitle: Text(
                       'For about half the sentences, play the ${s.targetLanguage} audio before the '
-                      'source instead of after — so you try to understand it first.',
+                      '$sourceLang instead of after — so you try to understand it first.',
                       style: Theme.of(ctx).textTheme.bodySmall,
                     ),
                     value: s.sentenceBankTargetFirst,
@@ -2487,7 +2646,7 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
                     title: Text('Then ${s.targetLanguage} again', style: textStyle),
                     subtitle: Text(
                       'On those sentences only, play the ${s.targetLanguage} once more after the '
-                      'source — so you can listen again knowing what it meant.',
+                      '$sourceLang — so you can listen again knowing what it meant.',
                       style: Theme.of(ctx).textTheme.bodySmall,
                     ),
                     value: s.sentenceBankTargetAfterSource,
@@ -2708,6 +2867,11 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
     }
 
     Map<String, dynamic> map;
+    // The language the file's sentences are in. A YAML that declares its own
+    // `language:` is believed; everything else is asked, prefilled with the
+    // bank's — so accepting the prefill reproduces exactly what loading a file
+    // did before this question existed.
+    String? declared;
     if (ext == 'txt') {
       final lines = [for (final l in content.split('\n')) l.trim()].where((l) => l.isNotEmpty).toList();
       if (lines.isEmpty) {
@@ -2733,25 +2897,95 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
           return;
         }
         map = {'subjects': subjects};
+        final own = parsed['language'];
+        if (own is String && own.trim().isNotEmpty) declared = own.trim();
       } catch (e) {
         if (mounted) lpSnack(context, 'YAML error: ${e.toString().split('\n').first}', 5000);
         return;
       }
     }
 
+    // Asked once per file, not per subject: a file is written in one language
+    // in practice, and a subject that declares its own is left alone.
+    if (declared == null) {
+      declared = await _askFileLanguage(name);
+      if (declared == null || !mounted) return; // cancelled
+    }
+    final subs = map['subjects'] as Map;
+    for (final entry in subs.entries) {
+      final v = entry.value;
+      // Leaves only — a meta subject owns no sentences of its own, and its
+      // children carry their languages themselves.
+      if (v is Map && v['sentences'] is List && v['language'] == null) v['language'] = declared;
+    }
+
     await _service.addDeviceFile(name, map);
     await _loadBank();
-    if (mounted) lpSnack(context, 'Loaded "$name".', 3000);
+    if (mounted) lpSnack(context, 'Loaded "$name" ($declared).', 3000);
+  }
+
+  /// Asks which language a loaded file's sentences are written in.
+  ///
+  /// By **name**, typed, and prefilled with the bank's own language: these are
+  /// free-text language names everywhere else in the app (Settings → Languages
+  /// is a text field too), and the one thing the app must not do is guess. A
+  /// file in the wrong language is translated *from* the wrong language, spoken
+  /// by the wrong voice, and cached under a key that claims it is something it
+  /// is not — none of which announces itself as a mistake.
+  Future<String?> _askFileLanguage(String fileName) async {
+    final fallback = _bank?.language ?? 'English';
+    final ctrl = TextEditingController(text: fallback);
+    final answer = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Which language is it in?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'The sentences in "$fileName" — not what they will be translated '
+              'into. This sets the voice that reads them and the language they '
+              'are translated from.',
+              style: Theme.of(ctx).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(labelText: 'Language', border: OutlineInputBorder()),
+              onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('Load')),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (answer == null) return null;
+    return answer.isEmpty ? fallback : answer;
   }
 
   String _deviceFileSummary(Map<String, dynamic> map) {
     final subs = (map['subjects'] as Map?) ?? const {};
     var sentences = 0;
+    final langs = <String>{};
     for (final v in subs.values) {
-      if (v is Map && v['sentences'] is List) sentences += (v['sentences'] as List).length;
+      if (v is Map && v['sentences'] is List) {
+        sentences += (v['sentences'] as List).length;
+        final l = v['language'];
+        if (l is String && l.trim().isNotEmpty) langs.add(l.trim());
+      }
     }
+    // The language is listed because it is the one property of a loaded file
+    // that cannot be seen by reading the file: it was answered in a dialog.
+    final lang = langs.length == 1 ? ' · ${langs.first}' : (langs.isEmpty ? '' : ' · ${langs.join(', ')}');
     return '${subs.length} subject${subs.length == 1 ? '' : 's'}, '
-        '$sentences sentence${sentences == 1 ? '' : 's'}';
+        '$sentences sentence${sentences == 1 ? '' : 's'}$lang';
   }
 
   Future<void> _showManageFilesSheet() async {
@@ -2852,7 +3086,10 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
         targetLang: s.targetLanguage,
         targetBlurb: 'Speaks the translation. One voice only.',
         otherLang: sourceLang,
-        otherBlurb: 'Speaks the sentence you read. One voice only.',
+        otherBlurb: _sentLang.isEmpty
+            ? 'Speaks the sentence you read. One voice only.'
+            : 'Speaks the sentence you read. One voice only — a loaded file in '
+                  'another language uses that language\'s automatic voice.',
         targetByLocale: targetByLocale,
         otherByLocale: sourceByLocale,
         initialTarget: s.sentenceBankTargetVoice,
@@ -2930,7 +3167,9 @@ class _SentenceBankTabState extends State<SentenceBankTab> with AutomaticKeepAli
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  _bank!.language,
+                  // This sentence's own language, not the bank's — a loaded
+                  // file may be in another one.
+                  _langOf(src),
                   style: Theme.of(
                     context,
                   ).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.primary),

@@ -395,7 +395,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 8),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: Text('Read: See the target language', style: textStyle),
+                    title: Text('Read: See ${s.targetLanguage}', style: textStyle),
                     value: s.modeClean,
                     onChanged: (v) {
                       if (!v && !s.modeCloze && !s.modeReverse) {
@@ -419,7 +419,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: Text('Translate: See your known language', style: textStyle),
+                    title: Text('Translate: See ${s.knownLanguage}', style: textStyle),
                     value: s.modeReverse,
                     onChanged: (v) {
                       if (!v && !s.modeClean && !s.modeCloze) {
