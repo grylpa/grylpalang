@@ -221,6 +221,9 @@ class AppSettings {
   bool sentenceBankRepeatSourceBetween; // also replay the source before every target repeat (off by default)
   int sentenceBankNextSourcePauseSec; // pause after the 2nd+ source repeat (only with the above on)
   bool sentenceBankTargetFirst; // for ~half the sentences, play the target language before the source
+  // On those target-first sentences only, play the target clip once more after
+  // the source one, so the sentence can be re-heard knowing what it meant.
+  bool sentenceBankTargetAfterSource;
   // Sentences mode's target-language pace, as a percentage of
   // [kSourceSpeechRate] — so 100 is the pace every other mode speaks at, and
   // the default changes nothing.
@@ -319,6 +322,7 @@ class AppSettings {
     this.listenMaxPlaysPerStory = 0,
     this.hiddenTabIds = kHiddenTabIdsDefault,
     this.sentenceBankTargetFirst = true,
+    this.sentenceBankTargetAfterSource = true,
     this.sentenceBankTargetRatePct = 100,
     this.sentenceBankTargetGoogleStep = kListenGoogleStepMax,
     this.sentenceBankPrepareAudio = true,
@@ -396,6 +400,7 @@ class AppSettings {
     int? listenMaxPlaysPerStory,
     List<String>? hiddenTabIds,
     bool? sentenceBankTargetFirst,
+    bool? sentenceBankTargetAfterSource,
     int? sentenceBankTargetRatePct,
     int? sentenceBankTargetGoogleStep,
     bool? sentenceBankPrepareAudio,
@@ -478,6 +483,7 @@ class AppSettings {
       listenMaxPlaysPerStory: listenMaxPlaysPerStory ?? this.listenMaxPlaysPerStory,
       hiddenTabIds: hiddenTabIds ?? this.hiddenTabIds,
       sentenceBankTargetFirst: sentenceBankTargetFirst ?? this.sentenceBankTargetFirst,
+      sentenceBankTargetAfterSource: sentenceBankTargetAfterSource ?? this.sentenceBankTargetAfterSource,
       sentenceBankTargetRatePct: sentenceBankTargetRatePct ?? this.sentenceBankTargetRatePct,
       sentenceBankTargetGoogleStep: sentenceBankTargetGoogleStep ?? this.sentenceBankTargetGoogleStep,
       sentenceBankPrepareAudio: sentenceBankPrepareAudio ?? this.sentenceBankPrepareAudio,
@@ -558,6 +564,7 @@ class AppSettings {
     'listenMaxPlaysPerStory': listenMaxPlaysPerStory,
     'hiddenTabIds': hiddenTabIds,
     'sentenceBankTargetFirstV2': sentenceBankTargetFirst,
+    'sentenceBankTargetAfterSource': sentenceBankTargetAfterSource,
     'sentenceBankTargetRatePct': sentenceBankTargetRatePct,
     'sentenceBankTargetGoogleStep': sentenceBankTargetGoogleStep,
     'sentenceBankPrepareAudio': sentenceBankPrepareAudio,
@@ -719,6 +726,7 @@ class AppSettings {
       // written back: the absence of the key *is* the signal, and the moment
       // the switch is touched the new key is stored and respected for good.
       sentenceBankTargetFirst: json['sentenceBankTargetFirstV2'] as bool? ?? true,
+      sentenceBankTargetAfterSource: json['sentenceBankTargetAfterSource'] as bool? ?? true,
       // No key rename and no migration: both defaults are what the Sentence
       // Bank already did, so an upgrade keeps its exact pace until asked.
       sentenceBankTargetRatePct: (json['sentenceBankTargetRatePct'] as int?)?.clamp(30, 150) ?? 100,
@@ -770,6 +778,7 @@ class AppSettings {
       sentenceBankSpeakSource: true,
       sentenceBankShuffle: true,
       sentenceBankTargetFirst: true,
+      sentenceBankTargetAfterSource: true,
       sentenceBankPrepareAudio: true,
     );
   }
